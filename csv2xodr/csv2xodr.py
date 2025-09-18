@@ -1,40 +1,15 @@
 import argparse
 import json
 import os
-import yaml
 
-from ingest.loader import load_all
-from normalize.core import build_centerline
-from topology.core import make_sections, build_lane_topology
-from mapping.core import mark_type_from_division_row
-from writer.xodr_writer import write_xodr
-
-def build_lane_spec(sections, lane_topo, defaults, lane_div_df):
-    """
-    Build simple per-section lane spec:
-      - lanes: from topology hint (no center(0); writer adds it)
-      - width: default constant for now
-      - roadMark: one type per section (solid/broken basic)
-    """
-    lanes_guess = lane_topo.get("lanes_guess") or [-1, 1]
-
-    roadmark_type = "solid"
-    if lane_div_df is not None and len(lane_div_df) > 0:
-        roadmark_type = mark_type_from_division_row(lane_div_df.iloc[0])
-
-    out = []
-    for sec in sections:
-        out.append({
-            "s0": sec["s0"], "s1": sec["s1"],
-            "lanes": lanes_guess,
-            "lane_width": defaults.get("lane_width_m", 3.5),
-            "roadMark": roadmark_type,
-            "predecessor": True,
-            "successor": True,
-        })
-    return out
+from csv2xodr.ingest.loader import load_all
+from csv2xodr.normalize.core import build_centerline
+from csv2xodr.topology.core import make_sections, build_lane_topology
+from csv2xodr.writer.xodr_writer import write_xodr
+from csv2xodr.lane_spec import build_lane_spec
 
 def main():
+    import yaml
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True, help="directory containing CSVs")
     ap.add_argument("--output", required=True, help="path to output .xodr")
