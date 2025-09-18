@@ -1,6 +1,13 @@
 import argparse
 import json
 import os
+import sys
+from pathlib import Path
+
+if __package__ is None or __package__ == "":
+    ROOT = Path(__file__).resolve().parents[1]
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
 
 from csv2xodr.ingest.loader import load_all
 from csv2xodr.normalize.core import build_centerline
@@ -34,7 +41,18 @@ def main():
     # write xodr
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     geo_ref = f"LOCAL_XY origin={lat0},{lon0}"
-    write_xodr(center, sections, lane_specs, args.output, geo_ref=geo_ref)
+    output_path = write_xodr(center, sections, lane_specs, args.output, geo_ref=geo_ref)
+
+    output_path = Path(output_path)
+    try:
+        file_size = output_path.stat().st_size
+    except FileNotFoundError:
+        file_size = 0
+    try:
+        with output_path.open("rb") as fh:
+            line_count = sum(1 for _ in fh)
+    except FileNotFoundError:
+        line_count = 0
 
     # stats log
     stats = {
@@ -44,7 +62,13 @@ def main():
             "laneSections": len(lane_specs),
             # +1 center per section; lanes list excludes center(0)
             "lanes_total": sum(len(sec["lanes"]) + 1 for sec in lane_specs)
-        }
+        },
+        "road_length_m": float(center["s"].iloc[-1]) if len(center["s"]) else 0.0,
+        "xodr_file": {
+            "path": str(output_path.resolve()),
+            "size_bytes": file_size,
+            "line_count": line_count,
+        },
     }
     log_path = os.path.join(os.path.dirname(args.output), "report.json")
     with open(log_path, "w", encoding="utf-8") as f:

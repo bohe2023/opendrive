@@ -11,7 +11,8 @@ def build_lane_spec(
 ) -> List[Dict[str, Any]]:
     """Return metadata for each lane section used by the writer."""
 
-    lanes_guess = (lane_topo or {}).get("lanes_guess") or [-1, 1]
+    lanes_guess = (lane_topo or {}).get("lanes_guess") or [1, -1]
+
 
     roadmark_type = "solid"
     if lane_div_df is not None and len(lane_div_df) > 0:

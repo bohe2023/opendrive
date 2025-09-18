@@ -61,12 +61,22 @@ def test_lane_spec_flags_and_writer_links(tmp_path):
     root = ET.parse(out_file).getroot()
     lane_sections = root.find(".//lanes").findall("laneSection")
 
+
+    first_left_lane = lane_sections[0].find("./left/lane")
+    assert first_left_lane is not None
+    assert first_left_lane.attrib["id"] == "1"
+
+
     first_left_link = lane_sections[0].find("./left/lane/link")
     assert first_left_link is not None
     assert first_left_link.find("predecessor") is None
     assert first_left_link.find("successor") is not None
 
-    last_right_link = lane_sections[-1].find("./right/lane/link")
+    right_lanes = lane_sections[-1].findall("./right/lane")
+    assert right_lanes, "expected at least one right lane"
+    assert right_lanes[0].attrib["id"] == "-1"
+
+    last_right_link = right_lanes[0].find("link")
     assert last_right_link is not None
     assert last_right_link.find("predecessor") is not None
     assert last_right_link.find("successor") is None
