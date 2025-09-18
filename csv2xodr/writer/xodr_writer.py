@@ -47,8 +47,8 @@ def write_xodr(centerline, sections, lane_spec_per_section, out_path, geo_ref=No
         left_el = SubElement(ls, "left")
         right_el = SubElement(ls, "right")
 
-        # left lanes: id negative, from outer to inner (e.g., -3,-2,-1)
-        for lane_id in sorted([l for l in sec["lanes"] if l < 0]):
+        # left lanes: id positive, from inner to outer (1..N)
+        for lane_id in sorted([l for l in sec["lanes"] if l > 0]):
             ln = SubElement(left_el, "lane", {"id": str(lane_id), "type": "driving", "level": "false"})
             SubElement(ln, "width", {"sOffset": "0.0", "a": f"{sec['lane_width']:.2f}", "b": "0", "c": "0", "d": "0"})
             SubElement(ln, "roadMark", {"sOffset": "0.0", "type": sec.get("roadMark", "solid"),
@@ -60,8 +60,8 @@ def write_xodr(centerline, sections, lane_spec_per_section, out_path, geo_ref=No
             if sec.get("successor"):
                 SubElement(link, "successor", {"id": str(lane_id)})
 
-        # right lanes: id positive, from inner to outer (1..N)
-        for lane_id in sorted([l for l in sec["lanes"] if l > 0]):
+        # right lanes: id negative, from inner to outer (-1,-2,...)
+        for lane_id in sorted([l for l in sec["lanes"] if l < 0], reverse=True):
             ln = SubElement(right_el, "lane", {"id": str(lane_id), "type": "driving", "level": "false"})
             SubElement(ln, "width", {"sOffset": "0.0", "a": f"{sec['lane_width']:.2f}", "b": "0", "c": "0", "d": "0"})
             SubElement(ln, "roadMark", {"sOffset": "0.0", "type": sec.get("roadMark", "solid"),

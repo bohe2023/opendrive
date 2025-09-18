@@ -1,40 +1,22 @@
 import argparse
 import json
 import os
-import yaml
+import sys
+from pathlib import Path
 
-from ingest.loader import load_all
-from normalize.core import build_centerline
-from topology.core import make_sections, build_lane_topology
-from mapping.core import mark_type_from_division_row
-from writer.xodr_writer import write_xodr
+if __package__ is None or __package__ == "":
+    ROOT = Path(__file__).resolve().parents[1]
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
 
-def build_lane_spec(sections, lane_topo, defaults, lane_div_df):
-    """
-    Build simple per-section lane spec:
-      - lanes: from topology hint (no center(0); writer adds it)
-      - width: default constant for now
-      - roadMark: one type per section (solid/broken basic)
-    """
-    lanes_guess = lane_topo.get("lanes_guess") or [-1, 1]
-
-    roadmark_type = "solid"
-    if lane_div_df is not None and len(lane_div_df) > 0:
-        roadmark_type = mark_type_from_division_row(lane_div_df.iloc[0])
-
-    out = []
-    for sec in sections:
-        out.append({
-            "s0": sec["s0"], "s1": sec["s1"],
-            "lanes": lanes_guess,
-            "lane_width": defaults.get("lane_width_m", 3.5),
-            "roadMark": roadmark_type,
-            "predecessor": True,
-            "successor": True,
-        })
-    return out
+from csv2xodr.ingest.loader import load_all
+from csv2xodr.normalize.core import build_centerline
+from csv2xodr.topology.core import make_sections, build_lane_topology
+from csv2xodr.writer.xodr_writer import write_xodr
+from csv2xodr.lane_spec import build_lane_spec
 
 def main():
+    import yaml
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True, help="directory containing CSVs")
     ap.add_argument("--output", required=True, help="path to output .xodr")
@@ -59,7 +41,18 @@ def main():
     # write xodr
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     geo_ref = f"LOCAL_XY origin={lat0},{lon0}"
-    write_xodr(center, sections, lane_specs, args.output, geo_ref=geo_ref)
+    output_path = write_xodr(center, sections, lane_specs, args.output, geo_ref=geo_ref)
+
+    output_path = Path(output_path)
+    try:
+        file_size = output_path.stat().st_size
+    except FileNotFoundError:
+        file_size = 0
+    try:
+        with output_path.open("rb") as fh:
+            line_count = sum(1 for _ in fh)
+    except FileNotFoundError:
+        line_count = 0
 
     # stats log
     stats = {
@@ -69,7 +62,13 @@ def main():
             "laneSections": len(lane_specs),
             # +1 center per section; lanes list excludes center(0)
             "lanes_total": sum(len(sec["lanes"]) + 1 for sec in lane_specs)
-        }
+        },
+        "road_length_m": float(center["s"].iloc[-1]) if len(center["s"]) else 0.0,
+        "xodr_file": {
+            "path": str(output_path.resolve()),
+            "size_bytes": file_size,
+            "line_count": line_count,
+        },
     }
     log_path = os.path.join(os.path.dirname(args.output), "report.json")
     with open(log_path, "w", encoding="utf-8") as f:

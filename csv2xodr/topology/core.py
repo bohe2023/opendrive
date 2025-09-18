@@ -46,7 +46,7 @@ def build_lane_topology(lane_link_df: pd.DataFrame):
       * We DO NOT include center(0) in lanes_guess; writer will create center.
     """
     if lane_link_df is None or len(lane_link_df) == 0:
-        return {"lanes_guess": [-1, 1], "lane_id_col": None}, []
+        return {"lanes_guess": [1, -1], "lane_id_col": None}, []
 
     cols = list(lane_link_df.columns)
     lane_id_col = [c for c in cols if "Lane ID" in c or c.lower().strip() in ("lane_id", "lane id")]
@@ -55,14 +55,16 @@ def build_lane_topology(lane_link_df: pd.DataFrame):
     lane_num_col = [c for c in cols if "Lane Number" in c or c.lower().startswith("lane number")]
     lane_num_col = lane_num_col[0] if lane_num_col else None
 
-    lanes = [-1, 1]  # fallback 2 lanes
+    lanes = [1, -1]  # fallback 2 lanes (left=positive, right=negative)
     if lane_num_col:
         try:
             n = int(lane_link_df[lane_num_col].iloc[0])
             # guess: n means total including center → left=n//2, right=n - left - 1(center)
             left = max(1, n // 2)
             right = max(1, n - left - 1)
-            lanes = list(range(-left, 0)) + list(range(1, right + 1))  # no center(0)
+            left_ids = list(range(1, left + 1))
+            right_ids = list(range(-1, -right - 1, -1))
+            lanes = left_ids + right_ids  # no center(0)
         except Exception:
             pass
 
