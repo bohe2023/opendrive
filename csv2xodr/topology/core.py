@@ -68,12 +68,18 @@ def _offset_series(df: DataFrame):
     end_cols = [c for c in df.columns if "End Offset" in c]         # End Offset[cm]
     off = None
     end = None
+    base_offset = None
     if off_cols:
         off_values = df[off_cols[0]].astype(float).to_list()
-        off = Series([v / 100.0 for v in off_values], name=off_cols[0], kind="column")
+        off_m = [v / 100.0 for v in off_values]
+        base_offset = min(off_m) if off_m else 0.0
+        off = Series([v - base_offset for v in off_m], name=off_cols[0], kind="column")
     if end_cols:
         end_values = df[end_cols[0]].astype(float).to_list()
-        end = Series([v / 100.0 for v in end_values], name=end_cols[0], kind="column")
+        end_m = [v / 100.0 for v in end_values]
+        if base_offset is None:
+            base_offset = min(end_m) if end_m else 0.0
+        end = Series([v - base_offset for v in end_m], name=end_cols[0], kind="column")
     return off, end
 
 def make_sections(centerline: DataFrame,
@@ -149,7 +155,7 @@ def build_lane_topology(lane_link_df: DataFrame) -> Dict[str, Any]:
         except Exception:
             lane_count = 0
 
-    records: Dict[Tuple[str, int, float, float], Dict[str, Any]] = {}
+    raw_records: List[Dict[str, Any]] = []
     for i in range(len(lane_link_df)):
         row = lane_link_df.iloc[i]
 
@@ -207,27 +213,7 @@ def build_lane_topology(lane_link_df: DataFrame) -> Dict[str, Any]:
                 line_positions[pos] = lid
 
         uid = _compose_lane_uid(base_id, lane_no)
-        key = (base_id, lane_no, start, end)
-        existing = records.get(key)
-        if existing is not None:
-            if existing.get("is_retrans") and not is_retrans:
-                records[key] = {
-                    "uid": uid,
-                    "base_id": base_id,
-                    "lane_no": lane_no,
-                    "start": start,
-                    "end": end,
-                    "width": width,
-                    "left_neighbor": left_neighbor,
-                    "right_neighbor": right_neighbor,
-                    "successors": forward_targets,
-                    "predecessors": backward_targets,
-                    "line_positions": line_positions,
-                    "is_retrans": is_retrans,
-                }
-            continue
-
-        records[key] = {
+        raw_records.append({
             "uid": uid,
             "base_id": base_id,
             "lane_no": lane_no,
@@ -240,7 +226,30 @@ def build_lane_topology(lane_link_df: DataFrame) -> Dict[str, Any]:
             "predecessors": backward_targets,
             "line_positions": line_positions,
             "is_retrans": is_retrans,
-        }
+        })
+
+    if not raw_records:
+        return {"lanes": {}, "groups": {}, "lane_count": lane_count}
+
+    base_offset_m = min(record["start"] for record in raw_records)
+
+    records: Dict[Tuple[str, int, float, float], Dict[str, Any]] = {}
+    for record in raw_records:
+        adj_start = record["start"] - base_offset_m
+        adj_end = record["end"] - base_offset_m
+
+        key = (record["base_id"], record["lane_no"], adj_start, adj_end)
+        updated = dict(record)
+        updated["start"] = adj_start
+        updated["end"] = adj_end
+
+        existing = records.get(key)
+        if existing is not None:
+            if existing.get("is_retrans") and not record["is_retrans"]:
+                records[key] = updated
+            continue
+
+        records[key] = updated
 
     lanes: Dict[str, Dict[str, Any]] = {}
     groups: Dict[str, List[str]] = {}
