@@ -39,7 +39,7 @@ def _build_division_lookup(lane_div_df: Optional[DataFrame]) -> Dict[str, List[D
     if line_id_col is None or start_col is None or end_col is None:
         return {}
 
-    records: Dict[Tuple[str, float, float], Dict[str, Any]] = {}
+    raw_records: List[Dict[str, Any]] = []
     for i in range(len(lane_div_df)):
         row = lane_div_df.iloc[i]
         try:
@@ -71,14 +71,41 @@ def _build_division_lookup(lane_div_df: Optional[DataFrame]) -> Dict[str, List[D
         if is_retrans_col:
             is_retrans = str(row[is_retrans_col]).strip().lower() == "true"
 
-        key = (line_id, start, end)
+        raw_records.append({
+            "line_id": line_id,
+            "start": start,
+            "end": end,
+            "row": row,
+            "width": width,
+            "is_retrans": is_retrans,
+        })
+
+    if not raw_records:
+        return {}
+
+    base_offset_m = min(record["start"] for record in raw_records)
+
+    records: Dict[Tuple[str, float, float], Dict[str, Any]] = {}
+    for record in raw_records:
+        adj_start = record["start"] - base_offset_m
+        adj_end = record["end"] - base_offset_m
+        key = (record["line_id"], adj_start, adj_end)
+
+        data = {
+            "row": record["row"],
+            "width": record["width"],
+            "is_retrans": record["is_retrans"],
+            "s0": adj_start,
+            "s1": adj_end,
+        }
+
         existing = records.get(key)
         if existing is not None:
-            if existing["is_retrans"] and not is_retrans:
-                records[key] = {"row": row, "width": width, "is_retrans": is_retrans}
+            if existing["is_retrans"] and not record["is_retrans"]:
+                records[key] = data
             continue
 
-        records[key] = {"row": row, "width": width, "is_retrans": is_retrans}
+        records[key] = data
 
     grouped: Dict[str, List[Tuple[float, float, Dict[str, Any]]]] = {}
     for (line_id, start, end), data in records.items():
@@ -100,8 +127,8 @@ def _build_division_lookup(lane_div_df: Optional[DataFrame]) -> Dict[str, List[D
 
             mark_type = mark_type_from_division_row(data["row"])
             cleaned.append({
-                "s0": start,
-                "s1": end,
+                "s0": data.get("s0", start),
+                "s1": data.get("s1", end),
                 "type": mark_type,
                 "width": data["width"],
             })
@@ -110,6 +137,7 @@ def _build_division_lookup(lane_div_df: Optional[DataFrame]) -> Dict[str, List[D
             lookup[line_id] = cleaned
 
     return lookup
+
 
 
 def build_lane_spec(
