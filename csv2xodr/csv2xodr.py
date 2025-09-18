@@ -41,7 +41,7 @@ def main():
     sections = make_sections(center, dfs["lane_link"], dfs["lane_division"])
 
     # lane topology hints (no center id in the guess)
-    lane_topo, uniq_lane_ids = build_lane_topology(dfs["lane_link"])
+    lane_topo = build_lane_topology(dfs["lane_link"])
 
     # per-section spec (width/roadMark/topology flags)
     lane_specs = build_lane_spec(sections, lane_topo, cfg.get("defaults", {}), dfs["lane_division"])
@@ -68,8 +68,9 @@ def main():
         "output_counts": {
             "roads": 1,
             "laneSections": len(lane_specs),
-            # +1 center per section; lanes list excludes center(0)
-            "lanes_total": sum(len(sec["lanes"]) + 1 for sec in lane_specs)
+            "lanes_total": sum(
+                1 + len(sec.get("left", [])) + len(sec.get("right", [])) for sec in lane_specs
+            ),
         },
         "road_length_m": float(center["s"].iloc[-1]) if len(center["s"]) else 0.0,
         "xodr_file": {

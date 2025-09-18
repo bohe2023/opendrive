@@ -40,38 +40,42 @@ def write_xodr(centerline, sections, lane_spec_per_section, out_path, geo_ref=No
     for sec in lane_spec_per_section:
         ls = SubElement(lanes, "laneSection", {"s": f"{sec['s0']:.3f}"})
 
-        # center lane (id=0) – create only once per section
         center_el = SubElement(ls, "center")
         SubElement(center_el, "lane", {"id": "0", "type": "driving", "level": "false"})
 
         left_el = SubElement(ls, "left")
         right_el = SubElement(ls, "right")
 
-        # left lanes: id positive, from inner to outer (1..N)
-        for lane_id in sorted([l for l in sec["lanes"] if l > 0]):
-            ln = SubElement(left_el, "lane", {"id": str(lane_id), "type": "driving", "level": "false"})
-            SubElement(ln, "width", {"sOffset": "0.0", "a": f"{sec['lane_width']:.2f}", "b": "0", "c": "0", "d": "0"})
-            SubElement(ln, "roadMark", {"sOffset": "0.0", "type": sec.get("roadMark", "solid"),
-                                         "weight": "standard", "width": "0.12", "color": "standard",
-                                         "laneChange": "both"})
-            link = SubElement(ln, "link")
-            if sec.get("predecessor"):
-                SubElement(link, "predecessor", {"id": str(lane_id)})
-            if sec.get("successor"):
-                SubElement(link, "successor", {"id": str(lane_id)})
+        def _write_lane(parent, lane_data):
+            lane_id = lane_data["id"]
+            ln = SubElement(parent, "lane", {"id": str(lane_id), "type": "driving", "level": "false"})
+            width = float(lane_data.get("width", 3.5))
+            SubElement(ln, "width", {"sOffset": "0.0", "a": f"{width:.3f}", "b": "0", "c": "0", "d": "0"})
+            road_mark = lane_data.get("roadMark") or {"type": "solid", "width": 0.12, "laneChange": "both"}
+            rm_attrs = {
+                "sOffset": "0.0",
+                "type": str(road_mark.get("type", "solid")),
+                "weight": str(road_mark.get("weight", "standard")),
+                "width": f"{float(road_mark.get('width', 0.12)):.3f}",
+                "color": str(road_mark.get("color", "standard")),
+                "laneChange": str(road_mark.get("laneChange", "both")),
+            }
+            SubElement(ln, "roadMark", rm_attrs)
 
-        # right lanes: id negative, from inner to outer (-1,-2,...)
-        for lane_id in sorted([l for l in sec["lanes"] if l < 0], reverse=True):
-            ln = SubElement(right_el, "lane", {"id": str(lane_id), "type": "driving", "level": "false"})
-            SubElement(ln, "width", {"sOffset": "0.0", "a": f"{sec['lane_width']:.2f}", "b": "0", "c": "0", "d": "0"})
-            SubElement(ln, "roadMark", {"sOffset": "0.0", "type": sec.get("roadMark", "solid"),
-                                         "weight": "standard", "width": "0.12", "color": "standard",
-                                         "laneChange": "both"})
-            link = SubElement(ln, "link")
-            if sec.get("predecessor"):
-                SubElement(link, "predecessor", {"id": str(lane_id)})
-            if sec.get("successor"):
-                SubElement(link, "successor", {"id": str(lane_id)})
+            predecessors = lane_data.get("predecessors") or []
+            successors = lane_data.get("successors") or []
+            if predecessors or successors:
+                link = SubElement(ln, "link")
+                for pid in predecessors:
+                    SubElement(link, "predecessor", {"id": str(pid)})
+                for sid in successors:
+                    SubElement(link, "successor", {"id": str(sid)})
+
+        for lane_data in sec.get("left", []):
+            _write_lane(left_el, lane_data)
+
+        for lane_data in sec.get("right", []):
+            _write_lane(right_el, lane_data)
 
     with open(out_path, "wb") as f:
         f.write(_pretty(odr))
