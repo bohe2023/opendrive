@@ -10,7 +10,7 @@ if __package__ is None or __package__ == "":
         sys.path.insert(0, str(ROOT))
 
 from csv2xodr.ingest.loader import load_all
-from csv2xodr.normalize.core import build_centerline
+from csv2xodr.normalize.core import build_centerline, build_offset_mapper
 from csv2xodr.topology.core import make_sections, build_lane_topology
 from csv2xodr.writer.xodr_writer import write_xodr
 from csv2xodr.lane_spec import build_lane_spec
@@ -36,15 +36,22 @@ def main():
 
     # planView (centerline) from line geometry + geo origin
     center, (lat0, lon0) = build_centerline(dfs["line_geometry"], dfs["map_base_point"])
+    offset_mapper = build_offset_mapper(center)
 
     # lane sections (from offsets)
-    sections = make_sections(center, dfs["lane_link"], dfs["lane_division"])
+    sections = make_sections(center, dfs["lane_link"], dfs["lane_division"], offset_mapper=offset_mapper)
 
     # lane topology hints (no center id in the guess)
-    lane_topo = build_lane_topology(dfs["lane_link"])
+    lane_topo = build_lane_topology(dfs["lane_link"], offset_mapper=offset_mapper)
 
     # per-section spec (width/roadMark/topology flags)
-    lane_specs = build_lane_spec(sections, lane_topo, cfg.get("defaults", {}), dfs["lane_division"])
+    lane_specs = build_lane_spec(
+        sections,
+        lane_topo,
+        cfg.get("defaults", {}),
+        dfs["lane_division"],
+        offset_mapper=offset_mapper,
+    )
 
     # write xodr
     os.makedirs(os.path.dirname(args.output), exist_ok=True)

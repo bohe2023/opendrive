@@ -3,6 +3,7 @@
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from csv2xodr.mapping.core import mark_type_from_division_row
+
 from csv2xodr.simpletable import DataFrame
 
 
@@ -16,7 +17,8 @@ def _lookup_line_segment(segments: List[Dict[str, Any]], s0: float, s1: float) -
     return segments[0] if segments else None
 
 
-def _build_division_lookup(lane_div_df: Optional[DataFrame]) -> Dict[str, List[Dict[str, Any]]]:
+def _build_division_lookup(lane_div_df: Optional[DataFrame],
+                           offset_mapper=None) -> Dict[str, List[Dict[str, Any]]]:
     if lane_div_df is None or len(lane_div_df) == 0:
         return {}
 
@@ -91,12 +93,18 @@ def _build_division_lookup(lane_div_df: Optional[DataFrame]) -> Dict[str, List[D
         adj_end = record["end"] - base_offset_m
         key = (record["line_id"], adj_start, adj_end)
 
+        mapped_start = adj_start
+        mapped_end = adj_end
+        if offset_mapper is not None:
+            mapped_start = offset_mapper(mapped_start)
+            mapped_end = offset_mapper(mapped_end)
+
         data = {
             "row": record["row"],
             "width": record["width"],
             "is_retrans": record["is_retrans"],
-            "s0": adj_start,
-            "s1": adj_end,
+            "s0": mapped_start,
+            "s1": mapped_end,
         }
 
         existing = records.get(key)
@@ -145,6 +153,7 @@ def build_lane_spec(
     lane_topo: Optional[Dict[str, Any]],
     defaults: Dict[str, Any],
     lane_div_df,
+    offset_mapper=None,
 ) -> List[Dict[str, Any]]:
     """Return metadata for each lane section used by the writer."""
 
@@ -196,7 +205,7 @@ def build_lane_spec(
             )
         return out
 
-    division_lookup = _build_division_lookup(lane_div_df)
+    division_lookup = _build_division_lookup(lane_div_df, offset_mapper)
 
     base_ids = sorted(lane_groups.keys())
     lanes_per_base = {base: len(lane_groups[base]) for base in base_ids}
