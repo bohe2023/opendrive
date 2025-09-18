@@ -28,19 +28,45 @@ def build_centerline(df_line_geo: pd.DataFrame, df_base: pd.DataFrame):
     if df_line_geo is None or len(df_line_geo) == 0:
         raise ValueError("line_geometry CSV is required")
 
-    # choose origin
-    if df_base is not None and len(df_base) > 0:
-        lat0 = float(df_base.filter(like="緯度").iloc[0, 0])
-        lon0 = float(df_base.filter(like="経度").iloc[0, 0])
-    else:
-        lat0 = float(df_line_geo.filter(like="緯度").mean(numeric_only=True))
-        lon0 = float(df_line_geo.filter(like="経度").mean(numeric_only=True))
-
     lat_col = df_line_geo.filter(like="緯度").columns[0]
     lon_col = df_line_geo.filter(like="経度").columns[0]
 
     lat = df_line_geo[lat_col].astype(float).to_numpy()
     lon = df_line_geo[lon_col].astype(float).to_numpy()
+
+    # Some datasets interleave multiple Path Id polylines. Stick to the longest one to
+    # avoid creating self-crossing planViews.
+    path_col = _col_like(df_line_geo, "Path")
+    if path_col is not None and df_line_geo[path_col].nunique(dropna=True) > 1:
+        approx_lat0 = float(lat[0])
+        approx_lon0 = float(lon[0])
+        x_tmp, y_tmp = latlon_to_local_xy(lat, lon, approx_lat0, approx_lon0)
+        lengths = {}
+        path_series = df_line_geo[path_col]
+        for pid in path_series.dropna().unique():
+            mask = (path_series == pid).to_numpy()
+            idx = np.flatnonzero(mask)
+            if len(idx) < 2:
+                continue
+            ds = np.hypot(np.diff(x_tmp[idx]), np.diff(y_tmp[idx]))
+            if len(ds):
+                lengths[pid] = float(ds.sum())
+        if lengths:
+            best_pid = max(lengths, key=lengths.get)
+        else:
+            best_pid = path_series.dropna().iloc[0]
+        keep_mask = (path_series == best_pid).to_numpy()
+        df_line_geo = df_line_geo.loc[keep_mask].reset_index(drop=True)
+        lat = lat[keep_mask]
+        lon = lon[keep_mask]
+
+    # choose origin
+    if df_base is not None and len(df_base) > 0:
+        lat0 = float(df_base.filter(like="緯度").iloc[0, 0])
+        lon0 = float(df_base.filter(like="経度").iloc[0, 0])
+    else:
+        lat0 = float(np.mean(lat))
+        lon0 = float(np.mean(lon))
 
     x, y = latlon_to_local_xy(lat, lon, lat0, lon0)
 
