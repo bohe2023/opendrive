@@ -1,6 +1,6 @@
-import pandas as pd
+from csv2xodr.simpletable import Series, notna
 
-def mark_type_from_division_row(row: pd.Series) -> str:
+def mark_type_from_division_row(row: Series) -> str:
     """
     Very rough mapping:
       - if DotLine/破線ペイント is 1 → "broken"
@@ -8,7 +8,7 @@ def mark_type_from_division_row(row: pd.Series) -> str:
       - else "solid"
     """
     for c in row.index:
-        if ("破線" in c or "ペイント" in c) and pd.notna(row[c]):
+        if ("破線" in c or "ペイント" in c) and notna(row[c]):
             try:
                 if int(row[c]) == 1:
                     return "broken"
@@ -16,7 +16,7 @@ def mark_type_from_division_row(row: pd.Series) -> str:
                 pass
 
     for c in row.index:
-        if "種別" in c and pd.notna(row[c]):
+        if "種別" in c and notna(row[c]):
             try:
                 v = int(row[c])
                 return "solid" if v in (1, 2) else "broken"
