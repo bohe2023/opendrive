@@ -31,8 +31,27 @@ def build_centerline(df_line_geo: pd.DataFrame, df_base: pd.DataFrame):
     lat_col = df_line_geo.filter(like="緯度").columns[0]
     lon_col = df_line_geo.filter(like="経度").columns[0]
 
-    lat = df_line_geo[lat_col].astype(float).to_numpy()
-    lon = df_line_geo[lon_col].astype(float).to_numpy()
+    offset_col = _col_like(df_line_geo, "Offset")
+    if offset_col is not None:
+        offsets_series = df_line_geo[offset_col].astype(float)
+    else:
+        offsets_series = None
+
+    # Some providers emit one row per lane boundary for the same longitudinal
+    # offset.  Averaging the duplicated offsets keeps the geometry focused on a
+    # single centerline instead of weaving across multiple boundaries (which
+    # renders as a cross/diamond artifact in the exported OpenDRIVE).
+    if offsets_series is not None and offsets_series.duplicated().any():
+        grouped = (
+            df_line_geo.groupby(offset_col, sort=True)[[lat_col, lon_col]].mean().reset_index()
+        )
+        lat = grouped[lat_col].to_numpy()
+        lon = grouped[lon_col].to_numpy()
+        offsets = grouped[offset_col].to_numpy()
+    else:
+        lat = df_line_geo[lat_col].astype(float).to_numpy()
+        lon = df_line_geo[lon_col].astype(float).to_numpy()
+        offsets = offsets_series.to_numpy() if offsets_series is not None else None
 
     # Some datasets interleave multiple Path Id polylines. Stick to the longest one to
     # avoid creating self-crossing planViews.
@@ -80,5 +99,16 @@ def build_centerline(df_line_geo: pd.DataFrame, df_base: pd.DataFrame):
         hdg[i - 1] = math.atan2(dy, dx)
     if len(hdg) > 1:
         hdg[-1] = hdg[-2]
+
+    if offsets is not None and len(offsets) == len(s):
+        offsets = np.asarray(offsets, dtype=float)
+        if len(offsets):
+            offsets = offsets - offsets[0]
+            if s[-1] > 0 and offsets[-1] > 0:
+                ratio = offsets[-1] / s[-1]
+                if ratio > 10.0:
+                    offsets = offsets * 0.01
+            s = offsets
+
     center = pd.DataFrame({"s": s, "x": x, "y": y, "hdg": hdg})
     return center, (lat0, lon0)
