@@ -16,14 +16,22 @@ from csv2xodr.writer.xodr_writer import write_xodr
 from csv2xodr.lane_spec import build_lane_spec
 
 def main():
-    import yaml
+    try:
+        import yaml  # type: ignore
+    except ModuleNotFoundError:  # pragma: no cover - optional dependency
+        yaml = None
+        from csv2xodr.mini_yaml import load as mini_yaml_load
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True, help="directory containing CSVs")
     ap.add_argument("--output", required=True, help="path to output .xodr")
     ap.add_argument("--config", default="config.yaml")
     args = ap.parse_args()
 
-    cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
+    if yaml is not None:
+        with open(args.config, encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh)
+    else:
+        cfg = mini_yaml_load(args.config)
     dfs = load_all(args.input, cfg)
 
     # planView (centerline) from line geometry + geo origin

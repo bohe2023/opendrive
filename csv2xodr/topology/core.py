@@ -1,17 +1,23 @@
-import pandas as pd
+from csv2xodr.simpletable import DataFrame, Series
 
-def _offset_series(df: pd.DataFrame):
+def _offset_series(df: DataFrame):
     if df is None or len(df) == 0:
         return None, None
     off_cols = [c for c in df.columns if "Offset" in c]             # Offset[cm]
     end_cols = [c for c in df.columns if "End Offset" in c]         # End Offset[cm]
-    off = df[off_cols[0]].astype(float) / 100.0 if off_cols else None
-    end = df[end_cols[0]].astype(float) / 100.0 if end_cols else None
+    off = None
+    end = None
+    if off_cols:
+        off_values = df[off_cols[0]].astype(float).to_list()
+        off = Series([v / 100.0 for v in off_values], name=off_cols[0], kind="column")
+    if end_cols:
+        end_values = df[end_cols[0]].astype(float).to_list()
+        end = Series([v / 100.0 for v in end_values], name=end_cols[0], kind="column")
     return off, end
 
-def make_sections(centerline: pd.DataFrame,
-                  lane_link_df: pd.DataFrame = None,
-                  lane_div_df: pd.DataFrame = None,
+def make_sections(centerline: DataFrame,
+                  lane_link_df: DataFrame = None,
+                  lane_div_df: DataFrame = None,
                   min_len: float = 0.01):
     """
     Collect split points from lane_link/lane_div offsets (in meters),
@@ -36,7 +42,7 @@ def make_sections(centerline: pd.DataFrame,
             sections.append({"s0": s0, "s1": s1})
     return sections
 
-def build_lane_topology(lane_link_df: pd.DataFrame):
+def build_lane_topology(lane_link_df: DataFrame):
     """
     Return:
       - lane topology hints dict (lanes_guess: list[int], lane_id_col: str)
@@ -68,5 +74,5 @@ def build_lane_topology(lane_link_df: pd.DataFrame):
         except Exception:
             pass
 
-    unique_ids = pd.unique(lane_link_df[lane_id_col]).tolist() if lane_id_col else []
+    unique_ids = lane_link_df[lane_id_col].unique() if lane_id_col else []
     return {"lanes_guess": lanes, "lane_id_col": lane_id_col}, unique_ids
