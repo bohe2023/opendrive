@@ -1,5 +1,5 @@
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from csv2xodr.simpletable import DataFrame, Series
 
@@ -85,21 +85,39 @@ def _offset_series(df: DataFrame):
 def make_sections(centerline: DataFrame,
                   lane_link_df: DataFrame = None,
                   lane_div_df: DataFrame = None,
-                  min_len: float = 0.01):
+                  min_len: float = 0.01,
+                  offset_mapper: Optional[Callable[[float], float]] = None):
     """
     Collect split points from lane_link/lane_div offsets (in meters),
     produce lane sections [s0, s1).
     """
-    splits = set([0.0, float(centerline["s"].iloc[-1])])
+    total_len = float(centerline["s"].iloc[-1])
+    splits = set([0.0, total_len])
+
+    def _map_value(value: Optional[float]) -> Optional[float]:
+        if value is None:
+            return None
+        mapped = float(value)
+        if offset_mapper is not None:
+            mapped = offset_mapper(mapped)
+        if mapped < 0.0:
+            mapped = 0.0
+        if mapped > total_len:
+            mapped = total_len
+        return mapped
 
     for df in (lane_link_df, lane_div_df):
         off, end = _offset_series(df)
         if off is not None:
             for v in off.values:
-                splits.add(float(v))
+                mapped = _map_value(v)
+                if mapped is not None:
+                    splits.add(mapped)
         if end is not None:
             for v in end.values:
-                splits.add(float(v))
+                mapped = _map_value(v)
+                if mapped is not None:
+                    splits.add(mapped)
 
     splits = sorted(splits)
     sections = []
@@ -109,7 +127,8 @@ def make_sections(centerline: DataFrame,
             sections.append({"s0": s0, "s1": s1})
     return sections
 
-def build_lane_topology(lane_link_df: DataFrame) -> Dict[str, Any]:
+def build_lane_topology(lane_link_df: DataFrame,
+                        offset_mapper: Optional[Callable[[float], float]] = None) -> Dict[str, Any]:
     """Parse lane link CSV into lane-centric topology information."""
 
     if lane_link_df is None or len(lane_link_df) == 0:
@@ -239,9 +258,15 @@ def build_lane_topology(lane_link_df: DataFrame) -> Dict[str, Any]:
         adj_end = record["end"] - base_offset_m
 
         key = (record["base_id"], record["lane_no"], adj_start, adj_end)
+        mapped_start = adj_start
+        mapped_end = adj_end
+        if offset_mapper is not None:
+            mapped_start = offset_mapper(mapped_start)
+            mapped_end = offset_mapper(mapped_end)
+
         updated = dict(record)
-        updated["start"] = adj_start
-        updated["end"] = adj_end
+        updated["start"] = mapped_start
+        updated["end"] = mapped_end
 
         existing = records.get(key)
         if existing is not None:

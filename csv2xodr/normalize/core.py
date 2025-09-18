@@ -1,5 +1,5 @@
 import math
-from typing import Iterable, List, Tuple
+from typing import Callable, Iterable, List, Tuple
 
 from csv2xodr.simpletable import DataFrame
 
@@ -108,6 +108,7 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
     if len(hdg) > 1:
         hdg[-1] = hdg[-2]
 
+    offsets_column = None
     if offsets is not None and len(offsets) == len(s):
         offsets_f = [float(v) for v in offsets]
         if offsets_f:
@@ -117,7 +118,47 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
                 ratio = offsets_norm[-1] / s[-1]
                 if ratio > 10.0:
                     offsets_norm = [v * 0.01 for v in offsets_norm]
-            s = offsets_norm
+            offsets_column = offsets_norm
 
-    center = DataFrame({"s": s, "x": x, "y": y, "hdg": hdg})
+    data = {"s": s, "x": x, "y": y, "hdg": hdg}
+    if offsets_column is not None:
+        data["s_offset"] = offsets_column
+
+    center = DataFrame(data)
     return center, (lat0, lon0)
+
+
+def build_offset_mapper(centerline: DataFrame) -> Callable[[float], float]:
+    """Return a callable that maps CSV offsets to centreline arc-length."""
+
+    if "s_offset" not in centerline.columns:
+        return lambda value: float(value)
+
+    offsets = [float(v) for v in centerline["s_offset"].to_list()]
+    s_vals = [float(v) for v in centerline["s"].to_list()]
+
+    if not offsets or len(offsets) != len(s_vals):
+        return lambda value: float(value)
+
+    def mapper(value: float) -> float:
+        if not isinstance(value, (int, float)):
+            try:
+                value = float(value)
+            except Exception:  # pragma: no cover - defensive
+                return s_vals[0]
+
+        if value <= offsets[0]:
+            return s_vals[0]
+
+        for i in range(1, len(offsets)):
+            lo = offsets[i - 1]
+            hi = offsets[i]
+            if value <= hi:
+                if hi <= lo:
+                    return s_vals[i]
+                t = (value - lo) / (hi - lo)
+                return s_vals[i - 1] + t * (s_vals[i] - s_vals[i - 1])
+
+        return s_vals[-1]
+
+    return mapper
