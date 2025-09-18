@@ -13,6 +13,7 @@ def build_lane_spec(
 
     lanes_guess = (lane_topo or {}).get("lanes_guess") or [1, -1]
 
+
     roadmark_type = "solid"
     if lane_div_df is not None and len(lane_div_df) > 0:
         from csv2xodr.mapping.core import mark_type_from_division_row

@@ -61,9 +61,11 @@ def test_lane_spec_flags_and_writer_links(tmp_path):
     root = ET.parse(out_file).getroot()
     lane_sections = root.find(".//lanes").findall("laneSection")
 
+
     first_left_lane = lane_sections[0].find("./left/lane")
     assert first_left_lane is not None
     assert first_left_lane.attrib["id"] == "1"
+
 
     first_left_link = lane_sections[0].find("./left/lane/link")
     assert first_left_link is not None
