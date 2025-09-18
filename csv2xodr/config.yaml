@@ -1,0 +1,32 @@
+encoding_priority:
+  - utf-8
+  - cp932
+  - gb18030
+
+files:
+  map_base_point: PROFILE_MPU_MAP_DATA_BASE_POINT.csv
+  line_geometry: PROFILETYPE_MPU_LINE_GEOMETRY.csv
+  lanes_geometry: LanesGeometryProfile.csv
+  curvature: PROFILETYPE_MPU_ZGM_CURVATURE.csv
+  slope: PROFILETYPE_MPU_ZGM_SLOPE.csv
+  lane_link: PROFILETYPE_MPU_ZGM_LANE_LINK_INFO.csv
+  lane_division: PROFILETYPE_MPU_ZGM_LANE_DIVISION_LINE.csv
+  dotline: DotLinePaintInfoProfile.csv
+  shoulder_width: PROFILETYPE_MPU_ZGM_SHOULDER_WIDTH.csv
+  sign: PROFILETYPE_MPU_ZGM_SIGN_INFO.csv
+
+units:
+  cm_to_m: true
+  deg_to_rad: true
+
+defaults:
+  lane_width_m: 3.5
+  shoulder_width_m: 0.5
+
+dedupe:
+  enabled: true
+  ds_thresh: 0.001      # meters
+  dt_thresh: 0.05       # seconds (future use)
+
+coord:
+  base: local-xy         # future: utm

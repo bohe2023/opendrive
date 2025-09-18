@@ -1,0 +1,25 @@
+{
+  "input_counts": {
+    "map_base_point": 38,
+    "line_geometry": 3386,
+    "lanes_geometry": 1948,
+    "curvature": 1912,
+    "slope": 1912,
+    "lane_link": 114,
+    "lane_division": 228,
+    "dotline": 76,
+    "shoulder_width": 1274,
+    "sign": 16
+  },
+  "output_counts": {
+    "roads": 1,
+    "laneSections": 21,
+    "lanes_total": 44,
+    "roadMark_segments_total": 23
+  },
+  "size_bytes": {
+    "input_csv_total": 1048133,
+    "output_xodr": 6330,
+    "ratio_output_to_input": 0.006039
+  }
+}
