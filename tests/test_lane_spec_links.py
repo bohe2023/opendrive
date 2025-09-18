@@ -48,12 +48,50 @@ def test_lane_spec_flags_and_writer_links(tmp_path):
         {"s0": 5.0, "s1": 10.0},
     ]
 
-    lane_specs = build_lane_spec(sections, lane_topo={}, defaults={}, lane_div_df=None)
+    lane_topology = {
+        "lane_count": 2,
+        "groups": {
+            "A": ["A:1"],
+            "B": ["B:1"],
+        },
+        "lanes": {
+            "A:1": {
+                "base_id": "A",
+                "lane_no": 1,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 10.0,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                    }
+                ],
+            },
+            "B:1": {
+                "base_id": "B",
+                "lane_no": 1,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 10.0,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                    }
+                ],
+            },
+        },
+    }
 
-    assert lane_specs[0]["predecessor"] is False
-    assert lane_specs[0]["successor"] is True
-    assert lane_specs[1]["predecessor"] is True
-    assert lane_specs[1]["successor"] is False
+    lane_specs = build_lane_spec(sections, lane_topology, defaults={}, lane_div_df=None)
+
+    assert lane_specs[0]["left"][0]["successors"] == [1]
+    assert lane_specs[0]["left"][0]["predecessors"] == []
+    assert lane_specs[1]["left"][0]["predecessors"] == [1]
+    assert lane_specs[1]["left"][0]["successors"] == []
 
     out_file = Path(tmp_path) / "lane_links.xodr"
     write_xodr(_make_centerline(), sections, lane_specs, out_file)
@@ -61,16 +99,14 @@ def test_lane_spec_flags_and_writer_links(tmp_path):
     root = ET.parse(out_file).getroot()
     lane_sections = root.find(".//lanes").findall("laneSection")
 
-
     first_left_lane = lane_sections[0].find("./left/lane")
     assert first_left_lane is not None
     assert first_left_lane.attrib["id"] == "1"
 
-
     first_left_link = lane_sections[0].find("./left/lane/link")
     assert first_left_link is not None
     assert first_left_link.find("predecessor") is None
-    assert first_left_link.find("successor") is not None
+    assert first_left_link.find("successor").attrib["id"] == "1"
 
     right_lanes = lane_sections[-1].findall("./right/lane")
     assert right_lanes, "expected at least one right lane"
@@ -78,5 +114,5 @@ def test_lane_spec_flags_and_writer_links(tmp_path):
 
     last_right_link = right_lanes[0].find("link")
     assert last_right_link is not None
-    assert last_right_link.find("predecessor") is not None
+    assert last_right_link.find("predecessor").attrib["id"] == "-1"
     assert last_right_link.find("successor") is None

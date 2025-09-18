@@ -1,4 +1,65 @@
+from decimal import Decimal, InvalidOperation
+from typing import Any, Dict, List, Optional, Tuple
+
 from csv2xodr.simpletable import DataFrame, Series
+
+
+def _canonical_numeric(value: Any, *, allow_negative: bool = False) -> Optional[str]:
+    """Return a stable string representation for identifier-like values."""
+
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        value = int(value)
+    s = str(value).strip()
+    if s == "" or s.lower() == "nan":
+        return None
+    if s in {"0", "0.0"}:
+        return None
+    if not allow_negative and s in {"-1", "-1.0"}:
+        return None
+    try:
+        dec = Decimal(s)
+    except InvalidOperation:
+        return s
+    if dec == 0:
+        return None
+    if not allow_negative and dec == -1:
+        return None
+    if dec == int(dec):
+        return str(int(dec))
+    return format(dec.normalize(), "f")
+
+
+def _to_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if s == "" or s.lower() == "nan":
+        return None
+    try:
+        return float(Decimal(s))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _cm_to_m(value: Any) -> Optional[float]:
+    val = _to_float(value)
+    if val is None:
+        return None
+    return val / 100.0
+
+
+def _compose_lane_uid(base_id: str, lane_no: int) -> str:
+    return f"{base_id}:{lane_no}"
+
+
+def _find_column(columns: List[str], *keywords: str) -> Optional[str]:
+    for col in columns:
+        stripped = col.strip()
+        if all(keyword in stripped for keyword in keywords):
+            return col
+    return None
 
 def _offset_series(df: DataFrame):
     if df is None or len(df) == 0:
@@ -42,37 +103,200 @@ def make_sections(centerline: DataFrame,
             sections.append({"s0": s0, "s1": s1})
     return sections
 
-def build_lane_topology(lane_link_df: DataFrame):
-    """
-    Return:
-      - lane topology hints dict (lanes_guess: list[int], lane_id_col: str)
-      - unique lane IDs list (for future fine mapping)
-    Rules:
-      * If "Lane Number" column exists, we guess left/right counts.
-      * We DO NOT include center(0) in lanes_guess; writer will create center.
-    """
+def build_lane_topology(lane_link_df: DataFrame) -> Dict[str, Any]:
+    """Parse lane link CSV into lane-centric topology information."""
+
     if lane_link_df is None or len(lane_link_df) == 0:
-        return {"lanes_guess": [1, -1], "lane_id_col": None}, []
+        return {"lanes": {}, "groups": {}, "lane_count": 0}
 
     cols = list(lane_link_df.columns)
-    lane_id_col = [c for c in cols if "Lane ID" in c or c.lower().strip() in ("lane_id", "lane id")]
-    lane_id_col = lane_id_col[0] if lane_id_col else cols[-1]
 
-    lane_num_col = [c for c in cols if "Lane Number" in c or c.lower().startswith("lane number")]
-    lane_num_col = lane_num_col[0] if lane_num_col else None
+    start_col = _find_column(cols, "Offset")
+    end_col = _find_column(cols, "End", "Offset")
+    lane_id_col = _find_column(cols, "レーンID") or _find_column(cols, "Lane", "ID")
+    lane_no_col = _find_column(cols, "レーン番号") or _find_column(cols, "Lane", "番号")
+    lane_count_col = _find_column(cols, "Lane", "Number")
+    width_col = _find_column(cols, "幅員")
+    is_retrans_col = _find_column(cols, "Is", "Retransmission")
+    left_col = _find_column(cols, "左側車線")
+    right_col = _find_column(cols, "右側車線")
+    forward_cols = [c for c in cols if "前方レーンID" in c and "数" not in c]
+    backward_cols = [c for c in cols if "後方レーンID" in c and "数" not in c]
 
-    lanes = [1, -1]  # fallback 2 lanes (left=positive, right=negative)
-    if lane_num_col:
+    line_id_cols: List[Tuple[int, str]] = []
+    line_pos_cols: Dict[int, str] = {}
+    for col in cols:
+        stripped = col.strip()
+        if "ライン型地物ID" in stripped:
+            try:
+                idx = int(stripped.split("(")[1].split(")")[0])
+            except Exception:
+                continue
+            line_id_cols.append((idx, col))
+        if "位置種別" in stripped:
+            try:
+                idx = int(stripped.split("(")[1].split(")")[0])
+            except Exception:
+                continue
+            line_pos_cols[idx] = col
+
+    line_id_cols.sort(key=lambda x: x[0])
+
+    lane_count = 0
+    if lane_count_col is not None:
         try:
-            n = int(lane_link_df[lane_num_col].iloc[0])
-            # guess: n means total including center → left=n//2, right=n - left - 1(center)
-            left = max(1, n // 2)
-            right = max(1, n - left - 1)
-            left_ids = list(range(1, left + 1))
-            right_ids = list(range(-1, -right - 1, -1))
-            lanes = left_ids + right_ids  # no center(0)
+            lane_count = int(float(lane_link_df[lane_count_col].iloc[0]))
         except Exception:
-            pass
+            lane_count = 0
 
-    unique_ids = lane_link_df[lane_id_col].unique() if lane_id_col else []
-    return {"lanes_guess": lanes, "lane_id_col": lane_id_col}, unique_ids
+    records: Dict[Tuple[str, int, float, float], Dict[str, Any]] = {}
+    for i in range(len(lane_link_df)):
+        row = lane_link_df.iloc[i]
+
+        start = _cm_to_m(row[start_col]) if start_col else None
+        end = _cm_to_m(row[end_col]) if end_col else None
+        if start is None or end is None:
+            continue
+        if end <= start:
+            continue
+
+        base_id = _canonical_numeric(row[lane_id_col]) if lane_id_col else None
+        lane_no_val = row[lane_no_col] if lane_no_col else None
+        lane_no = None
+        if lane_no_val is not None:
+            try:
+                lane_no = int(float(str(lane_no_val).strip()))
+            except Exception:
+                lane_no = None
+        if base_id is None or lane_no is None:
+            continue
+
+        width = _cm_to_m(row[width_col]) if width_col else None
+        is_retrans = False
+        if is_retrans_col:
+            is_retrans = str(row[is_retrans_col]).strip().lower() == "true"
+
+        left_neighbor = _canonical_numeric(row[left_col]) if left_col else None
+        right_neighbor = _canonical_numeric(row[right_col]) if right_col else None
+
+        forward_targets = []
+        for col in forward_cols:
+            tid = _canonical_numeric(row[col])
+            if tid:
+                forward_targets.append(tid)
+        backward_targets = []
+        for col in backward_cols:
+            tid = _canonical_numeric(row[col])
+            if tid:
+                backward_targets.append(tid)
+
+        line_positions: Dict[int, str] = {}
+        for idx, col in line_id_cols:
+            lid = _canonical_numeric(row[col], allow_negative=True)
+            if not lid or lid in {"-1"}:
+                continue
+            pos_col = line_pos_cols.get(idx)
+            pos_val = row[pos_col] if pos_col else None
+            try:
+                pos = int(float(str(pos_val).strip())) if pos_val is not None else None
+            except Exception:
+                pos = None
+            if pos is None:
+                continue
+            if pos not in line_positions:
+                line_positions[pos] = lid
+
+        uid = _compose_lane_uid(base_id, lane_no)
+        key = (base_id, lane_no, start, end)
+        existing = records.get(key)
+        if existing is not None:
+            if existing.get("is_retrans") and not is_retrans:
+                records[key] = {
+                    "uid": uid,
+                    "base_id": base_id,
+                    "lane_no": lane_no,
+                    "start": start,
+                    "end": end,
+                    "width": width,
+                    "left_neighbor": left_neighbor,
+                    "right_neighbor": right_neighbor,
+                    "successors": forward_targets,
+                    "predecessors": backward_targets,
+                    "line_positions": line_positions,
+                    "is_retrans": is_retrans,
+                }
+            continue
+
+        records[key] = {
+            "uid": uid,
+            "base_id": base_id,
+            "lane_no": lane_no,
+            "start": start,
+            "end": end,
+            "width": width,
+            "left_neighbor": left_neighbor,
+            "right_neighbor": right_neighbor,
+            "successors": forward_targets,
+            "predecessors": backward_targets,
+            "line_positions": line_positions,
+            "is_retrans": is_retrans,
+        }
+
+    lanes: Dict[str, Dict[str, Any]] = {}
+    groups: Dict[str, List[str]] = {}
+
+    grouped: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
+    for record in records.values():
+        key = (record["base_id"], record["lane_no"])
+        grouped.setdefault(key, []).append(record)
+
+    for (base_id, lane_no), items in grouped.items():
+        items.sort(key=lambda r: (r["start"], r["end"]))
+        cleaned: List[Dict[str, Any]] = []
+        for item in items:
+            if cleaned:
+                prev = cleaned[-1]
+                if abs(item["start"] - prev["start"]) < 1e-6 and abs(item["end"] - prev["end"]) < 1e-6:
+                    continue
+                if item["start"] < prev["end"]:
+                    adjusted_start = max(prev["end"], item["start"])
+                    if adjusted_start >= item["end"]:
+                        continue
+                    item = dict(item)
+                    item["start"] = adjusted_start
+            cleaned.append(item)
+
+        if not cleaned:
+            continue
+
+        uid = _compose_lane_uid(base_id, lane_no)
+        lanes[uid] = {
+            "base_id": base_id,
+            "lane_no": lane_no,
+            "segments": cleaned,
+        }
+        groups.setdefault(base_id, []).append(uid)
+
+    for lane_list in groups.values():
+        lane_list.sort(key=lambda uid: lanes[uid]["lane_no"])
+
+    # resolve successor/predecessor ids into lane uids where possible
+    all_uids = set(lanes.keys())
+    for lane in lanes.values():
+        for segment in lane["segments"]:
+            lane_no = lane["lane_no"]
+            resolved_successors = []
+            for target in segment["successors"]:
+                candidate = _compose_lane_uid(target, lane_no) if target else None
+                if candidate and candidate in all_uids:
+                    resolved_successors.append(candidate)
+            segment["successors"] = resolved_successors
+
+            resolved_predecessors = []
+            for target in segment["predecessors"]:
+                candidate = _compose_lane_uid(target, lane_no) if target else None
+                if candidate and candidate in all_uids:
+                    resolved_predecessors.append(candidate)
+            segment["predecessors"] = resolved_predecessors
+
+    return {"lanes": lanes, "groups": groups, "lane_count": lane_count}
