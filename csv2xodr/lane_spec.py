@@ -210,14 +210,41 @@ def build_lane_spec(
     base_ids = sorted(lane_groups.keys())
     lanes_per_base = {base: len(lane_groups[base]) for base in base_ids}
 
-    target_left = lane_count // 2 if lane_count else sum(lanes_per_base.values()) // 2
-    left_bases: List[str] = []
-    acc = 0
-    for base in base_ids:
-        if acc < target_left:
-            left_bases.append(base)
-            acc += lanes_per_base[base]
-    right_bases = [base for base in base_ids if base not in left_bases]
+    def _bases_with_sign(sign: int) -> List[str]:
+        selected: List[str] = []
+        for base in base_ids:
+            for uid in lane_groups.get(base, []):
+                lane_no = lane_info.get(uid, {}).get("lane_no")
+                if lane_no is None:
+                    continue
+                if sign > 0 and lane_no > 0:
+                    selected.append(base)
+                    break
+                if sign < 0 and lane_no < 0:
+                    selected.append(base)
+                    break
+        return selected
+
+    positive_bases = _bases_with_sign(1)
+    negative_bases = _bases_with_sign(-1)
+
+    if positive_bases or negative_bases:
+        # When the input data contains explicit lane number signs we rely on
+        # them to determine the side of the reference line.  This avoids
+        # mis-classifying sequential lane groups that belong to the same
+        # carriageway (a frequent pattern in MPUs where lane IDs change along
+        # the path but the driving direction does not).
+        left_bases = sorted(set(positive_bases), key=lambda b: base_ids.index(b))
+        right_bases = sorted(set(negative_bases), key=lambda b: base_ids.index(b))
+    else:
+        target_left = lane_count // 2 if lane_count else sum(lanes_per_base.values()) // 2
+        left_bases = []
+        acc = 0
+        for base in base_ids:
+            if acc < target_left:
+                left_bases.append(base)
+                acc += lanes_per_base[base]
+        right_bases = [base for base in base_ids if base not in left_bases]
     if not left_bases and base_ids:
         left_bases = base_ids[:1]
         right_bases = [base for base in base_ids if base not in left_bases]
@@ -225,19 +252,33 @@ def build_lane_spec(
     lane_id_map: Dict[str, int] = {}
     lane_side_map: Dict[str, str] = {}
 
+    left_id_by_lane_no: Dict[int, int] = {}
     current_id = 1
     for base in left_bases:
-        for uid in reversed(sorted(lane_groups.get(base, []), key=lambda x: lane_info[x]["lane_no"])):
-            lane_id_map[uid] = current_id
+        ordered = reversed(sorted(lane_groups.get(base, []), key=lambda x: lane_info[x]["lane_no"]))
+        for uid in ordered:
+            lane_no = lane_info[uid]["lane_no"]
+            assigned = left_id_by_lane_no.get(lane_no)
+            if assigned is None:
+                assigned = current_id
+                left_id_by_lane_no[lane_no] = assigned
+                current_id += 1
+            lane_id_map[uid] = assigned
             lane_side_map[uid] = "left"
-            current_id += 1
 
+    right_id_by_lane_no: Dict[int, int] = {}
     current_id = -1
     for base in right_bases:
-        for uid in reversed(sorted(lane_groups.get(base, []), key=lambda x: lane_info[x]["lane_no"])):
-            lane_id_map[uid] = current_id
+        ordered = reversed(sorted(lane_groups.get(base, []), key=lambda x: lane_info[x]["lane_no"]))
+        for uid in ordered:
+            lane_no = lane_info[uid]["lane_no"]
+            assigned = right_id_by_lane_no.get(lane_no)
+            if assigned is None:
+                assigned = current_id
+                right_id_by_lane_no[lane_no] = assigned
+                current_id -= 1
+            lane_id_map[uid] = assigned
             lane_side_map[uid] = "right"
-            current_id -= 1
 
     lane_section_map: Dict[Tuple[str, int], Dict[str, Any]] = {}
     lane_section_indices: Dict[str, List[int]] = {uid: [] for uid in lane_id_map}
