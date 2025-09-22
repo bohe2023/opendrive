@@ -71,7 +71,7 @@ def test_lane_spec_flags_and_writer_links(tmp_path):
             },
             "B:1": {
                 "base_id": "B",
-                "lane_no": 1,
+                "lane_no": -1,
                 "segments": [
                     {
                         "start": 0.0,

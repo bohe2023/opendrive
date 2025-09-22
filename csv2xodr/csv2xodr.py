@@ -11,6 +11,7 @@ if __package__ is None or __package__ == "":
 
 from csv2xodr.ingest.loader import load_all
 from csv2xodr.normalize.core import build_centerline, build_offset_mapper
+from csv2xodr.line_geometry import build_line_geometry_lookup
 from csv2xodr.topology.core import make_sections, build_lane_topology
 from csv2xodr.writer.xodr_writer import write_xodr
 from csv2xodr.lane_spec import build_lane_spec
@@ -45,11 +46,15 @@ def main():
     lane_topo = build_lane_topology(dfs["lane_link"], offset_mapper=offset_mapper)
 
     # per-section spec (width/roadMark/topology flags)
+    line_geometry_lookup = build_line_geometry_lookup(
+        dfs["line_geometry"], offset_mapper=offset_mapper, lat0=lat0, lon0=lon0
+    )
     lane_specs = build_lane_spec(
         sections,
         lane_topo,
         cfg.get("defaults", {}),
         dfs["lane_division"],
+        line_geometry_lookup=line_geometry_lookup,
         offset_mapper=offset_mapper,
     )
 

@@ -5,20 +5,115 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from csv2xodr.mapping.core import mark_type_from_division_row
 
 from csv2xodr.simpletable import DataFrame
+from csv2xodr.topology.core import _canonical_numeric
 
 
-def _lookup_line_segment(segments: List[Dict[str, Any]], s0: float, s1: float) -> Optional[Dict[str, Any]]:
+def _clip_geometry_segment(geom: Dict[str, List[float]], s0: float, s1: float) -> Optional[Dict[str, List[float]]]:
+    s_vals = geom.get("s") or []
+    if not s_vals:
+        return None
+
+    x_vals = geom.get("x") or []
+    y_vals = geom.get("y") or []
+    z_vals = geom.get("z") or []
+
+    if len(s_vals) != len(x_vals) or len(s_vals) != len(y_vals) or len(s_vals) != len(z_vals):
+        return None
+
+    def _interpolate(a: float, b: float, ta: float, tb: float, target: float) -> float:
+        if tb == ta:
+            return a
+        t = (target - ta) / (tb - ta)
+        return a + t * (b - a)
+
+    clipped: List[Tuple[float, float, float, float]] = []
+
+    def _append(point: Tuple[float, float, float, float]) -> None:
+        if not clipped or abs(clipped[-1][0] - point[0]) > 1e-6:
+            clipped.append(point)
+
+    for idx in range(len(s_vals) - 1):
+        sa = s_vals[idx]
+        sb = s_vals[idx + 1]
+        xa, xb = x_vals[idx], x_vals[idx + 1]
+        ya, yb = y_vals[idx], y_vals[idx + 1]
+        za, zb = z_vals[idx], z_vals[idx + 1]
+
+        if sb <= s0 or sa >= s1:
+            continue
+
+        if sa < s0 <= sb:
+            x_new = _interpolate(xa, xb, sa, sb, s0)
+            y_new = _interpolate(ya, yb, sa, sb, s0)
+            z_new = _interpolate(za, zb, sa, sb, s0)
+            _append((s0, x_new, y_new, z_new))
+
+        if s0 <= sa <= s1:
+            _append((sa, xa, ya, za))
+
+        if sa < s1 <= sb:
+            x_new = _interpolate(xa, xb, sa, sb, s1)
+            y_new = _interpolate(ya, yb, sa, sb, s1)
+            z_new = _interpolate(za, zb, sa, sb, s1)
+            _append((s1, x_new, y_new, z_new))
+        elif s0 <= sb <= s1:
+            _append((sb, xb, yb, zb))
+
+    if not clipped:
+        if len(s_vals) == 1 and s0 <= s_vals[0] <= s1:
+            clipped.append((s_vals[0], x_vals[0], y_vals[0], z_vals[0]))
+
+    if not clipped:
+        return None
+
+    return {
+        "s": [p[0] for p in clipped],
+        "x": [p[1] for p in clipped],
+        "y": [p[2] for p in clipped],
+        "z": [p[3] for p in clipped],
+    }
+
+
+def _lookup_line_segment(entry: Dict[str, Any], s0: float, s1: float) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, List[float]]]]:
+    segments = entry.get("segments", []) if entry else []
+    selected = None
     for seg in segments:
         if seg["s1"] <= s0:
             continue
         if seg["s0"] >= s1:
             continue
-        return seg
-    return segments[0] if segments else None
+        selected = seg
+        break
+    if selected is None and segments:
+        selected = segments[0]
+
+    geom_segment = None
+    geom_entries = entry.get("geometry", []) if entry else []
+    if geom_entries:
+        clip_start = s0
+        clip_end = s1
+        if selected is not None:
+            clip_start = max(clip_start, selected["s0"])
+            clip_end = min(clip_end, selected["s1"])
+        if clip_end > clip_start:
+            for geom in geom_entries:
+                geom_s = geom.get("s") or []
+                if not geom_s:
+                    continue
+                g0 = min(geom_s)
+                g1 = max(geom_s)
+                if g1 <= clip_start or g0 >= clip_end:
+                    continue
+                geom_segment = _clip_geometry_segment(geom, clip_start, clip_end)
+                if geom_segment is not None:
+                    break
+
+    return selected, geom_segment
 
 
 def _build_division_lookup(lane_div_df: Optional[DataFrame],
-                           offset_mapper=None) -> Dict[str, List[Dict[str, Any]]]:
+                           line_geometry_lookup: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+                           offset_mapper=None) -> Dict[str, Dict[str, Any]]:
     if lane_div_df is None or len(lane_div_df) == 0:
         return {}
 
@@ -53,8 +148,8 @@ def _build_division_lookup(lane_div_df: Optional[DataFrame],
             continue
 
         line_id_raw = row[line_id_col]
-        line_id = str(line_id_raw).strip()
-        if line_id in {"", "0", "0.0", "-1", "-1.0"}:
+        line_id = _canonical_numeric(line_id_raw, allow_negative=True)
+        if line_id is None:
             continue
 
         width_values: List[float] = []
@@ -87,11 +182,10 @@ def _build_division_lookup(lane_div_df: Optional[DataFrame],
 
     base_offset_m = min(record["start"] for record in raw_records)
 
-    records: Dict[Tuple[str, float, float], Dict[str, Any]] = {}
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
     for record in raw_records:
         adj_start = record["start"] - base_offset_m
         adj_end = record["end"] - base_offset_m
-        key = (record["line_id"], adj_start, adj_end)
 
         mapped_start = adj_start
         mapped_end = adj_end
@@ -99,50 +193,61 @@ def _build_division_lookup(lane_div_df: Optional[DataFrame],
             mapped_start = offset_mapper(mapped_start)
             mapped_end = offset_mapper(mapped_end)
 
-        data = {
-            "row": record["row"],
-            "width": record["width"],
-            "is_retrans": record["is_retrans"],
-            "s0": mapped_start,
-            "s1": mapped_end,
-        }
+        grouped.setdefault(record["line_id"], []).append(
+            {
+                "row": record["row"],
+                "width": record["width"],
+                "is_retrans": record["is_retrans"],
+                "s0": mapped_start,
+                "s1": mapped_end,
+            }
+        )
 
-        existing = records.get(key)
-        if existing is not None:
-            if existing["is_retrans"] and not record["is_retrans"]:
-                records[key] = data
-            continue
-
-        records[key] = data
-
-    grouped: Dict[str, List[Tuple[float, float, Dict[str, Any]]]] = {}
-    for (line_id, start, end), data in records.items():
-        grouped.setdefault(line_id, []).append((start, end, data))
-
-    lookup: Dict[str, List[Dict[str, Any]]] = {}
+    lookup: Dict[str, Dict[str, Any]] = {}
     for line_id, segments in grouped.items():
-        segments.sort(key=lambda item: (item[0], item[1]))
+        segments.sort(key=lambda item: (item["s0"], item["s1"]))
         cleaned: List[Dict[str, Any]] = []
-        for start, end, data in segments:
+        for data in segments:
+            start = data["s0"]
+            end = data["s1"]
             if cleaned:
                 prev = cleaned[-1]
-                if abs(prev["s0"] - start) < 1e-6 and abs(prev["s1"] - end) < 1e-6:
+                if (
+                    abs(prev["s0"] - start) < 1e-6
+                    and abs(prev["s1"] - end) < 1e-6
+                ):
+                    if prev.get("is_retrans") and not data.get("is_retrans"):
+                        cleaned[-1] = data
                     continue
                 if start < prev["s1"]:
                     start = max(prev["s1"], start)
                     if start >= end:
                         continue
+                    data = data.copy()
+                    data["s0"] = start
 
             mark_type = mark_type_from_division_row(data["row"])
-            cleaned.append({
-                "s0": data.get("s0", start),
-                "s1": data.get("s1", end),
-                "type": mark_type,
-                "width": data["width"],
-            })
+            cleaned.append(
+                {
+                    "s0": data["s0"],
+                    "s1": data["s1"],
+                    "type": mark_type,
+                    "width": data["width"],
+                    "is_retrans": data.get("is_retrans", False),
+                }
+            )
 
         if cleaned:
-            lookup[line_id] = cleaned
+            for seg in cleaned:
+                seg.pop("is_retrans", None)
+            lookup[line_id] = {
+                "segments": cleaned,
+                "geometry": (line_geometry_lookup or {}).get(line_id, []),
+            }
+
+    if line_geometry_lookup:
+        for line_id, geoms in line_geometry_lookup.items():
+            lookup.setdefault(line_id, {"segments": [], "geometry": geoms})
 
     return lookup
 
@@ -153,6 +258,8 @@ def build_lane_spec(
     lane_topo: Optional[Dict[str, Any]],
     defaults: Dict[str, Any],
     lane_div_df,
+    *,
+    line_geometry_lookup: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     offset_mapper=None,
 ) -> List[Dict[str, Any]]:
     """Return metadata for each lane section used by the writer."""
@@ -205,7 +312,9 @@ def build_lane_spec(
             )
         return out
 
-    division_lookup = _build_division_lookup(lane_div_df, offset_mapper)
+    division_lookup = _build_division_lookup(
+        lane_div_df, line_geometry_lookup=line_geometry_lookup, offset_mapper=offset_mapper
+    )
 
     base_ids = sorted(lane_groups.keys())
     lanes_per_base = {base: len(lane_groups[base]) for base in base_ids}
@@ -355,15 +464,21 @@ def build_lane_spec(
 
             mark = None
             if line_id:
-                mark_segment = _lookup_line_segment(division_lookup.get(line_id, []), s0, s1)
-                if mark_segment:
-                    mark_width = mark_segment.get("width") or 0.12
-                    lane_change = "both" if mark_segment.get("type") != "solid" else "none"
+                segment_entry = division_lookup.get(line_id)
+                mark_segment, geom_segment = _lookup_line_segment(segment_entry, s0, s1)
+                if mark_segment or geom_segment:
+                    mark_width = (mark_segment.get("width") if mark_segment else None) or 0.12
+                    mark_type = mark_segment.get("type") if mark_segment else None
+                    lane_change = "both"
+                    if mark_type == "solid":
+                        lane_change = "none"
                     mark = {
-                        "type": mark_segment.get("type") or "solid",
+                        "type": mark_type or "solid",
                         "width": mark_width,
                         "laneChange": lane_change,
                     }
+                    if geom_segment:
+                        mark["geometry"] = geom_segment
 
             if mark is None:
                 lane_change = "both"
