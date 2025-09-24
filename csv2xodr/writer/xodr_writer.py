@@ -78,6 +78,7 @@ def write_xodr(
                 plan,
                 "geometry",
                 {
+
                     "s": _format_float(seg["s"], precision=9),
                     "x": _format_float(seg["x"], precision=9),
                     "y": _format_float(seg["y"], precision=9),
