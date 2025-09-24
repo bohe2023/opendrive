@@ -79,11 +79,15 @@ def write_xodr(
                 "geometry",
                 {
 
-                    "s": _format_float(seg["s"], precision=9),
-                    "x": _format_float(seg["x"], precision=9),
-                    "y": _format_float(seg["y"], precision=9),
-                    "hdg": _format_float(seg["hdg"], precision=12),
-                    "length": _format_float(seg["length"], precision=9),
+                    # planView 节点之间必须在数值上无缝衔接，否则在 OpenDRIVE
+                    # 查看器中会出现肉眼可见的缝隙。这里将几何参数输出为更高
+                    # 的小数精度，以保留 build_geometry_segments 中累积积分的
+                    # 结果，避免由于字符串截断导致的断裂。
+                    "s": _format_float(seg["s"], precision=12),
+                    "x": _format_float(seg["x"], precision=12),
+                    "y": _format_float(seg["y"], precision=12),
+                    "hdg": _format_float(seg["hdg"], precision=15),
+                    "length": _format_float(seg["length"], precision=12),
                 },
             )
             curvature = float(seg.get("curvature", 0.0))
