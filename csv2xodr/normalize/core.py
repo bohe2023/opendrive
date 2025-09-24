@@ -655,6 +655,43 @@ def build_geometry_segments(
         return 0.0
 
     current_x, current_y, current_hdg = _interpolate_centerline(centerline, ordered_points[0])
+    max_endpoint_deviation = 0.0
+
+    def _advance(curvature: float, length: float, start_x: float, start_y: float, start_hdg: float):
+        if abs(curvature) <= 1e-12:
+            next_x = start_x + length * math.cos(start_hdg)
+            next_y = start_y + length * math.sin(start_hdg)
+            next_hdg = start_hdg
+        else:
+            radius = 1.0 / curvature
+            next_hdg = _normalize_angle(start_hdg + curvature * length)
+            dx = radius * (math.sin(next_hdg) - math.sin(start_hdg))
+            dy = -radius * (math.cos(next_hdg) - math.cos(start_hdg))
+            next_x = start_x + dx
+            next_y = start_y + dy
+        return next_x, next_y, next_hdg
+
+    def _derivatives(curvature: float, length: float, start_hdg: float) -> Tuple[float, float]:
+        if abs(curvature) < 1e-9:
+            # Series expansion around curvature -> 0
+            sin_h = math.sin(start_hdg)
+            cos_h = math.cos(start_hdg)
+            factor = 0.5 * length * length
+            return -factor * sin_h, factor * cos_h
+
+        next_hdg = start_hdg + curvature * length
+        sin_next = math.sin(next_hdg)
+        cos_next = math.cos(next_hdg)
+        sin_curr = math.sin(start_hdg)
+        cos_curr = math.cos(start_hdg)
+        delta_sin = sin_next - sin_curr
+        delta_cos = -cos_next + cos_curr
+        denom = curvature * curvature
+        d_dx = (length * cos_next * curvature - delta_sin) / denom
+        d_dy = (length * sin_next * curvature - delta_cos) / denom
+        return d_dx, d_dy
+
+    max_heading_error = 0.0
 
     for idx in range(len(ordered_points) - 1):
         start = ordered_points[idx]
@@ -662,16 +699,47 @@ def build_geometry_segments(
         length = end - start
         if length <= 1e-6:
             continue
-        curvature_dataset = _curvature_for_interval(start, end)
 
+        curvature = _curvature_for_interval(start, end)
         target_x, target_y, target_hdg = _interpolate_centerline(centerline, end)
 
-        delta_target = _normalize_angle(target_hdg - current_hdg)
-        delta_dataset = curvature_dataset * length
-        if abs(delta_target) > 1e-5 and length > 1e-6:
-            curvature = curvature_dataset + (delta_target - delta_dataset) / length
-        else:
-            curvature = curvature_dataset
+        next_x, next_y, next_hdg = _advance(curvature, length, current_x, current_y, current_hdg)
+
+        # Refine curvature so that the integrated arc ends close to the
+        # surveyed centreline point.  A simple Gauss-Newton iteration keeps the
+        # polynomial planView stable even when the curvature dataset is noisy.
+        best_state = (next_x, next_y, next_hdg, curvature)
+        best_error = math.hypot(next_x - target_x, next_y - target_y)
+
+        for _ in range(8):
+            error_x = target_x - next_x
+            error_y = target_y - next_y
+            error_norm = math.hypot(error_x, error_y)
+            if error_norm <= 0.05:
+                break
+
+            d_dx, d_dy = _derivatives(curvature, length, current_hdg)
+            denom = d_dx * d_dx + d_dy * d_dy
+            if denom <= 1e-18:
+                break
+
+            delta = (error_x * d_dx + error_y * d_dy) / denom
+            # Limit the update so we do not swing the curvature wildly.
+            max_step = 0.1 / max(length, 1.0)
+            if delta > max_step:
+                delta = max_step
+            elif delta < -max_step:
+                delta = -max_step
+
+            curvature += delta
+            next_x, next_y, next_hdg = _advance(curvature, length, current_x, current_y, current_hdg)
+
+            this_error = math.hypot(next_x - target_x, next_y - target_y)
+            if this_error < best_error:
+                best_error = this_error
+                best_state = (next_x, next_y, next_hdg, curvature)
+
+        next_x, next_y, next_hdg, curvature = best_state
 
         segments.append(
             {
@@ -684,26 +752,22 @@ def build_geometry_segments(
             }
         )
 
-        if length > 0:
-            if abs(curvature) <= 1e-12:
-                next_x = current_x + length * math.cos(current_hdg)
-                next_y = current_y + length * math.sin(current_hdg)
-                next_hdg = current_hdg
-            else:
-                radius = 1.0 / curvature
-                next_hdg = _normalize_angle(current_hdg + curvature * length)
-                dx = radius * (math.sin(next_hdg) - math.sin(current_hdg))
-                dy = -radius * (math.cos(next_hdg) - math.cos(current_hdg))
-                next_x = current_x + dx
-                next_y = current_y + dy
-        else:
-            next_x, next_y, next_hdg = current_x, current_y, current_hdg
+        endpoint_error = math.hypot(next_x - target_x, next_y - target_y)
+        heading_error = abs(_normalize_angle(next_hdg - target_hdg))
 
-        if math.hypot(next_x - target_x, next_y - target_y) <= 0.1:
-            current_x, current_y = target_x, target_y
-        else:
-            current_x, current_y = next_x, next_y
-        current_hdg = next_hdg
+        if endpoint_error > max_endpoint_deviation:
+            max_endpoint_deviation = endpoint_error
+        if heading_error > max_heading_error:
+            max_heading_error = heading_error
+
+        current_x, current_y, current_hdg = next_x, next_y, next_hdg
+
+    # If any arc drifts too far away from the surveyed centreline the resulting
+    # planView becomes noticeably distorted which can break downstream
+    # consumers.  Fall back to the original piecewise-linear geometry in that
+    # case.
+    if max_endpoint_deviation > 0.3 or max_heading_error > math.radians(8.0):
+        return []
 
     return segments
 
