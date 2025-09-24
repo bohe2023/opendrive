@@ -345,7 +345,14 @@ def build_curvature_profile(
 
     start_col = _find_column(df_curvature, "offset", exclude=("end",))
     end_col = _find_column(df_curvature, "end", "offset")
-    curvature_col = _find_column(df_curvature, "曲率") or _find_column(df_curvature, "curvature")
+    curvature_col = (
+        _find_column(df_curvature, "曲率", exclude=("レーン", "lane", "情報"))
+        or _find_column(df_curvature, "曲率", "値")
+        or _find_column(df_curvature, "曲率", "rad/m")
+        or _find_column(df_curvature, "curvature", exclude=("lane", "count"))
+        or _find_column(df_curvature, "curvature", "value")
+        or _find_column(df_curvature, "curvature")
+    )
     path_col = _find_column(df_curvature, "path")
     retrans_col = _find_column(df_curvature, "is", "retransmission")
 
