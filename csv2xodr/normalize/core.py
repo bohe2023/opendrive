@@ -1,11 +1,36 @@
 import math
-from typing import Callable, Iterable, List, Tuple, Optional
+from typing import Callable, Iterable, List, Tuple, Optional, Any, Dict
 
 from csv2xodr.simpletable import DataFrame
 
 def _col_like(df: DataFrame, keyword: str):
     cols = [c for c in df.columns if keyword in c]
     return cols[0] if cols else None
+
+
+def _find_column(df: DataFrame, *keywords: str, exclude: Tuple[str, ...] = ()) -> Optional[str]:
+    lowered = [kw.lower() for kw in keywords]
+    excluded = [kw.lower() for kw in exclude]
+    for col in df.columns:
+        stripped = col.strip()
+        value = stripped.lower()
+        if any(block in value for block in excluded):
+            continue
+        if all(keyword in value for keyword in lowered):
+            return col
+    return None
+
+
+def _to_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if text == "" or text.lower() == "nan":
+            return None
+        return float(text)
+    except Exception:  # pragma: no cover - defensive
+        return None
 
 
 def _find_height_column(df: DataFrame) -> Optional[str]:
@@ -228,7 +253,7 @@ def build_elevation_profile(
             if retrans_flag:
                 continue
 
-        if best_path is not None and row[path_col] != best_path:
+        if best_path is not None and path_col is not None and row[path_col] != best_path:
             continue
 
         offset_raw = row[offset_col]
@@ -283,5 +308,368 @@ def build_elevation_profile(
             "c": 0.0,
             "d": 0.0,
         })
+
+    return profile
+
+
+def _select_best_path(df: DataFrame, path_col: Optional[str]) -> Optional[Any]:
+    if path_col is None:
+        return None
+
+    counts: Dict[Any, int] = {}
+    series = df[path_col]
+    for value in series.to_list():
+        if value is None:
+            continue
+        counts[value] = counts.get(value, 0) + 1
+
+    if not counts:
+        return None
+
+    return max(counts, key=counts.get)
+
+
+def _prepare_segment_key(start_m: float, end_m: float) -> Tuple[float, float]:
+    return (round(float(start_m), 4), round(float(end_m), 4))
+
+
+def build_curvature_profile(
+    df_curvature: Optional[DataFrame],
+    *,
+    offset_mapper: Optional[Callable[[float], float]] = None,
+) -> List[Dict[str, float]]:
+    if df_curvature is None or len(df_curvature) == 0:
+        return []
+
+    start_col = _find_column(df_curvature, "offset", exclude=("end",))
+    end_col = _find_column(df_curvature, "end", "offset")
+    curvature_col = _find_column(df_curvature, "曲率") or _find_column(df_curvature, "curvature")
+    path_col = _find_column(df_curvature, "path")
+    retrans_col = _find_column(df_curvature, "is", "retransmission")
+
+    if start_col is None or end_col is None or curvature_col is None:
+        return []
+
+    best_path = _select_best_path(df_curvature, path_col)
+
+    grouped: Dict[Tuple[float, float], List[float]] = {}
+
+    for idx in range(len(df_curvature)):
+        row = df_curvature.iloc[idx]
+
+        if retrans_col is not None:
+            retrans_val = str(row[retrans_col]).strip().lower()
+            if retrans_val == "true":
+                continue
+
+        if best_path is not None and path_col is not None and row[path_col] != best_path:
+            continue
+
+        start_cm = _to_float(row[start_col])
+        end_cm = _to_float(row[end_col])
+        curvature_val = _to_float(row[curvature_col])
+
+        if start_cm is None or end_cm is None or curvature_val is None:
+            continue
+
+        start_m = start_cm * 0.01
+        end_m = end_cm * 0.01
+        if end_m <= start_m:
+            continue
+
+        key = _prepare_segment_key(start_m, end_m)
+        grouped.setdefault(key, []).append(curvature_val)
+
+    if not grouped:
+        return []
+
+    profile: List[Dict[str, float]] = []
+    for (start_m, end_m), values in sorted(grouped.items(), key=lambda item: item[0]):
+        if not values:
+            continue
+        avg_curvature = sum(values) / len(values)
+        s0 = float(offset_mapper(start_m)) if offset_mapper is not None else float(start_m)
+        s1 = float(offset_mapper(end_m)) if offset_mapper is not None else float(end_m)
+        if s1 <= s0:
+            continue
+        profile.append({"s0": s0, "s1": s1, "curvature": avg_curvature})
+
+    return profile
+
+
+def build_slope_profile(
+    df_slope: Optional[DataFrame],
+    *,
+    offset_mapper: Optional[Callable[[float], float]] = None,
+) -> Dict[str, List[Dict[str, float]]]:
+    if df_slope is None or len(df_slope) == 0:
+        return {"longitudinal": [], "superelevation": []}
+
+    start_col = _find_column(df_slope, "offset", exclude=("end",))
+    end_col = _find_column(df_slope, "end", "offset")
+    slope_col = _find_column(df_slope, "縦断勾配") or _find_column(df_slope, "longitudinal", "%")
+    cross_col = _find_column(df_slope, "横断勾配") or _find_column(df_slope, "cross", "%")
+    path_col = _find_column(df_slope, "path")
+    retrans_col = _find_column(df_slope, "is", "retransmission")
+
+    if start_col is None or end_col is None:
+        return {"longitudinal": [], "superelevation": []}
+
+    best_path = _select_best_path(df_slope, path_col)
+
+    grouped: Dict[Tuple[float, float], Dict[str, List[float]]] = {}
+
+    for idx in range(len(df_slope)):
+        row = df_slope.iloc[idx]
+
+        if retrans_col is not None:
+            retrans_val = str(row[retrans_col]).strip().lower()
+            if retrans_val == "true":
+                continue
+
+        if best_path is not None and path_col is not None and row[path_col] != best_path:
+            continue
+
+        start_cm = _to_float(row[start_col])
+        end_cm = _to_float(row[end_col])
+        if start_cm is None or end_cm is None:
+            continue
+
+        start_m = start_cm * 0.01
+        end_m = end_cm * 0.01
+        if end_m <= start_m:
+            continue
+
+        entry = grouped.setdefault(_prepare_segment_key(start_m, end_m), {"grade": [], "cross": []})
+
+        if slope_col is not None:
+            grade_val = _to_float(row[slope_col])
+            if grade_val is not None:
+                entry["grade"].append(grade_val * 0.01)
+
+        if cross_col is not None:
+            cross_val = _to_float(row[cross_col])
+            if cross_val is not None:
+                entry["cross"].append(cross_val * 0.01)
+
+    longitudinal: List[Dict[str, float]] = []
+    superelevation: List[Dict[str, float]] = []
+
+    for (start_m, end_m), values in sorted(grouped.items(), key=lambda item: item[0]):
+        s0 = float(offset_mapper(start_m)) if offset_mapper is not None else float(start_m)
+        s1 = float(offset_mapper(end_m)) if offset_mapper is not None else float(end_m)
+        if s1 <= s0:
+            continue
+
+        if values["grade"]:
+            avg_grade = sum(values["grade"]) / len(values["grade"])
+            longitudinal.append({"s0": s0, "s1": s1, "grade": avg_grade})
+
+        if values["cross"]:
+            avg_cross = sum(values["cross"]) / len(values["cross"])
+            superelevation.append({"s0": s0, "s1": s1, "angle": avg_cross})
+
+    return {"longitudinal": longitudinal, "superelevation": superelevation}
+
+
+def build_elevation_profile_from_slopes(
+    segments: List[Dict[str, float]],
+    *,
+    initial_height: float = 0.0,
+) -> List[Dict[str, float]]:
+    if not segments:
+        return []
+
+    ordered = sorted(segments, key=lambda item: (item["s0"], item.get("s1", item["s0"])))
+
+    profile: List[Dict[str, float]] = []
+    height = float(initial_height)
+    prev_end = ordered[0]["s0"]
+    last_grade = ordered[0]["grade"]
+
+    first_s0 = ordered[0]["s0"]
+    profile.append({"s": first_s0, "a": height, "b": last_grade, "c": 0.0, "d": 0.0})
+
+    prev_end = ordered[0].get("s1", first_s0)
+    if prev_end > first_s0:
+        height += last_grade * (prev_end - first_s0)
+
+    for seg in ordered[1:]:
+        s0 = seg["s0"]
+        s1 = seg.get("s1", s0)
+        grade = seg["grade"]
+
+        if s0 > prev_end:
+            height += last_grade * (s0 - prev_end)
+            prev_end = s0
+        elif s0 < prev_end:
+            s0 = prev_end
+
+        profile.append({"s": s0, "a": height, "b": grade, "c": 0.0, "d": 0.0})
+
+        if s1 > prev_end:
+            height += grade * (s1 - s0)
+            prev_end = s1
+
+        last_grade = grade
+
+    return profile
+
+
+def build_superelevation_profile(segments: List[Dict[str, float]]) -> List[Dict[str, float]]:
+    if not segments:
+        return []
+
+    ordered = sorted(segments, key=lambda item: (item["s0"], item.get("s1", item["s0"])))
+    profile: List[Dict[str, float]] = []
+    for seg in ordered:
+        profile.append({"s": seg["s0"], "a": seg["angle"], "b": 0.0, "c": 0.0, "d": 0.0})
+    return profile
+
+
+def _interpolate_centerline(centerline: DataFrame, target_s: float) -> Tuple[float, float, float]:
+    s_vals = [float(v) for v in centerline["s"].to_list()]
+    x_vals = [float(v) for v in centerline["x"].to_list()]
+    y_vals = [float(v) for v in centerline["y"].to_list()]
+    hdg_vals = [float(v) for v in centerline["hdg"].to_list()]
+
+    if not s_vals:
+        return 0.0, 0.0, 0.0
+
+    if target_s <= s_vals[0]:
+        return x_vals[0], y_vals[0], hdg_vals[0]
+
+    for idx in range(1, len(s_vals)):
+        s_prev = s_vals[idx - 1]
+        s_curr = s_vals[idx]
+        if target_s <= s_curr:
+            span = s_curr - s_prev
+            if span <= 0:
+                return x_vals[idx], y_vals[idx], hdg_vals[idx]
+            t = (target_s - s_prev) / span
+            x = x_vals[idx - 1] + t * (x_vals[idx] - x_vals[idx - 1])
+            y = y_vals[idx - 1] + t * (y_vals[idx] - y_vals[idx - 1])
+            hdg = hdg_vals[idx - 1]
+            return x, y, hdg
+
+    return x_vals[-1], y_vals[-1], hdg_vals[-1]
+
+
+def build_geometry_segments(
+    centerline: DataFrame,
+    curvature_segments: List[Dict[str, float]],
+) -> List[Dict[str, float]]:
+    if not curvature_segments:
+        return []
+
+    total_length = float(centerline["s"].iloc[-1]) if len(centerline) else 0.0
+    if total_length <= 0:
+        return []
+
+    breakpoints = {0.0, total_length}
+    for seg in curvature_segments:
+        s0 = max(0.0, min(total_length, float(seg["s0"])) )
+        s1 = max(0.0, min(total_length, float(seg["s1"])) )
+        breakpoints.add(s0)
+        breakpoints.add(s1)
+
+    ordered_points = sorted(breakpoints)
+    segments: List[Dict[str, float]] = []
+
+    def _curvature_for_interval(start: float, end: float) -> float:
+        mid = (start + end) / 2.0
+        for seg in curvature_segments:
+            if seg["s0"] <= mid <= seg["s1"]:
+                return float(seg["curvature"])
+        return 0.0
+
+    for idx in range(len(ordered_points) - 1):
+        start = ordered_points[idx]
+        end = ordered_points[idx + 1]
+        length = end - start
+        if length <= 1e-6:
+            continue
+        curvature = _curvature_for_interval(start, end)
+        x, y, hdg = _interpolate_centerline(centerline, start)
+        segments.append(
+            {
+                "s": start,
+                "x": x,
+                "y": y,
+                "hdg": hdg,
+                "length": length,
+                "curvature": curvature,
+            }
+        )
+
+    return segments
+
+
+def build_shoulder_profile(
+    df_shoulder: Optional[DataFrame],
+    *,
+    offset_mapper: Optional[Callable[[float], float]] = None,
+) -> List[Dict[str, float]]:
+    if df_shoulder is None or len(df_shoulder) == 0:
+        return []
+
+    start_col = _find_column(df_shoulder, "offset", exclude=("end",))
+    end_col = _find_column(df_shoulder, "end", "offset")
+    left_col = _find_column(df_shoulder, "左", "路肩") or _find_column(df_shoulder, "left")
+    right_col = _find_column(df_shoulder, "右", "路肩") or _find_column(df_shoulder, "right")
+    path_col = _find_column(df_shoulder, "path")
+    retrans_col = _find_column(df_shoulder, "is", "retransmission")
+
+    if start_col is None or end_col is None:
+        return []
+
+    best_path = _select_best_path(df_shoulder, path_col)
+
+    grouped: Dict[Tuple[float, float], Dict[str, List[float]]] = {}
+
+    for idx in range(len(df_shoulder)):
+        row = df_shoulder.iloc[idx]
+
+        if retrans_col is not None:
+            retrans_val = str(row[retrans_col]).strip().lower()
+            if retrans_val == "true":
+                continue
+
+        if best_path is not None and row[path_col] != best_path:
+            continue
+
+        start_cm = _to_float(row[start_col])
+        end_cm = _to_float(row[end_col])
+        if start_cm is None or end_cm is None:
+            continue
+
+        start_m = start_cm * 0.01
+        end_m = end_cm * 0.01
+        if end_m <= start_m:
+            continue
+
+        entry = grouped.setdefault(_prepare_segment_key(start_m, end_m), {"left": [], "right": []})
+
+        if left_col is not None:
+            left_val = _to_float(row[left_col])
+            if left_val is not None:
+                entry["left"].append(left_val * 0.01)
+
+        if right_col is not None:
+            right_val = _to_float(row[right_col])
+            if right_val is not None:
+                entry["right"].append(right_val * 0.01)
+
+    profile: List[Dict[str, float]] = []
+    for (start_m, end_m), values in sorted(grouped.items(), key=lambda item: item[0]):
+        s0 = float(offset_mapper(start_m)) if offset_mapper is not None else float(start_m)
+        s1 = float(offset_mapper(end_m)) if offset_mapper is not None else float(end_m)
+        if s1 <= s0:
+            continue
+
+        left_width = sum(values["left"]) / len(values["left"]) if values["left"] else 0.0
+        right_width = sum(values["right"]) / len(values["right"]) if values["right"] else 0.0
+
+        profile.append({"s0": s0, "s1": s1, "left": left_width, "right": right_width})
 
     return profile

@@ -492,6 +492,7 @@ def build_lane_spec(
                 "roadMark": mark,
                 "predecessors": predecessors,
                 "successors": successors,
+                "type": lane_info[uid].get("type", "driving"),
             }
 
             if side == "left":
@@ -505,3 +506,85 @@ def build_lane_spec(
         out.append({"s0": s0, "s1": s1, "left": section_left, "right": section_right})
 
     return out
+
+
+def apply_shoulder_profile(
+    lane_sections: List[Dict[str, Any]],
+    shoulder_segments: List[Dict[str, float]],
+    *,
+    defaults: Optional[Dict[str, Any]] = None,
+) -> None:
+    if not lane_sections:
+        return
+
+    defaults = defaults or {}
+    default_width = float(defaults.get("shoulder_width_m", 0.0) or 0.0)
+
+    def _average_width(s0: float, s1: float, side: str) -> Optional[float]:
+        total = 0.0
+        total_length = 0.0
+        for seg in shoulder_segments:
+            start = max(s0, seg["s0"])
+            end = min(s1, seg["s1"])
+            length = end - start
+            if length <= 0:
+                continue
+            width = float(seg.get(side, 0.0))
+            total += width * length
+            total_length += length
+        if total_length > 0:
+            return total / total_length
+        return None
+
+    left_prev: Optional[Dict[str, Any]] = None
+    right_prev: Optional[Dict[str, Any]] = None
+
+    LEFT_ID = 1000
+    RIGHT_ID = -1000
+
+    for section in lane_sections:
+        s0 = section.get("s0", 0.0)
+        s1 = section.get("s1", s0)
+
+        left_width = _average_width(s0, s1, "left")
+        right_width = _average_width(s0, s1, "right")
+
+        if left_width is None:
+            left_width = default_width
+        if right_width is None:
+            right_width = default_width
+
+        if left_width and left_width > 0:
+            entry = {
+                "id": LEFT_ID,
+                "type": "shoulder",
+                "width": float(left_width),
+                "roadMark": None,
+                "predecessors": [LEFT_ID] if left_prev is not None else [],
+                "successors": [],
+            }
+            section.setdefault("left", []).append(entry)
+            if left_prev is not None:
+                left_prev["successors"] = [LEFT_ID]
+            left_prev = entry
+        else:
+            left_prev = None
+
+        if right_width and right_width > 0:
+            entry = {
+                "id": RIGHT_ID,
+                "type": "shoulder",
+                "width": float(right_width),
+                "roadMark": None,
+                "predecessors": [RIGHT_ID] if right_prev is not None else [],
+                "successors": [],
+            }
+            section.setdefault("right", []).append(entry)
+            if right_prev is not None:
+                right_prev["successors"] = [RIGHT_ID]
+            right_prev = entry
+        else:
+            right_prev = None
+
+        section["left"].sort(key=lambda item: item["id"])
+        section["right"].sort(key=lambda item: item["id"], reverse=True)

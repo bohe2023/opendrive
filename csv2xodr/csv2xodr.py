@@ -10,7 +10,17 @@ if __package__ is None or __package__ == "":
         sys.path.insert(0, str(ROOT))
 
 from csv2xodr.ingest.loader import load_all
-from csv2xodr.normalize.core import build_centerline, build_offset_mapper, build_elevation_profile
+from csv2xodr.normalize.core import (
+    build_centerline,
+    build_curvature_profile,
+    build_elevation_profile,
+    build_elevation_profile_from_slopes,
+    build_geometry_segments,
+    build_offset_mapper,
+    build_shoulder_profile,
+    build_slope_profile,
+    build_superelevation_profile,
+)
 from csv2xodr.line_geometry import build_line_geometry_lookup
 from csv2xodr.topology.core import make_sections, build_lane_topology
 from csv2xodr.writer.xodr_writer import write_xodr
@@ -58,8 +68,22 @@ def main():
         offset_mapper=offset_mapper,
     )
 
-    # vertical profile from line geometry heights
-    elevation_profile = build_elevation_profile(dfs["line_geometry"], offset_mapper=offset_mapper)
+    curvature_profile = build_curvature_profile(dfs.get("curvature"), offset_mapper=offset_mapper)
+    geometry_segments = build_geometry_segments(center, curvature_profile)
+
+    slope_profiles = build_slope_profile(dfs.get("slope"), offset_mapper=offset_mapper)
+    longitudinal = slope_profiles.get("longitudinal", [])
+    if longitudinal:
+        elevation_profile = build_elevation_profile_from_slopes(longitudinal)
+    else:
+        elevation_profile = build_elevation_profile(dfs["line_geometry"], offset_mapper=offset_mapper)
+
+    superelevation_profile = build_superelevation_profile(slope_profiles.get("superelevation", []))
+
+    shoulder_profile = build_shoulder_profile(dfs.get("shoulder_width"), offset_mapper=offset_mapper)
+    from csv2xodr.lane_spec import apply_shoulder_profile  # local import to avoid cycle
+
+    apply_shoulder_profile(lane_specs, shoulder_profile, defaults=cfg.get("defaults", {}))
 
     # write xodr
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
@@ -71,6 +95,8 @@ def main():
         args.output,
         geo_ref=geo_ref,
         elevation_profile=elevation_profile,
+        geometry_segments=geometry_segments,
+        superelevation_profile=superelevation_profile,
     )
 
     output_path = Path(output_path)

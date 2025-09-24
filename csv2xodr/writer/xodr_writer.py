@@ -10,7 +10,16 @@ def _pretty(elem: Element) -> bytes:
     rough = tostring(elem, encoding="utf-8")
     return minidom.parseString(rough).toprettyxml(indent="  ", encoding="utf-8")
 
-def write_xodr(centerline, sections, lane_spec_per_section, out_path, geo_ref=None, elevation_profile=None):
+def write_xodr(
+    centerline,
+    sections,
+    lane_spec_per_section,
+    out_path,
+    geo_ref=None,
+    elevation_profile=None,
+    geometry_segments=None,
+    superelevation_profile=None,
+):
     # root + header
     odr = Element("OpenDRIVE")
     header = SubElement(odr, "header", {
@@ -33,26 +42,45 @@ def write_xodr(centerline, sections, lane_spec_per_section, out_path, geo_ref=No
 
     # planView with piecewise lines
     plan = SubElement(road, "planView")
-    for i in range(len(centerline) - 1):
-        s = float(centerline["s"].iloc[i])
-        x = float(centerline["x"].iloc[i])
-        y = float(centerline["y"].iloc[i])
-        hdg = float(centerline["hdg"].iloc[i])
-        x2 = float(centerline["x"].iloc[i + 1])
-        y2 = float(centerline["y"].iloc[i + 1])
-        seg_len = ((x2 - x) ** 2 + (y2 - y) ** 2) ** 0.5
-        geom = SubElement(
-            plan,
-            "geometry",
-            {
-                "s": f"{s:.3f}",
-                "x": f"{x:.3f}",
-                "y": f"{y:.3f}",
-                "hdg": f"{hdg:.6f}",
-                "length": f"{seg_len:.3f}",
-            },
-        )
-        SubElement(geom, "line")
+    if geometry_segments:
+        for seg in geometry_segments:
+            geom = SubElement(
+                plan,
+                "geometry",
+                {
+                    "s": f"{seg['s']:.3f}",
+                    "x": f"{seg['x']:.3f}",
+                    "y": f"{seg['y']:.3f}",
+                    "hdg": f"{seg['hdg']:.6f}",
+                    "length": f"{seg['length']:.3f}",
+                },
+            )
+            curvature = float(seg.get("curvature", 0.0))
+            if abs(curvature) > 1e-9:
+                SubElement(geom, "arc", {"curvature": _format_float(curvature, precision=9)})
+            else:
+                SubElement(geom, "line")
+    else:
+        for i in range(len(centerline) - 1):
+            s = float(centerline["s"].iloc[i])
+            x = float(centerline["x"].iloc[i])
+            y = float(centerline["y"].iloc[i])
+            hdg = float(centerline["hdg"].iloc[i])
+            x2 = float(centerline["x"].iloc[i + 1])
+            y2 = float(centerline["y"].iloc[i + 1])
+            seg_len = ((x2 - x) ** 2 + (y2 - y) ** 2) ** 0.5
+            geom = SubElement(
+                plan,
+                "geometry",
+                {
+                    "s": f"{s:.3f}",
+                    "x": f"{x:.3f}",
+                    "y": f"{y:.3f}",
+                    "hdg": f"{hdg:.6f}",
+                    "length": f"{seg_len:.3f}",
+                },
+            )
+            SubElement(geom, "line")
 
     if elevation_profile:
         elev = SubElement(road, "elevationProfile")
@@ -65,6 +93,18 @@ def write_xodr(centerline, sections, lane_spec_per_section, out_path, geo_ref=No
                 "d": _format_float(entry.get("d", 0.0)),
             }
             SubElement(elev, "elevation", attrs)
+
+    if superelevation_profile:
+        lateral = SubElement(road, "lateralProfile")
+        for entry in superelevation_profile:
+            attrs = {
+                "s": f"{entry['s']:.3f}",
+                "a": _format_float(entry.get("a", 0.0)),
+                "b": _format_float(entry.get("b", 0.0)),
+                "c": _format_float(entry.get("c", 0.0)),
+                "d": _format_float(entry.get("d", 0.0)),
+            }
+            SubElement(lateral, "superelevation", attrs)
 
     # lanes
     lanes = SubElement(road, "lanes")
@@ -79,19 +119,32 @@ def write_xodr(centerline, sections, lane_spec_per_section, out_path, geo_ref=No
 
         def _write_lane(parent, lane_data):
             lane_id = lane_data["id"]
-            ln = SubElement(parent, "lane", {"id": str(lane_id), "type": "driving", "level": "false"})
+            lane_type = lane_data.get("type", "driving")
+            ln = SubElement(
+                parent,
+                "lane",
+                {
+                    "id": str(lane_id),
+                    "type": lane_type,
+                    "level": str(lane_data.get("level", "false")).lower(),
+                },
+            )
             width = float(lane_data.get("width", 3.5))
             SubElement(ln, "width", {"sOffset": "0.0", "a": f"{width:.3f}", "b": "0", "c": "0", "d": "0"})
-            road_mark = lane_data.get("roadMark") or {"type": "solid", "width": 0.12, "laneChange": "both"}
-            rm_attrs = {
-                "sOffset": "0.0",
-                "type": str(road_mark.get("type", "solid")),
-                "weight": str(road_mark.get("weight", "standard")),
-                "width": f"{float(road_mark.get('width', 0.12)):.3f}",
-                "color": str(road_mark.get("color", "standard")),
-                "laneChange": str(road_mark.get("laneChange", "both")),
-            }
-            SubElement(ln, "roadMark", rm_attrs)
+            road_mark = lane_data.get("roadMark")
+            if road_mark is None and lane_type != "shoulder":
+                road_mark = {"type": "solid", "width": 0.12, "laneChange": "both"}
+
+            if road_mark is not None:
+                rm_attrs = {
+                    "sOffset": "0.0",
+                    "type": str(road_mark.get("type", "solid")),
+                    "weight": str(road_mark.get("weight", "standard")),
+                    "width": f"{float(road_mark.get('width', 0.12)):.3f}",
+                    "color": str(road_mark.get("color", "standard")),
+                    "laneChange": str(road_mark.get("laneChange", "both")),
+                }
+                SubElement(ln, "roadMark", rm_attrs)
 
             predecessors = lane_data.get("predecessors") or []
             successors = lane_data.get("successors") or []
