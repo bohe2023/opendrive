@@ -617,8 +617,11 @@ def _interpolate_centerline(centerline: DataFrame, target_s: float) -> Tuple[flo
             t = (target_s - s_prev) / span
             x = x_vals[idx - 1] + t * (x_vals[idx] - x_vals[idx - 1])
             y = y_vals[idx - 1] + t * (y_vals[idx] - y_vals[idx - 1])
-            if abs(target_s - s_curr) <= 1e-6 and idx < len(hdg_vals):
-                hdg = hdg_vals[idx]
+            if abs(target_s - s_curr) <= 1e-6:
+                if idx >= len(hdg_vals) - 1:
+                    hdg = hdg_vals[-1]
+                else:
+                    hdg = hdg_vals[idx - 1]
             else:
                 hdg = hdg_vals[idx - 1]
             return x, y, hdg
@@ -640,6 +643,29 @@ def build_geometry_segments(
         return []
 
     breakpoints = {0.0, total_length}
+    centerline_s = [float(v) for v in centerline["s"].to_list()]
+    for value in centerline_s:
+        breakpoints.add(max(0.0, min(total_length, float(value))))
+
+    # 长曲率区段在积分时会累积轻微的横向偏移，进而在 OpenDRIVE
+    # 查看器中表现为相邻路段之间出现细小豁口。为了在不牺牲曲线段
+    # 的情况下压制误差，将曲率分段进一步按照参考线采样 densify，
+    # 把单段长度限制在 2 米以内。这样每个圆弧段与原始测线的偏差
+    # 会被限制在毫米级别，避免出现肉眼可见的缝隙。
+    max_segment_length = 2.0
+    if len(centerline_s) >= 2:
+        for idx in range(1, len(centerline_s)):
+            start_s = max(0.0, min(total_length, float(centerline_s[idx - 1])))
+            end_s = max(0.0, min(total_length, float(centerline_s[idx])))
+            if end_s <= start_s:
+                continue
+            span = end_s - start_s
+            if span <= max_segment_length:
+                continue
+            steps = int(math.ceil(span / max_segment_length))
+            step_len = span / steps
+            for step in range(1, steps):
+                breakpoints.add(start_s + step * step_len)
     for seg in curvature_segments:
         s0 = max(0.0, min(total_length, float(seg["s0"])) )
         s1 = max(0.0, min(total_length, float(seg["s1"])) )
