@@ -1,3 +1,5 @@
+import math
+
 from csv2xodr.normalize.core import (
     build_curvature_profile,
     build_elevation_profile_from_slopes,
@@ -5,6 +7,7 @@ from csv2xodr.normalize.core import (
     build_shoulder_profile,
     build_slope_profile,
     build_superelevation_profile,
+    _normalize_angle,
 )
 from csv2xodr.lane_spec import apply_shoulder_profile
 from csv2xodr.simpletable import DataFrame
@@ -105,6 +108,59 @@ def test_geometry_segments_respect_threshold():
     )
 
     assert len(relaxed_geometry) == 1
+
+
+def test_geometry_segments_remain_continuous():
+    center = DataFrame({
+        "s": [0.0, 5.0, 10.0, 15.0],
+        "x": [0.0, 5.0, 10.0, 15.0],
+        "y": [0.0, 0.0, 0.0, 0.0],
+        "hdg": [0.0, 0.0, 0.0, 0.0],
+    })
+
+    curvature_df = DataFrame(
+        {
+            "Offset[cm]": [0, 500, 1000],
+            "End Offset[cm]": [500, 1000, 1500],
+            "曲率値[rad/m]": [0.0, 0.002, 0.0],
+            "Is Retransmission": ["False", "False", "False"],
+        }
+    )
+
+    curvature_segments = build_curvature_profile(curvature_df)
+    geometry = build_geometry_segments(
+        center,
+        curvature_segments,
+        max_endpoint_deviation=0.5,
+    )
+
+    assert len(geometry) == 3
+
+    def _apply(seg):
+        length = seg["length"]
+        heading = seg["hdg"]
+        curv = seg.get("curvature", 0.0)
+        if abs(curv) <= 1e-12:
+            end_x = seg["x"] + length * math.cos(heading)
+            end_y = seg["y"] + length * math.sin(heading)
+            end_hdg = heading
+        else:
+            radius = 1.0 / curv
+            end_hdg = heading + curv * length
+            end_x = seg["x"] + radius * (math.sin(end_hdg) - math.sin(heading))
+            end_y = seg["y"] - radius * (math.cos(end_hdg) - math.cos(heading))
+        return end_x, end_y, end_hdg
+
+    for idx in range(len(geometry) - 1):
+        end_x, end_y, end_hdg = _apply(geometry[idx])
+        next_seg = geometry[idx + 1]
+        assert math.isclose(end_x, next_seg["x"], abs_tol=1e-9)
+        assert math.isclose(end_y, next_seg["y"], abs_tol=1e-9)
+        assert math.isclose(
+            _normalize_angle(end_hdg - next_seg["hdg"]),
+            0.0,
+            abs_tol=1e-9,
+        )
 
 def test_apply_shoulder_profile_adds_lanes():
     lane_sections = [
