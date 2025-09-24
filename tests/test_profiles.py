@@ -134,7 +134,14 @@ def test_geometry_segments_remain_continuous():
         max_endpoint_deviation=0.5,
     )
 
-    assert len(geometry) == 3
+    assert len(geometry) >= 3
+    assert math.isclose(
+        sum(seg["length"] for seg in geometry),
+        center["s"].iloc[-1],
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    )
+    assert any(abs(seg.get("curvature", 0.0)) > 0 for seg in geometry)
 
     def _apply(seg):
         length = seg["length"]
@@ -161,6 +168,26 @@ def test_geometry_segments_remain_continuous():
             0.0,
             abs_tol=1e-9,
         )
+
+
+def test_geometry_segments_are_densified_for_long_spans():
+    center = DataFrame(
+        {
+            "s": [0.0, 50.0, 100.0],
+            "x": [0.0, 50.0, 100.0],
+            "y": [0.0, 0.0, 0.0],
+            "hdg": [0.0, 0.0, 0.0],
+        }
+    )
+
+    geometry = build_geometry_segments(
+        center,
+        [{"s0": 0.0, "s1": 100.0, "curvature": 0.0}],
+        max_endpoint_deviation=0.5,
+    )
+
+    assert len(geometry) >= 50
+    assert all(seg["length"] <= 2.0 + 1e-9 for seg in geometry)
 
 def test_apply_shoulder_profile_adds_lanes():
     lane_sections = [
