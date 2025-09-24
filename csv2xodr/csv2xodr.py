@@ -10,7 +10,7 @@ if __package__ is None or __package__ == "":
         sys.path.insert(0, str(ROOT))
 
 from csv2xodr.ingest.loader import load_all
-from csv2xodr.normalize.core import build_centerline, build_offset_mapper
+from csv2xodr.normalize.core import build_centerline, build_offset_mapper, build_elevation_profile
 from csv2xodr.line_geometry import build_line_geometry_lookup
 from csv2xodr.topology.core import make_sections, build_lane_topology
 from csv2xodr.writer.xodr_writer import write_xodr
@@ -58,10 +58,20 @@ def main():
         offset_mapper=offset_mapper,
     )
 
+    # vertical profile from line geometry heights
+    elevation_profile = build_elevation_profile(dfs["line_geometry"], offset_mapper=offset_mapper)
+
     # write xodr
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     geo_ref = f"LOCAL_XY origin={lat0},{lon0}"
-    output_path = write_xodr(center, sections, lane_specs, args.output, geo_ref=geo_ref)
+    output_path = write_xodr(
+        center,
+        sections,
+        lane_specs,
+        args.output,
+        geo_ref=geo_ref,
+        elevation_profile=elevation_profile,
+    )
 
     output_path = Path(output_path)
     try:

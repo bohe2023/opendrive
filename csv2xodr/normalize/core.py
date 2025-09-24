@@ -1,11 +1,20 @@
 import math
-from typing import Callable, Iterable, List, Tuple
+from typing import Callable, Iterable, List, Tuple, Optional
 
 from csv2xodr.simpletable import DataFrame
 
 def _col_like(df: DataFrame, keyword: str):
     cols = [c for c in df.columns if keyword in c]
     return cols[0] if cols else None
+
+
+def _find_height_column(df: DataFrame) -> Optional[str]:
+    for col in df.columns:
+        stripped = col.strip()
+        lowered = stripped.lower()
+        if "高さ" in stripped or "標高" in stripped or "height" in lowered or "[m]" in stripped:
+            return col
+    return None
 
 def latlon_to_local_xy(lat: Iterable[float], lon: Iterable[float], lat0: float, lon0: float) -> Tuple[List[float], List[float]]:
     """
@@ -162,3 +171,114 @@ def build_offset_mapper(centerline: DataFrame) -> Callable[[float], float]:
         return s_vals[-1]
 
     return mapper
+
+
+def build_elevation_profile(
+    df_line_geo: DataFrame,
+    *,
+    offset_mapper: Optional[Callable[[float], float]] = None,
+) -> List[dict]:
+    """Build an OpenDRIVE elevation profile from line geometry heights.
+
+    The PROFILETYPE_MPU_LINE_GEOMETRY.csv source encodes longitudinal
+    offsets in centimetres alongside absolute height values.  The
+    resulting profile is emitted as a list of dictionaries ready to be
+    serialised into ``<elevation>`` elements where ``a`` represents the
+    height at ``s`` and ``b`` encodes the gradient (first derivative).
+    Only the primary path is considered when multiple polylines are
+    present in the input.
+    """
+
+    if df_line_geo is None or len(df_line_geo) == 0:
+        return []
+
+    offset_col = _col_like(df_line_geo, "Offset")
+    height_col = _find_height_column(df_line_geo)
+    if offset_col is None or height_col is None:
+        return []
+
+    path_col = _col_like(df_line_geo, "Path")
+    retrans_col: Optional[str] = None
+    for col in df_line_geo.columns:
+        if "retrans" in col.lower():
+            retrans_col = col
+            break
+
+    best_path = None
+    if path_col is not None and df_line_geo[path_col].nunique(dropna=True) > 1:
+        counts = {}
+        path_series = df_line_geo[path_col]
+        for value in path_series.to_list():
+            if value is None:
+                continue
+            counts[value] = counts.get(value, 0) + 1
+        if counts:
+            best_path = max(counts, key=counts.get)
+
+    grouped: dict = {}
+    for idx in range(len(df_line_geo)):
+        row = df_line_geo.iloc[idx]
+
+        if retrans_col is not None:
+            retrans_value = row[retrans_col]
+            if isinstance(retrans_value, str):
+                retrans_flag = retrans_value.strip().lower() == "true"
+            else:
+                retrans_flag = bool(retrans_value)
+            if retrans_flag:
+                continue
+
+        if best_path is not None and row[path_col] != best_path:
+            continue
+
+        offset_raw = row[offset_col]
+        height_raw = row[height_col]
+        try:
+            offset_cm = float(offset_raw)
+            height = float(height_raw)
+        except (TypeError, ValueError):
+            continue
+
+        grouped.setdefault(offset_cm, []).append(height)
+
+    if not grouped:
+        return []
+
+    points: List[Tuple[float, float]] = []
+    for offset_cm in sorted(grouped.keys()):
+        heights = grouped[offset_cm]
+        if not heights:
+            continue
+        avg_height = sum(heights) / len(heights)
+        offset_m = offset_cm * 0.01
+        if offset_mapper is not None:
+            s_val = float(offset_mapper(offset_m))
+        else:
+            s_val = float(offset_m)
+        points.append((s_val, avg_height))
+
+    if not points:
+        return []
+
+    profile: List[dict] = []
+    for idx, (s_val, height) in enumerate(points):
+        if idx < len(points) - 1:
+            next_s, next_height = points[idx + 1]
+            if next_s > s_val:
+                slope = (next_height - height) / (next_s - s_val)
+            else:
+                slope = 0.0
+        elif profile:
+            slope = profile[-1]["b"]
+        else:
+            slope = 0.0
+
+        profile.append({
+            "s": s_val,
+            "a": height,
+            "b": slope,
+            "c": 0.0,
+            "d": 0.0,
+        })
+
+    return profile
