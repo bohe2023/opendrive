@@ -88,6 +88,18 @@ def main():
     # write xodr
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     geo_ref = f"LOCAL_XY origin={lat0},{lon0}"
+    road_cfg_raw = cfg.get("road") or {}
+    if not isinstance(road_cfg_raw, dict):
+        raise TypeError("road configuration must be a mapping if provided")
+
+    road_cfg = {
+        "type": road_cfg_raw.get("type", "town"),
+    }
+    if "speed" in road_cfg_raw:
+        road_cfg["speed"] = road_cfg_raw["speed"]
+    else:
+        road_cfg["speed"] = {"max": 50 / 3.6, "unit": "m/s"}
+
     output_path = write_xodr(
         center,
         sections,
@@ -97,6 +109,7 @@ def main():
         elevation_profile=elevation_profile,
         geometry_segments=geometry_segments,
         superelevation_profile=superelevation_profile,
+        road_metadata=road_cfg,
     )
 
     output_path = Path(output_path)

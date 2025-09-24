@@ -4,6 +4,9 @@
     <geoReference>LOCAL_XY origin=36.23395354399317,139.57444950462656</geoReference>
   </header>
   <road name="road_1" length="1403.171" id="1" junction="-1">
+    <type s="0.0" type="town">
+      <speed max="13.888889" unit="m/s"/>
+    </type>
     <planView>
       <geometry s="0.000" x="8.049" y="29.608" hdg="1.346459" length="69.378">
         <arc curvature="3.000000000"/>

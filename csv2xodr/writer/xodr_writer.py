@@ -19,7 +19,10 @@ def write_xodr(
     elevation_profile=None,
     geometry_segments=None,
     superelevation_profile=None,
+    road_metadata=None,
 ):
+    road_metadata = road_metadata or {}
+
     # root + header
     odr = Element("OpenDRIVE")
     header = SubElement(odr, "header", {
@@ -39,6 +42,25 @@ def write_xodr(
         "road",
         {"name": "road_1", "length": f"{length:.3f}", "id": "1", "junction": "-1"},
     )
+
+    road_type = str(road_metadata.get("type", "town"))
+    type_el = SubElement(road, "type", {"s": "0.0", "type": road_type})
+
+    speed = road_metadata.get("speed")
+    if speed is not None:
+        if isinstance(speed, (int, float)):
+            speed_attrs = {"max": _format_float(speed), "unit": "m/s"}
+        elif isinstance(speed, dict):
+            speed_attrs = {str(k): str(v) for k, v in speed.items()}
+            if "max" in speed_attrs:
+                try:
+                    speed_attrs["max"] = _format_float(float(speed_attrs["max"]))
+                except (TypeError, ValueError):
+                    pass
+        else:
+            raise TypeError("speed must be a number or a mapping of attributes")
+
+        SubElement(type_el, "speed", speed_attrs)
 
     # planView with piecewise lines
     plan = SubElement(road, "planView")
