@@ -2,8 +2,11 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 import xml.dom.minidom as minidom
 
 
-def _format_float(value: float, precision: int = 6) -> str:
-    return f"{float(value):.{precision}f}"
+def _format_float(value: float, precision: int = 9) -> str:
+    formatted = f"{float(value):.{precision}f}"
+    if "." in formatted:
+        formatted = formatted.rstrip("0").rstrip(".")
+    return formatted or "0"
 
 
 def _pretty(elem: Element) -> bytes:
@@ -40,7 +43,12 @@ def write_xodr(
     road = SubElement(
         odr,
         "road",
-        {"name": "road_1", "length": f"{length:.3f}", "id": "1", "junction": "-1"},
+        {
+            "name": "road_1",
+            "length": _format_float(length, precision=9),
+            "id": "1",
+            "junction": "-1",
+        },
     )
 
     road_type = str(road_metadata.get("type", "town"))
@@ -70,16 +78,17 @@ def write_xodr(
                 plan,
                 "geometry",
                 {
-                    "s": _format_float(seg["s"], precision=6),
-                    "x": _format_float(seg["x"], precision=6),
-                    "y": _format_float(seg["y"], precision=6),
-                    "hdg": _format_float(seg["hdg"], precision=9),
-                    "length": _format_float(seg["length"], precision=6),
+
+                    "s": _format_float(seg["s"], precision=9),
+                    "x": _format_float(seg["x"], precision=9),
+                    "y": _format_float(seg["y"], precision=9),
+                    "hdg": _format_float(seg["hdg"], precision=12),
+                    "length": _format_float(seg["length"], precision=9),
                 },
             )
             curvature = float(seg.get("curvature", 0.0))
             if abs(curvature) > 1e-9:
-                SubElement(geom, "arc", {"curvature": _format_float(curvature, precision=9)})
+                SubElement(geom, "arc", {"curvature": _format_float(curvature, precision=12)})
             else:
                 SubElement(geom, "line")
     else:
@@ -95,11 +104,11 @@ def write_xodr(
                 plan,
                 "geometry",
                 {
-                    "s": _format_float(s, precision=6),
-                    "x": _format_float(x, precision=6),
-                    "y": _format_float(y, precision=6),
-                    "hdg": _format_float(hdg, precision=9),
-                    "length": _format_float(seg_len, precision=6),
+                    "s": _format_float(s, precision=9),
+                    "x": _format_float(x, precision=9),
+                    "y": _format_float(y, precision=9),
+                    "hdg": _format_float(hdg, precision=12),
+                    "length": _format_float(seg_len, precision=9),
                 },
             )
             SubElement(geom, "line")
@@ -131,7 +140,7 @@ def write_xodr(
     # lanes
     lanes = SubElement(road, "lanes")
     for sec in lane_spec_per_section:
-        attrs = {"s": _format_float(sec["s0"], precision=6)}
+        attrs = {"s": _format_float(sec["s0"], precision=9)}
         has_left = bool(sec.get("left"))
         has_right = bool(sec.get("right"))
         if has_left != has_right:
