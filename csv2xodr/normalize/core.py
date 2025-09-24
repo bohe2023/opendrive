@@ -345,7 +345,14 @@ def build_curvature_profile(
 
     start_col = _find_column(df_curvature, "offset", exclude=("end",))
     end_col = _find_column(df_curvature, "end", "offset")
-    curvature_col = _find_column(df_curvature, "曲率") or _find_column(df_curvature, "curvature")
+    curvature_col = (
+        _find_column(df_curvature, "曲率", exclude=("レーン", "lane", "情報"))
+        or _find_column(df_curvature, "曲率", "値")
+        or _find_column(df_curvature, "曲率", "rad/m")
+        or _find_column(df_curvature, "curvature", exclude=("lane", "count"))
+        or _find_column(df_curvature, "curvature", "value")
+        or _find_column(df_curvature, "curvature")
+    )
     path_col = _find_column(df_curvature, "path")
     retrans_col = _find_column(df_curvature, "is", "retransmission")
 
@@ -574,7 +581,10 @@ def _interpolate_centerline(centerline: DataFrame, target_s: float) -> Tuple[flo
             t = (target_s - s_prev) / span
             x = x_vals[idx - 1] + t * (x_vals[idx] - x_vals[idx - 1])
             y = y_vals[idx - 1] + t * (y_vals[idx] - y_vals[idx - 1])
-            hdg = hdg_vals[idx - 1]
+            if abs(target_s - s_curr) <= 1e-6 and idx < len(hdg_vals):
+                hdg = hdg_vals[idx]
+            else:
+                hdg = hdg_vals[idx - 1]
             return x, y, hdg
 
     return x_vals[-1], y_vals[-1], hdg_vals[-1]
