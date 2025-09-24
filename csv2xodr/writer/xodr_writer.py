@@ -1,23 +1,35 @@
 from xml.etree.ElementTree import Element, SubElement, tostring
 import xml.dom.minidom as minidom
 
+
+def _format_float(value: float, precision: int = 6) -> str:
+    return f"{float(value):.{precision}f}"
+
+
 def _pretty(elem: Element) -> bytes:
     rough = tostring(elem, encoding="utf-8")
     return minidom.parseString(rough).toprettyxml(indent="  ", encoding="utf-8")
 
-def write_xodr(centerline, sections, lane_spec_per_section, out_path, geo_ref=None):
+def write_xodr(centerline, sections, lane_spec_per_section, out_path, geo_ref=None, elevation_profile=None):
     # root + header
     odr = Element("OpenDRIVE")
     header = SubElement(odr, "header", {
-        "revMajor": "1", "revMinor": "4",
-        "name": "csv2xodr", "version": "1.00", "date": "2025-09-16"
+        "revMajor": "1",
+        "revMinor": "4",
+        "name": "csv2xodr",
+        "version": "1.00",
+        "date": "2025-09-16",
     })
     if geo_ref:
         SubElement(header, "geoReference").text = geo_ref
 
     # single road
     length = float(centerline["s"].iloc[-1])
-    road = SubElement(odr, "road", {"name": "road_1", "length": f"{length:.3f}", "id": "1", "junction": "-1"})
+    road = SubElement(
+        odr,
+        "road",
+        {"name": "road_1", "length": f"{length:.3f}", "id": "1", "junction": "-1"},
+    )
 
     # planView with piecewise lines
     plan = SubElement(road, "planView")
@@ -29,11 +41,30 @@ def write_xodr(centerline, sections, lane_spec_per_section, out_path, geo_ref=No
         x2 = float(centerline["x"].iloc[i + 1])
         y2 = float(centerline["y"].iloc[i + 1])
         seg_len = ((x2 - x) ** 2 + (y2 - y) ** 2) ** 0.5
-        geom = SubElement(plan, "geometry", {
-            "s": f"{s:.3f}", "x": f"{x:.3f}", "y": f"{y:.3f}",
-            "hdg": f"{hdg:.6f}", "length": f"{seg_len:.3f}"
-        })
+        geom = SubElement(
+            plan,
+            "geometry",
+            {
+                "s": f"{s:.3f}",
+                "x": f"{x:.3f}",
+                "y": f"{y:.3f}",
+                "hdg": f"{hdg:.6f}",
+                "length": f"{seg_len:.3f}",
+            },
+        )
         SubElement(geom, "line")
+
+    if elevation_profile:
+        elev = SubElement(road, "elevationProfile")
+        for entry in elevation_profile:
+            attrs = {
+                "s": f"{entry['s']:.3f}",
+                "a": _format_float(entry.get("a", 0.0)),
+                "b": _format_float(entry.get("b", 0.0)),
+                "c": _format_float(entry.get("c", 0.0)),
+                "d": _format_float(entry.get("d", 0.0)),
+            }
+            SubElement(elev, "elevation", attrs)
 
     # lanes
     lanes = SubElement(road, "lanes")
