@@ -98,5 +98,7 @@ def test_apply_shoulder_profile_adds_lanes():
     assert right_lanes and right_lanes[0]["width"] == 1.5
 
     next_left = [lane for lane in lane_sections[1]["left"] if lane["type"] == "shoulder"][0]
-    assert next_left["predecessors"] == [1000]
-    assert left_lanes[0]["successors"] == [1000]
+    left_shoulder_id = next_left["id"]
+    assert left_shoulder_id not in {lane["id"] for lane in lane_sections[0]["left"] if lane["type"] != "shoulder"}
+    assert next_left["predecessors"] == [left_shoulder_id]
+    assert left_lanes[0]["successors"] == [left_shoulder_id]

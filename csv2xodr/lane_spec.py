@@ -539,8 +539,33 @@ def apply_shoulder_profile(
     left_prev: Optional[Dict[str, Any]] = None
     right_prev: Optional[Dict[str, Any]] = None
 
-    LEFT_ID = 1000
-    RIGHT_ID = -1000
+    def _existing_lane_ids(side: str) -> List[int]:
+        ids: List[int] = []
+        for section in lane_sections:
+            for lane in section.get(side, []):
+                try:
+                    lane_id = int(lane.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                ids.append(lane_id)
+        return ids
+
+    left_ids = _existing_lane_ids("left")
+    right_ids = _existing_lane_ids("right")
+
+    if left_ids:
+        LEFT_ID = max(left_ids) + 1
+        if LEFT_ID <= 0:
+            LEFT_ID = 1
+    else:
+        LEFT_ID = 1
+
+    if right_ids:
+        RIGHT_ID = min(right_ids) - 1
+        if RIGHT_ID >= 0:
+            RIGHT_ID = -1
+    else:
+        RIGHT_ID = -1
 
     for section in lane_sections:
         s0 = section.get("s0", 0.0)
