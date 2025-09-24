@@ -655,6 +655,7 @@ def build_geometry_segments(
         return 0.0
 
     current_x, current_y, current_hdg = _interpolate_centerline(centerline, ordered_points[0])
+    max_endpoint_deviation = 0.0
 
     for idx in range(len(ordered_points) - 1):
         start = ordered_points[idx]
@@ -699,11 +700,22 @@ def build_geometry_segments(
         else:
             next_x, next_y, next_hdg = current_x, current_y, current_hdg
 
-        if math.hypot(next_x - target_x, next_y - target_y) <= 0.1:
+        endpoint_error = math.hypot(next_x - target_x, next_y - target_y)
+        if endpoint_error > max_endpoint_deviation:
+            max_endpoint_deviation = endpoint_error
+
+        if endpoint_error <= 0.1:
             current_x, current_y = target_x, target_y
         else:
             current_x, current_y = next_x, next_y
         current_hdg = next_hdg
+
+    # If any arc drifts too far away from the surveyed centreline the resulting
+    # planView becomes noticeably distorted which can break downstream
+    # consumers.  Fall back to the original piecewise-linear geometry in that
+    # case.
+    if max_endpoint_deviation > 0.5:
+        return []
 
     return segments
 
