@@ -108,11 +108,14 @@ def write_xodr(
                 plan,
                 "geometry",
                 {
-                    "s": _format_float(s, precision=9),
-                    "x": _format_float(x, precision=9),
-                    "y": _format_float(y, precision=9),
-                    "hdg": _format_float(hdg, precision=12),
-                    "length": _format_float(seg_len, precision=9),
+                    # 与圆弧模式相同，采用更高的小数精度输出折线节点，
+                    # 避免由于字符串截断导致的相邻路段起终点坐标不完全
+                    # 一致，从而在查看器中出现细微豁口。
+                    "s": _format_float(s, precision=12),
+                    "x": _format_float(x, precision=12),
+                    "y": _format_float(y, precision=12),
+                    "hdg": _format_float(hdg, precision=15),
+                    "length": _format_float(seg_len, precision=12),
                 },
             )
             SubElement(geom, "line")
