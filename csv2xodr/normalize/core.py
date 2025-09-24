@@ -706,11 +706,11 @@ def build_geometry_segments(
         if endpoint_error > max_observed_endpoint_deviation:
             max_observed_endpoint_deviation = endpoint_error
 
-        if endpoint_error <= 0.1:
-            current_x, current_y = target_x, target_y
-        else:
-            current_x, current_y = next_x, next_y
-        current_hdg = next_hdg
+        # 无论曲率段的理论终点与测线差距多大，都强制与中心线对齐，
+        # 以避免在几何拼接时出现肉眼可见的缝隙。误差仍会被统计用于
+        # 决定是否退回到折线表达，从而保持整体精度的守护。
+        current_x, current_y = target_x, target_y
+        current_hdg = target_hdg
 
     # If any arc drifts too far away from the surveyed centreline the resulting
     # planView becomes noticeably distorted which can break downstream
