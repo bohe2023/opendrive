@@ -109,13 +109,19 @@ def write_xodr(
     # lanes
     lanes = SubElement(road, "lanes")
     for sec in lane_spec_per_section:
-        ls = SubElement(lanes, "laneSection", {"s": f"{sec['s0']:.3f}"})
+        attrs = {"s": f"{sec['s0']:.3f}"}
+        has_left = bool(sec.get("left"))
+        has_right = bool(sec.get("right"))
+        if has_left != has_right:
+            attrs["singleSide"] = "true"
+
+        ls = SubElement(lanes, "laneSection", attrs)
 
         center_el = SubElement(ls, "center")
-        SubElement(center_el, "lane", {"id": "0", "type": "driving", "level": "false"})
+        SubElement(center_el, "lane", {"id": "0", "type": "none", "level": "false"})
 
-        left_el = SubElement(ls, "left")
-        right_el = SubElement(ls, "right")
+        left_el = SubElement(ls, "left") if has_left else None
+        right_el = SubElement(ls, "right") if has_right else None
 
         def _write_lane(parent, lane_data):
             lane_id = lane_data["id"]
@@ -156,9 +162,13 @@ def write_xodr(
                     SubElement(link, "successor", {"id": str(sid)})
 
         for lane_data in sec.get("left", []):
+            if left_el is None:
+                left_el = SubElement(ls, "left")
             _write_lane(left_el, lane_data)
 
         for lane_data in sec.get("right", []):
+            if right_el is None:
+                right_el = SubElement(ls, "right")
             _write_lane(right_el, lane_data)
 
     with open(out_path, "wb") as f:
