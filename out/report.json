@@ -13,13 +13,13 @@
   },
   "output_counts": {
     "roads": 1,
-    "laneSections": 21,
-    "lanes_total": 44,
-    "roadMark_segments_total": 23
+    "laneSections": 18,
+    "lanes_total": 108
   },
-  "size_bytes": {
-    "input_csv_total": 1048133,
-    "output_xodr": 6330,
-    "ratio_output_to_input": 0.006039
+  "road_length_m": 1403.1712753071367,
+  "xodr_file": {
+    "path": "/workspace/opendrive/out/sample.xodr",
+    "size_bytes": 38292,
+    "line_count": 948
   }
 }

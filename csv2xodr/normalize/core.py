@@ -269,13 +269,15 @@ def build_elevation_profile(
     if not grouped:
         return []
 
+    origin_cm = min(grouped.keys())
+
     points: List[Tuple[float, float]] = []
     for offset_cm in sorted(grouped.keys()):
         heights = grouped[offset_cm]
         if not heights:
             continue
         avg_height = sum(heights) / len(heights)
-        offset_m = offset_cm * 0.01
+        offset_m = max(0.0, (offset_cm - origin_cm) * 0.01)
         if offset_mapper is not None:
             s_val = float(offset_mapper(offset_m))
         else:
@@ -352,7 +354,8 @@ def build_curvature_profile(
 
     best_path = _select_best_path(df_curvature, path_col)
 
-    grouped: Dict[Tuple[float, float], List[float]] = {}
+    entries: List[Tuple[float, float, float]] = []
+    origin_cm: Optional[float] = None
 
     for idx in range(len(df_curvature)):
         row = df_curvature.iloc[idx]
@@ -372,8 +375,19 @@ def build_curvature_profile(
         if start_cm is None or end_cm is None or curvature_val is None:
             continue
 
-        start_m = start_cm * 0.01
-        end_m = end_cm * 0.01
+        if origin_cm is None or start_cm < origin_cm:
+            origin_cm = start_cm
+
+        entries.append((start_cm, end_cm, curvature_val))
+
+    if origin_cm is None:
+        return []
+
+    grouped: Dict[Tuple[float, float], List[float]] = {}
+
+    for start_cm, end_cm, curvature_val in entries:
+        start_m = max(0.0, (start_cm - origin_cm) * 0.01)
+        end_m = max(0.0, (end_cm - origin_cm) * 0.01)
         if end_m <= start_m:
             continue
 
@@ -417,7 +431,8 @@ def build_slope_profile(
 
     best_path = _select_best_path(df_slope, path_col)
 
-    grouped: Dict[Tuple[float, float], Dict[str, List[float]]] = {}
+    entries: List[Tuple[float, float, Optional[float], Optional[float]]] = []
+    origin_cm: Optional[float] = None
 
     for idx in range(len(df_slope)):
         row = df_slope.iloc[idx]
@@ -435,22 +450,32 @@ def build_slope_profile(
         if start_cm is None or end_cm is None:
             continue
 
-        start_m = start_cm * 0.01
-        end_m = end_cm * 0.01
+        if origin_cm is None or start_cm < origin_cm:
+            origin_cm = start_cm
+
+        grade_val = _to_float(row[slope_col]) if slope_col is not None else None
+        cross_val = _to_float(row[cross_col]) if cross_col is not None else None
+
+        entries.append((start_cm, end_cm, grade_val, cross_val))
+
+    if origin_cm is None:
+        return {"longitudinal": [], "superelevation": []}
+
+    grouped: Dict[Tuple[float, float], Dict[str, List[float]]] = {}
+
+    for start_cm, end_cm, grade_val, cross_val in entries:
+        start_m = max(0.0, (start_cm - origin_cm) * 0.01)
+        end_m = max(0.0, (end_cm - origin_cm) * 0.01)
         if end_m <= start_m:
             continue
 
         entry = grouped.setdefault(_prepare_segment_key(start_m, end_m), {"grade": [], "cross": []})
 
-        if slope_col is not None:
-            grade_val = _to_float(row[slope_col])
-            if grade_val is not None:
-                entry["grade"].append(grade_val * 0.01)
+        if grade_val is not None:
+            entry["grade"].append(grade_val * 0.01)
 
-        if cross_col is not None:
-            cross_val = _to_float(row[cross_col])
-            if cross_val is not None:
-                entry["cross"].append(cross_val * 0.01)
+        if cross_val is not None:
+            entry["cross"].append(cross_val * 0.01)
 
     longitudinal: List[Dict[str, float]] = []
     superelevation: List[Dict[str, float]] = []
@@ -625,7 +650,8 @@ def build_shoulder_profile(
 
     best_path = _select_best_path(df_shoulder, path_col)
 
-    grouped: Dict[Tuple[float, float], Dict[str, List[float]]] = {}
+    entries: List[Tuple[float, float, Optional[float], Optional[float]]] = []
+    origin_cm: Optional[float] = None
 
     for idx in range(len(df_shoulder)):
         row = df_shoulder.iloc[idx]
@@ -643,22 +669,32 @@ def build_shoulder_profile(
         if start_cm is None or end_cm is None:
             continue
 
-        start_m = start_cm * 0.01
-        end_m = end_cm * 0.01
+        if origin_cm is None or start_cm < origin_cm:
+            origin_cm = start_cm
+
+        left_val = _to_float(row[left_col]) if left_col is not None else None
+        right_val = _to_float(row[right_col]) if right_col is not None else None
+
+        entries.append((start_cm, end_cm, left_val, right_val))
+
+    if origin_cm is None:
+        return []
+
+    grouped: Dict[Tuple[float, float], Dict[str, List[float]]] = {}
+
+    for start_cm, end_cm, left_val, right_val in entries:
+        start_m = max(0.0, (start_cm - origin_cm) * 0.01)
+        end_m = max(0.0, (end_cm - origin_cm) * 0.01)
         if end_m <= start_m:
             continue
 
         entry = grouped.setdefault(_prepare_segment_key(start_m, end_m), {"left": [], "right": []})
 
-        if left_col is not None:
-            left_val = _to_float(row[left_col])
-            if left_val is not None:
-                entry["left"].append(left_val * 0.01)
+        if left_val is not None:
+            entry["left"].append(left_val * 0.01)
 
-        if right_col is not None:
-            right_val = _to_float(row[right_col])
-            if right_val is not None:
-                entry["right"].append(right_val * 0.01)
+        if right_val is not None:
+            entry["right"].append(right_val * 0.01)
 
     profile: List[Dict[str, float]] = []
     for (start_m, end_m), values in sorted(grouped.items(), key=lambda item: item[0]):
