@@ -70,11 +70,11 @@ def write_xodr(
                 plan,
                 "geometry",
                 {
-                    "s": f"{seg['s']:.3f}",
-                    "x": f"{seg['x']:.3f}",
-                    "y": f"{seg['y']:.3f}",
-                    "hdg": f"{seg['hdg']:.6f}",
-                    "length": f"{seg['length']:.3f}",
+                    "s": _format_float(seg["s"], precision=6),
+                    "x": _format_float(seg["x"], precision=6),
+                    "y": _format_float(seg["y"], precision=6),
+                    "hdg": _format_float(seg["hdg"], precision=9),
+                    "length": _format_float(seg["length"], precision=6),
                 },
             )
             curvature = float(seg.get("curvature", 0.0))
@@ -95,11 +95,11 @@ def write_xodr(
                 plan,
                 "geometry",
                 {
-                    "s": f"{s:.3f}",
-                    "x": f"{x:.3f}",
-                    "y": f"{y:.3f}",
-                    "hdg": f"{hdg:.6f}",
-                    "length": f"{seg_len:.3f}",
+                    "s": _format_float(s, precision=6),
+                    "x": _format_float(x, precision=6),
+                    "y": _format_float(y, precision=6),
+                    "hdg": _format_float(hdg, precision=9),
+                    "length": _format_float(seg_len, precision=6),
                 },
             )
             SubElement(geom, "line")
@@ -131,7 +131,7 @@ def write_xodr(
     # lanes
     lanes = SubElement(road, "lanes")
     for sec in lane_spec_per_section:
-        attrs = {"s": f"{sec['s0']:.3f}"}
+        attrs = {"s": _format_float(sec["s0"], precision=6)}
         has_left = bool(sec.get("left"))
         has_right = bool(sec.get("right"))
         if has_left != has_right:
