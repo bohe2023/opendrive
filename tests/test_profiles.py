@@ -71,6 +71,41 @@ def test_geometry_segments_from_curvature():
     assert geometry[1]["curvature"] == 0.1
 
 
+def test_geometry_segments_respect_threshold():
+    center = DataFrame({
+        "s": [0.0, 1.0],
+        "x": [0.0, 1.0],
+        "y": [0.0, 0.0],
+        "hdg": [0.0, 0.0],
+    })
+
+    curvature_df = DataFrame(
+        {
+            "Offset[cm]": [0],
+            "End Offset[cm]": [100],
+            "曲率値[rad/m]": [0.2],
+            "Is Retransmission": ["False"],
+        }
+    )
+
+    curvature_segments = build_curvature_profile(curvature_df)
+
+    strict_geometry = build_geometry_segments(
+        center,
+        curvature_segments,
+        max_endpoint_deviation=0.05,
+    )
+
+    assert strict_geometry == []
+
+    relaxed_geometry = build_geometry_segments(
+        center,
+        curvature_segments,
+        max_endpoint_deviation=0.5,
+    )
+
+    assert len(relaxed_geometry) == 1
+
 def test_apply_shoulder_profile_adds_lanes():
     lane_sections = [
         {"s0": 0.0, "s1": 10.0, "left": [{"id": 1, "width": 3.5, "roadMark": {}, "predecessors": [], "successors": [], "type": "driving"}], "right": [{"id": -1, "width": 3.5, "roadMark": {}, "predecessors": [], "successors": [], "type": "driving"}]},

@@ -69,7 +69,22 @@ def main():
     )
 
     curvature_profile = build_curvature_profile(dfs.get("curvature"), offset_mapper=offset_mapper)
-    geometry_segments = build_geometry_segments(center, curvature_profile)
+
+    geometry_cfg_raw = cfg.get("geometry") or {}
+    if not isinstance(geometry_cfg_raw, dict):
+        raise TypeError("geometry configuration must be a mapping if provided")
+
+    max_endpoint_deviation_cfg = geometry_cfg_raw.get("max_endpoint_deviation_m", 0.5)
+    try:
+        max_endpoint_deviation = float(max_endpoint_deviation_cfg)
+    except (TypeError, ValueError) as exc:
+        raise TypeError("geometry.max_endpoint_deviation_m must be a number") from exc
+
+    geometry_segments = build_geometry_segments(
+        center,
+        curvature_profile,
+        max_endpoint_deviation=max_endpoint_deviation,
+    )
 
     slope_profiles = build_slope_profile(dfs.get("slope"), offset_mapper=offset_mapper)
     longitudinal = slope_profiles.get("longitudinal", [])
