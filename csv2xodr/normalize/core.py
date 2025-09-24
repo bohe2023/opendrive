@@ -33,6 +33,14 @@ def _to_float(value: Any) -> Optional[float]:
         return None
 
 
+def _normalize_angle(angle: float) -> float:
+    while angle > math.pi:
+        angle -= 2.0 * math.pi
+    while angle < -math.pi:
+        angle += 2.0 * math.pi
+    return angle
+
+
 def _find_height_column(df: DataFrame) -> Optional[str]:
     for col in df.columns:
         stripped = col.strip()
@@ -390,7 +398,7 @@ def build_curvature_profile(
     if origin_cm is None:
         return []
 
-    grouped: Dict[Tuple[float, float], List[float]] = {}
+    grouped: Dict[Tuple[float, float], Dict[str, List[float]]] = {}
 
     for start_cm, end_cm, curvature_val in entries:
         start_m = max(0.0, (start_cm - origin_cm) * 0.01)
@@ -399,21 +407,34 @@ def build_curvature_profile(
             continue
 
         key = _prepare_segment_key(start_m, end_m)
-        grouped.setdefault(key, []).append(curvature_val)
+        bucket = grouped.setdefault(key, {"curvature": [], "length": []})
+        bucket["curvature"].append(curvature_val)
+        bucket["length"].append(end_m - start_m)
 
     if not grouped:
         return []
 
     profile: List[Dict[str, float]] = []
     for (start_m, end_m), values in sorted(grouped.items(), key=lambda item: item[0]):
-        if not values:
+        curv_values = values["curvature"]
+        if not curv_values:
             continue
-        avg_curvature = sum(values) / len(values)
+        avg_curvature = sum(curv_values) / len(curv_values)
         s0 = float(offset_mapper(start_m)) if offset_mapper is not None else float(start_m)
         s1 = float(offset_mapper(end_m)) if offset_mapper is not None else float(end_m)
         if s1 <= s0:
             continue
-        profile.append({"s0": s0, "s1": s1, "curvature": avg_curvature})
+        if values["length"]:
+            avg_length = sum(values["length"]) / len(values["length"])
+        else:
+            avg_length = end_m - start_m
+        if avg_length <= 0:
+            continue
+        span = s1 - s0
+        if span <= 0:
+            continue
+        scale = avg_length / span
+        profile.append({"s0": s0, "s1": s1, "curvature": avg_curvature * scale})
 
     return profile
 
@@ -476,13 +497,18 @@ def build_slope_profile(
         if end_m <= start_m:
             continue
 
-        entry = grouped.setdefault(_prepare_segment_key(start_m, end_m), {"grade": [], "cross": []})
+        entry = grouped.setdefault(
+            _prepare_segment_key(start_m, end_m),
+            {"grade": [], "cross": [], "length": []},
+        )
 
         if grade_val is not None:
             entry["grade"].append(grade_val * 0.01)
 
         if cross_val is not None:
             entry["cross"].append(cross_val * 0.01)
+
+        entry["length"].append(end_m - start_m)
 
     longitudinal: List[Dict[str, float]] = []
     superelevation: List[Dict[str, float]] = []
@@ -495,6 +521,16 @@ def build_slope_profile(
 
         if values["grade"]:
             avg_grade = sum(values["grade"]) / len(values["grade"])
+            segment_span = s1 - s0
+            if segment_span <= 0:
+                continue
+            if values["length"]:
+                avg_length = sum(values["length"]) / len(values["length"])
+            else:
+                avg_length = segment_span
+            if avg_length > 0:
+                scale = avg_length / segment_span
+                avg_grade *= scale
             longitudinal.append({"s0": s0, "s1": s1, "grade": avg_grade})
 
         if values["cross"]:
@@ -618,24 +654,56 @@ def build_geometry_segments(
                 return float(seg["curvature"])
         return 0.0
 
+    current_x, current_y, current_hdg = _interpolate_centerline(centerline, ordered_points[0])
+
     for idx in range(len(ordered_points) - 1):
         start = ordered_points[idx]
         end = ordered_points[idx + 1]
         length = end - start
         if length <= 1e-6:
             continue
-        curvature = _curvature_for_interval(start, end)
-        x, y, hdg = _interpolate_centerline(centerline, start)
+        curvature_dataset = _curvature_for_interval(start, end)
+
+        target_x, target_y, target_hdg = _interpolate_centerline(centerline, end)
+
+        delta_target = _normalize_angle(target_hdg - current_hdg)
+        delta_dataset = curvature_dataset * length
+        if abs(delta_target) > 1e-5 and length > 1e-6:
+            curvature = curvature_dataset + (delta_target - delta_dataset) / length
+        else:
+            curvature = curvature_dataset
+
         segments.append(
             {
                 "s": start,
-                "x": x,
-                "y": y,
-                "hdg": hdg,
+                "x": current_x,
+                "y": current_y,
+                "hdg": current_hdg,
                 "length": length,
                 "curvature": curvature,
             }
         )
+
+        if length > 0:
+            if abs(curvature) <= 1e-12:
+                next_x = current_x + length * math.cos(current_hdg)
+                next_y = current_y + length * math.sin(current_hdg)
+                next_hdg = current_hdg
+            else:
+                radius = 1.0 / curvature
+                next_hdg = _normalize_angle(current_hdg + curvature * length)
+                dx = radius * (math.sin(next_hdg) - math.sin(current_hdg))
+                dy = -radius * (math.cos(next_hdg) - math.cos(current_hdg))
+                next_x = current_x + dx
+                next_y = current_y + dy
+        else:
+            next_x, next_y, next_hdg = current_x, current_y, current_hdg
+
+        if math.hypot(next_x - target_x, next_y - target_y) <= 0.1:
+            current_x, current_y = target_x, target_y
+        else:
+            current_x, current_y = next_x, next_y
+        current_hdg = next_hdg
 
     return segments
 
