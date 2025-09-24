@@ -268,9 +268,12 @@ def build_elevation_profile(
                 slope = (next_height - height) / (next_s - s_val)
             else:
                 slope = 0.0
-        elif profile:
-            slope = profile[-1]["b"]
         else:
+            # The final elevation entry does not have a following point to
+            # constrain its gradient.  Re-using the previous slope may cause
+            # the profile to extrapolate aggressively which manifests as a
+            # vertical spike at the end of the road.  Default to a flat
+            # continuation instead.
             slope = 0.0
 
         profile.append({

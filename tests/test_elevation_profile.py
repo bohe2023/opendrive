@@ -57,4 +57,4 @@ def test_build_elevation_profile_averages_and_slopes():
 
     assert second["s"] == 1.0
     assert second["a"] == 13.0  # average of 12 and 14
-    assert second["b"] == 3.0  # inherits slope from previous segment
+    assert second["b"] == 0.0  # final segment flattens to avoid spikes
