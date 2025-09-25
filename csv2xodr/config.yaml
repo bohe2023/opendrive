@@ -23,6 +23,10 @@ defaults:
   lane_width_m: 3.5
   shoulder_width_m: 0.5
 
+geometry:
+  max_endpoint_deviation_m: 0.5
+  max_segment_length_m: 2.0
+
 dedupe:
   enabled: true
   ds_thresh: 0.001      # meters

@@ -1,13 +1,24 @@
-import pandas as pd
+import csv
+from typing import Iterable
 
-def read_csv_any(path, encodings=("utf-8", "cp932", "gb18030")) -> pd.DataFrame:
+from csv2xodr.simpletable import DataFrame
+
+def _read_with_encoding(path: str, encoding: str) -> DataFrame:
+    with open(path, encoding=encoding, newline="") as fh:
+        reader = csv.DictReader(fh)
+        rows = [row for row in reader]
+    fieldnames: Iterable[str] = reader.fieldnames or []
+    return DataFrame(rows, columns=list(fieldnames))
+
+
+def read_csv_any(path, encodings=("utf-8", "cp932", "gb18030")) -> DataFrame:
     """
     Try multiple encodings to read CSV robustly.
     """
     last_err = None
     for enc in encodings:
         try:
-            return pd.read_csv(path, encoding=enc)
+            return _read_with_encoding(path, enc)
         except Exception as e:
             last_err = e
             continue
