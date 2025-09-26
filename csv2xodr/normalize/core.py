@@ -863,9 +863,20 @@ def build_geometry_segments(
     if initial_len <= 0:
         initial_len = 2.0
 
+    best_segments: List[Dict[str, float]] = []
+    best_deviation = float("inf")
+
+    def _record_best(candidate: List[Dict[str, float]], deviation_value: float) -> None:
+        nonlocal best_segments, best_deviation
+        if candidate and deviation_value < best_deviation:
+            best_segments = candidate
+            best_deviation = deviation_value
+
     segments, deviation = _build_segments(initial_len)
     if not segments:
         return []
+
+    _record_best(segments, deviation)
 
     min_len = max(0.25, initial_len / 16.0)
     current_len = initial_len
@@ -875,12 +886,16 @@ def build_geometry_segments(
     # 有效抑制误差，而无需完全回退到折线表达。
     while deviation > max_endpoint_deviation and current_len > min_len:
         current_len = max(min_len, current_len / 2.0)
-        segments, deviation = _build_segments(current_len)
-        if not segments:
-            return []
+        candidate_segments, candidate_deviation = _build_segments(current_len)
+        if not candidate_segments:
+            break
+
+        segments = candidate_segments
+        deviation = candidate_deviation
+        _record_best(segments, deviation)
 
     if deviation > max_endpoint_deviation:
-        return []
+        return best_segments
 
     return segments
 
