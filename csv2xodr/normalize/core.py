@@ -690,6 +690,98 @@ def build_geometry_segments(
                     return float(seg["curvature"])
             return 0.0
 
+        def _integrate_segment(
+            start_x: float,
+            start_y: float,
+            start_hdg: float,
+            curvature: float,
+            length: float,
+        ) -> Tuple[float, float, float]:
+            if abs(curvature) <= 1e-12:
+                end_x = start_x + length * math.cos(start_hdg)
+                end_y = start_y + length * math.sin(start_hdg)
+                end_hdg = start_hdg
+            else:
+                end_hdg = _normalize_angle(start_hdg + curvature * length)
+                radius = 1.0 / curvature
+                dx = radius * (math.sin(end_hdg) - math.sin(start_hdg))
+                dy = -radius * (math.cos(end_hdg) - math.cos(start_hdg))
+                end_x = start_x + dx
+                end_y = start_y + dy
+            return end_x, end_y, end_hdg
+
+        def _segment_derivatives(
+            start_hdg: float,
+            curvature: float,
+            length: float,
+        ) -> Tuple[float, float, float]:
+            if abs(curvature) <= 1e-8:
+                half_l_sq = 0.5 * (length ** 2)
+                dxdk = -half_l_sq * math.sin(start_hdg)
+                dydk = half_l_sq * math.cos(start_hdg)
+                return dxdk, dydk, length
+
+            end_hdg = start_hdg + curvature * length
+            sin_start = math.sin(start_hdg)
+            cos_start = math.cos(start_hdg)
+            sin_end = math.sin(end_hdg)
+            cos_end = math.cos(end_hdg)
+            k = curvature
+            L = length
+            numerator_x = sin_end - sin_start
+            numerator_y = cos_end - cos_start
+            dxdk = (cos_end * L * k - numerator_x) / (k * k)
+            dydk = (sin_end * L * k + numerator_y) / (k * k)
+            return dxdk, dydk, L
+
+        def _refine_curvature(
+            start_x: float,
+            start_y: float,
+            start_hdg: float,
+            length: float,
+            initial_curvature: float,
+            target_x: float,
+            target_y: float,
+            target_hdg: float,
+        ) -> Tuple[float, float, float, float, float]:
+            curvature = float(initial_curvature)
+            weight_angle = 0.25
+            for _ in range(8):
+                end_x, end_y, end_hdg = _integrate_segment(start_x, start_y, start_hdg, curvature, length)
+                err_x = target_x - end_x
+                err_y = target_y - end_y
+                err_theta = _normalize_angle(target_hdg - end_hdg)
+                if math.hypot(err_x, err_y) <= 1e-4 and abs(err_theta) <= 1e-4:
+                    break
+
+                dxdk, dydk, dthdk = _segment_derivatives(start_hdg, curvature, length)
+                denom = dxdk * dxdk + dydk * dydk + weight_angle * (dthdk * dthdk)
+                if denom <= 1e-18 or not math.isfinite(denom):
+                    break
+
+                numer = err_x * dxdk + err_y * dydk + weight_angle * err_theta * dthdk
+                if not math.isfinite(numer):
+                    break
+
+                delta = numer / denom
+                if not math.isfinite(delta):
+                    break
+
+                max_step = 0.5 / max(1.0, length)
+                if delta > max_step:
+                    delta = max_step
+                elif delta < -max_step:
+                    delta = -max_step
+
+                if abs(delta) <= 1e-12:
+                    break
+
+                curvature += delta
+
+            end_x, end_y, end_hdg = _integrate_segment(start_x, start_y, start_hdg, curvature, length)
+            endpoint_error = math.hypot(end_x - target_x, end_y - target_y)
+            return curvature, end_x, end_y, end_hdg, endpoint_error
+
         current_x, current_y, current_hdg = _interpolate_centerline(centerline, ordered_points[0])
         max_observed_endpoint_deviation = 0.0
 
@@ -706,9 +798,28 @@ def build_geometry_segments(
             delta_target = _normalize_angle(target_hdg - current_hdg)
             delta_dataset = curvature_dataset * length
             if abs(delta_target) > 1e-5 and length > 1e-6:
-                curvature = curvature_dataset + (delta_target - delta_dataset) / length
+                curvature_guess = curvature_dataset + (delta_target - delta_dataset) / length
             else:
-                curvature = curvature_dataset
+                curvature_guess = curvature_dataset
+
+            next_x, next_y, next_hdg = _integrate_segment(
+                current_x, current_y, current_hdg, curvature_guess, length
+            )
+            endpoint_error = math.hypot(next_x - target_x, next_y - target_y)
+
+            if endpoint_error > max_endpoint_deviation + 1e-9:
+                refined_curvature, next_x, next_y, next_hdg, endpoint_error = _refine_curvature(
+                    current_x,
+                    current_y,
+                    current_hdg,
+                    length,
+                    curvature_guess,
+                    target_x,
+                    target_y,
+                    target_hdg,
+                )
+            else:
+                refined_curvature = curvature_guess
 
             segments.append(
                 {
@@ -717,26 +828,10 @@ def build_geometry_segments(
                     "y": current_y,
                     "hdg": current_hdg,
                     "length": length,
-                    "curvature": curvature,
+                    "curvature": refined_curvature,
                 }
             )
 
-            if length > 0:
-                if abs(curvature) <= 1e-12:
-                    next_x = current_x + length * math.cos(current_hdg)
-                    next_y = current_y + length * math.sin(current_hdg)
-                    next_hdg = current_hdg
-                else:
-                    radius = 1.0 / curvature
-                    next_hdg = _normalize_angle(current_hdg + curvature * length)
-                    dx = radius * (math.sin(next_hdg) - math.sin(current_hdg))
-                    dy = -radius * (math.cos(next_hdg) - math.cos(current_hdg))
-                    next_x = current_x + dx
-                    next_y = current_y + dy
-            else:
-                next_x, next_y, next_hdg = current_x, current_y, current_hdg
-
-            endpoint_error = math.hypot(next_x - target_x, next_y - target_y)
             if endpoint_error > max_observed_endpoint_deviation:
                 max_observed_endpoint_deviation = endpoint_error
 
