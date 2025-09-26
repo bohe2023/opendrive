@@ -634,6 +634,7 @@ def build_geometry_segments(
     curvature_segments: List[Dict[str, float]],
     *,
     max_endpoint_deviation: float = 0.5,
+    max_segment_length: float = 2.0,
 ) -> List[Dict[str, float]]:
     if not curvature_segments:
         return []
@@ -650,9 +651,15 @@ def build_geometry_segments(
     # 长曲率区段在积分时会累积轻微的横向偏移，进而在 OpenDRIVE
     # 查看器中表现为相邻路段之间出现细小豁口。为了在不牺牲曲线段
     # 的情况下压制误差，将曲率分段进一步按照参考线采样 densify，
-    # 把单段长度限制在 2 米以内。这样每个圆弧段与原始测线的偏差
-    # 会被限制在毫米级别，避免出现肉眼可见的缝隙。
-    max_segment_length = 2.0
+    # 把单段长度限制在给定的最大值（默认 2 米）以内。这样每个圆弧
+    # 段与原始测线的偏差会被限制在毫米级别，避免出现肉眼可见的缝隙。
+    try:
+        densify_length = float(max_segment_length)
+    except (TypeError, ValueError):
+        densify_length = 2.0
+
+    if densify_length <= 0:
+        densify_length = 2.0
     if len(centerline_s) >= 2:
         for idx in range(1, len(centerline_s)):
             start_s = max(0.0, min(total_length, float(centerline_s[idx - 1])))
@@ -660,9 +667,9 @@ def build_geometry_segments(
             if end_s <= start_s:
                 continue
             span = end_s - start_s
-            if span <= max_segment_length:
+            if span <= densify_length:
                 continue
-            steps = int(math.ceil(span / max_segment_length))
+            steps = int(math.ceil(span / densify_length))
             step_len = span / steps
             for step in range(1, steps):
                 breakpoints.add(start_s + step * step_len)
