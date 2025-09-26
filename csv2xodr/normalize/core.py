@@ -643,112 +643,135 @@ def build_geometry_segments(
     if total_length <= 0:
         return []
 
-    breakpoints = {0.0, total_length}
     centerline_s = [float(v) for v in centerline["s"].to_list()]
-    for value in centerline_s:
-        breakpoints.add(max(0.0, min(total_length, float(value))))
 
-    # 长曲率区段在积分时会累积轻微的横向偏移，进而在 OpenDRIVE
-    # 查看器中表现为相邻路段之间出现细小豁口。为了在不牺牲曲线段
-    # 的情况下压制误差，将曲率分段进一步按照参考线采样 densify，
-    # 把单段长度限制在给定的最大值（默认 2 米）以内。这样每个圆弧
-    # 段与原始测线的偏差会被限制在毫米级别，避免出现肉眼可见的缝隙。
-    try:
-        densify_length = float(max_segment_length)
-    except (TypeError, ValueError):
-        densify_length = 2.0
+    def _build_segments(max_len: float) -> Tuple[List[Dict[str, float]], float]:
+        breakpoints = {0.0, total_length}
+        for value in centerline_s:
+            breakpoints.add(max(0.0, min(total_length, float(value))))
 
-    if densify_length <= 0:
-        densify_length = 2.0
-    if len(centerline_s) >= 2:
-        for idx in range(1, len(centerline_s)):
-            start_s = max(0.0, min(total_length, float(centerline_s[idx - 1])))
-            end_s = max(0.0, min(total_length, float(centerline_s[idx])))
-            if end_s <= start_s:
-                continue
-            span = end_s - start_s
-            if span <= densify_length:
-                continue
-            steps = int(math.ceil(span / densify_length))
-            step_len = span / steps
-            for step in range(1, steps):
-                breakpoints.add(start_s + step * step_len)
-    for seg in curvature_segments:
-        s0 = max(0.0, min(total_length, float(seg["s0"])) )
-        s1 = max(0.0, min(total_length, float(seg["s1"])) )
-        breakpoints.add(s0)
-        breakpoints.add(s1)
+        if max_len <= 0:
+            effective_len = 2.0
+        else:
+            effective_len = float(max_len)
 
-    ordered_points = sorted(breakpoints)
-    segments: List[Dict[str, float]] = []
+        # 长曲率区段在积分时会累积轻微的横向偏移，进而在 OpenDRIVE
+        # 查看器中表现为相邻路段之间出现细小豁口。为了在不牺牲曲线段
+        # 的情况下压制误差，将曲率分段进一步按照参考线采样 densify。
+        # 这里允许调用方传入更小的 densify 间距；如果输入的最大长度
+        # 失效，则退回默认的 2 米。
+        if len(centerline_s) >= 2:
+            for idx in range(1, len(centerline_s)):
+                start_s = max(0.0, min(total_length, float(centerline_s[idx - 1])))
+                end_s = max(0.0, min(total_length, float(centerline_s[idx])))
+                if end_s <= start_s:
+                    continue
+                span = end_s - start_s
+                if span <= effective_len:
+                    continue
+                steps = int(math.ceil(span / effective_len))
+                step_len = span / steps
+                for step in range(1, steps):
+                    breakpoints.add(start_s + step * step_len)
 
-    def _curvature_for_interval(start: float, end: float) -> float:
-        mid = (start + end) / 2.0
         for seg in curvature_segments:
-            if seg["s0"] <= mid <= seg["s1"]:
-                return float(seg["curvature"])
-        return 0.0
+            s0 = max(0.0, min(total_length, float(seg["s0"])) )
+            s1 = max(0.0, min(total_length, float(seg["s1"])) )
+            breakpoints.add(s0)
+            breakpoints.add(s1)
 
-    current_x, current_y, current_hdg = _interpolate_centerline(centerline, ordered_points[0])
-    max_observed_endpoint_deviation = 0.0
+        ordered_points = sorted(breakpoints)
+        segments: List[Dict[str, float]] = []
 
-    for idx in range(len(ordered_points) - 1):
-        start = ordered_points[idx]
-        end = ordered_points[idx + 1]
-        length = end - start
-        if length <= 1e-6:
-            continue
-        curvature_dataset = _curvature_for_interval(start, end)
+        def _curvature_for_interval(start: float, end: float) -> float:
+            mid = (start + end) / 2.0
+            for seg in curvature_segments:
+                if seg["s0"] <= mid <= seg["s1"]:
+                    return float(seg["curvature"])
+            return 0.0
 
-        target_x, target_y, target_hdg = _interpolate_centerline(centerline, end)
+        current_x, current_y, current_hdg = _interpolate_centerline(centerline, ordered_points[0])
+        max_observed_endpoint_deviation = 0.0
 
-        delta_target = _normalize_angle(target_hdg - current_hdg)
-        delta_dataset = curvature_dataset * length
-        if abs(delta_target) > 1e-5 and length > 1e-6:
-            curvature = curvature_dataset + (delta_target - delta_dataset) / length
-        else:
-            curvature = curvature_dataset
+        for idx in range(len(ordered_points) - 1):
+            start = ordered_points[idx]
+            end = ordered_points[idx + 1]
+            length = end - start
+            if length <= 1e-6:
+                continue
+            curvature_dataset = _curvature_for_interval(start, end)
 
-        segments.append(
-            {
-                "s": start,
-                "x": current_x,
-                "y": current_y,
-                "hdg": current_hdg,
-                "length": length,
-                "curvature": curvature,
-            }
-        )
+            target_x, target_y, target_hdg = _interpolate_centerline(centerline, end)
 
-        if length > 0:
-            if abs(curvature) <= 1e-12:
-                next_x = current_x + length * math.cos(current_hdg)
-                next_y = current_y + length * math.sin(current_hdg)
-                next_hdg = current_hdg
+            delta_target = _normalize_angle(target_hdg - current_hdg)
+            delta_dataset = curvature_dataset * length
+            if abs(delta_target) > 1e-5 and length > 1e-6:
+                curvature = curvature_dataset + (delta_target - delta_dataset) / length
             else:
-                radius = 1.0 / curvature
-                next_hdg = _normalize_angle(current_hdg + curvature * length)
-                dx = radius * (math.sin(next_hdg) - math.sin(current_hdg))
-                dy = -radius * (math.cos(next_hdg) - math.cos(current_hdg))
-                next_x = current_x + dx
-                next_y = current_y + dy
-        else:
-            next_x, next_y, next_hdg = current_x, current_y, current_hdg
+                curvature = curvature_dataset
 
-        endpoint_error = math.hypot(next_x - target_x, next_y - target_y)
-        if endpoint_error > max_observed_endpoint_deviation:
-            max_observed_endpoint_deviation = endpoint_error
+            segments.append(
+                {
+                    "s": start,
+                    "x": current_x,
+                    "y": current_y,
+                    "hdg": current_hdg,
+                    "length": length,
+                    "curvature": curvature,
+                }
+            )
 
-        # 直接沿着曲率段的理论终点继续拼接，以保证导出的 planView
-        # 几何在 OpenDRIVE 查看器中不存在微小豁口。一旦累计偏移超过
-        # 阈值，整个几何仍会回退到折线表达，从而与测线保持一致。
-        current_x, current_y, current_hdg = next_x, next_y, next_hdg
+            if length > 0:
+                if abs(curvature) <= 1e-12:
+                    next_x = current_x + length * math.cos(current_hdg)
+                    next_y = current_y + length * math.sin(current_hdg)
+                    next_hdg = current_hdg
+                else:
+                    radius = 1.0 / curvature
+                    next_hdg = _normalize_angle(current_hdg + curvature * length)
+                    dx = radius * (math.sin(next_hdg) - math.sin(current_hdg))
+                    dy = -radius * (math.cos(next_hdg) - math.cos(current_hdg))
+                    next_x = current_x + dx
+                    next_y = current_y + dy
+            else:
+                next_x, next_y, next_hdg = current_x, current_y, current_hdg
 
-    # If any arc drifts too far away from the surveyed centreline the resulting
-    # planView becomes noticeably distorted which can break downstream
-    # consumers.  Fall back to the original piecewise-linear geometry in that
-    # case.
-    if max_observed_endpoint_deviation > max_endpoint_deviation:
+            endpoint_error = math.hypot(next_x - target_x, next_y - target_y)
+            if endpoint_error > max_observed_endpoint_deviation:
+                max_observed_endpoint_deviation = endpoint_error
+
+            # 直接沿着曲率段的理论终点继续拼接，以保证导出的 planView
+            # 几何在 OpenDRIVE 查看器中不存在微小豁口。一旦累计偏移超过
+            # 阈值，整个几何仍会回退到折线表达，从而与测线保持一致。
+            current_x, current_y, current_hdg = next_x, next_y, next_hdg
+
+        return segments, max_observed_endpoint_deviation
+
+    try:
+        initial_len = float(max_segment_length)
+    except (TypeError, ValueError):
+        initial_len = 2.0
+
+    if initial_len <= 0:
+        initial_len = 2.0
+
+    segments, deviation = _build_segments(initial_len)
+    if not segments:
+        return []
+
+    min_len = max(0.25, initial_len / 16.0)
+    current_len = initial_len
+
+    # 在实际数据中，个别曲率段可能因为原始测量噪声导致理论圆弧与
+    # 折线终点存在略高于阈值的偏差。通过逐步缩小 densify 间距可以
+    # 有效抑制误差，而无需完全回退到折线表达。
+    while deviation > max_endpoint_deviation and current_len > min_len:
+        current_len = max(min_len, current_len / 2.0)
+        segments, deviation = _build_segments(current_len)
+        if not segments:
+            return []
+
+    if deviation > max_endpoint_deviation:
         return []
 
     return segments
