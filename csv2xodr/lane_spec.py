@@ -216,8 +216,19 @@ def _build_division_lookup(lane_div_df: Optional[DataFrame],
                     abs(prev["s0"] - start) < 1e-6
                     and abs(prev["s1"] - end) < 1e-6
                 ):
-                    if prev.get("is_retrans") and not data.get("is_retrans"):
-                        cleaned[-1] = data
+                    prev_retrans = prev.get("_is_retrans", False)
+                    new_retrans = data.get("is_retrans", False)
+                    if prev_retrans == new_retrans or (prev_retrans and not new_retrans):
+                        continue
+                    if new_retrans and not prev_retrans:
+                        mark_type = mark_type_from_division_row(data["row"])
+                        cleaned[-1] = {
+                            "s0": data["s0"],
+                            "s1": data["s1"],
+                            "type": mark_type,
+                            "width": data["width"],
+                            "_is_retrans": True,
+                        }
                     continue
                 if start < prev["s1"]:
                     start = max(prev["s1"], start)
@@ -233,13 +244,13 @@ def _build_division_lookup(lane_div_df: Optional[DataFrame],
                     "s1": data["s1"],
                     "type": mark_type,
                     "width": data["width"],
-                    "is_retrans": data.get("is_retrans", False),
+                    "_is_retrans": data.get("is_retrans", False),
                 }
             )
 
         if cleaned:
             for seg in cleaned:
-                seg.pop("is_retrans", None)
+                seg.pop("_is_retrans", None)
             lookup[line_id] = {
                 "segments": cleaned,
                 "geometry": (line_geometry_lookup or {}).get(line_id, []),

@@ -103,3 +103,58 @@ def test_build_line_geometry_lookup_deduplicates_retransmissions():
 
     assert first["z"] == [0.0, 0.0]
     assert second["z"] == [0.0, 0.0]
+
+
+def test_build_line_geometry_lookup_keeps_mixed_retransmissions():
+    df = DataFrame(
+        [
+            {
+                "ライン型地物ID": "10",
+                "Offset[cm]": "0",
+                "緯度[deg]": "35.0",
+                "経度[deg]": "139.0",
+                "高さ[m]": "0.0",
+                "ログ時刻": "mix",
+                "Type": "1",
+                "Is Retransmission": "true",
+            },
+            {
+                "ライン型地物ID": "10",
+                "Offset[cm]": "100",
+                "緯度[deg]": "35.00001",
+                "経度[deg]": "139.00001",
+                "高さ[m]": "0.0",
+                "ログ時刻": "mix",
+                "Type": "1",
+                "Is Retransmission": "false",
+            },
+            {
+                "ライン型地物ID": "20",
+                "Offset[cm]": "0",
+                "緯度[deg]": "35.1",
+                "経度[deg]": "139.1",
+                "高さ[m]": "0.0",
+                "ログ時刻": "only_true",
+                "Type": "1",
+                "Is Retransmission": "true",
+            },
+            {
+                "ライン型地物ID": "20",
+                "Offset[cm]": "100",
+                "緯度[deg]": "35.10001",
+                "経度[deg]": "139.10001",
+                "高さ[m]": "0.0",
+                "ログ時刻": "only_true",
+                "Type": "1",
+                "Is Retransmission": "true",
+            },
+        ]
+    )
+
+    lookup = build_line_geometry_lookup(
+        df, offset_mapper=lambda value: value, lat0=35.0, lon0=139.0
+    )
+
+    assert "10" in lookup, "mixed retransmission flags should retain the group"
+    assert "20" not in lookup, "pure retransmission groups should still be skipped"
+    assert lookup["10"][0]["s"][0] == pytest.approx(0.0)

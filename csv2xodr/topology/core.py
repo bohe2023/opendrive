@@ -270,7 +270,11 @@ def build_lane_topology(lane_link_df: DataFrame,
 
         existing = records.get(key)
         if existing is not None:
-            if existing.get("is_retrans") and not record["is_retrans"]:
+            existing_retrans = bool(existing.get("is_retrans"))
+            new_retrans = bool(record["is_retrans"])
+            if existing_retrans == new_retrans or (existing_retrans and not new_retrans):
+                continue
+            if new_retrans and not existing_retrans:
                 records[key] = updated
             continue
 
