@@ -99,7 +99,19 @@ def test_geometry_segments_respect_threshold():
         max_endpoint_deviation=0.01,
     )
 
-    assert strict_geometry == []
+    assert len(strict_geometry) >= 1
+
+    seg = strict_geometry[0]
+    if abs(seg.get("curvature", 0.0)) <= 1e-12:
+        end_x = seg["x"] + seg["length"] * math.cos(seg["hdg"])
+        end_y = seg["y"] + seg["length"] * math.sin(seg["hdg"])
+    else:
+        radius = 1.0 / seg["curvature"]
+        end_hdg = seg["hdg"] + seg["curvature"] * seg["length"]
+        end_x = seg["x"] + radius * (math.sin(end_hdg) - math.sin(seg["hdg"]))
+        end_y = seg["y"] - radius * (math.cos(end_hdg) - math.cos(seg["hdg"]))
+
+    assert math.hypot(end_x - 1.0, end_y - 0.0) <= 0.01 + 1e-6
 
     relaxed_geometry = build_geometry_segments(
         center,
