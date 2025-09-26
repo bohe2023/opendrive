@@ -80,10 +80,17 @@ def main():
     except (TypeError, ValueError) as exc:
         raise TypeError("geometry.max_endpoint_deviation_m must be a number") from exc
 
+    max_segment_length_cfg = geometry_cfg_raw.get("max_segment_length_m", 2.0)
+    try:
+        max_segment_length = float(max_segment_length_cfg)
+    except (TypeError, ValueError) as exc:
+        raise TypeError("geometry.max_segment_length_m must be a number") from exc
+
     geometry_segments = build_geometry_segments(
         center,
         curvature_profile,
         max_endpoint_deviation=max_endpoint_deviation,
+        max_segment_length=max_segment_length,
     )
 
     slope_profiles = build_slope_profile(dfs.get("slope"), offset_mapper=offset_mapper)

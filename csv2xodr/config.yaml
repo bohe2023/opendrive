@@ -25,6 +25,7 @@ defaults:
 
 geometry:
   max_endpoint_deviation_m: 0.5
+  max_segment_length_m: 2.0
 
 dedupe:
   enabled: true

@@ -189,6 +189,27 @@ def test_geometry_segments_are_densified_for_long_spans():
     assert len(geometry) >= 50
     assert all(seg["length"] <= 2.0 + 1e-9 for seg in geometry)
 
+
+def test_geometry_segments_honours_custom_densify_threshold():
+    center = DataFrame(
+        {
+            "s": [0.0, 50.0, 100.0],
+            "x": [0.0, 50.0, 100.0],
+            "y": [0.0, 0.0, 0.0],
+            "hdg": [0.0, 0.0, 0.0],
+        }
+    )
+
+    geometry = build_geometry_segments(
+        center,
+        [{"s0": 0.0, "s1": 100.0, "curvature": 0.0}],
+        max_endpoint_deviation=0.5,
+        max_segment_length=5.0,
+    )
+
+    assert len(geometry) >= 20
+    assert all(seg["length"] <= 5.0 + 1e-9 for seg in geometry)
+
 def test_apply_shoulder_profile_adds_lanes():
     lane_sections = [
         {"s0": 0.0, "s1": 10.0, "left": [{"id": 1, "width": 3.5, "roadMark": {}, "predecessors": [], "successors": [], "type": "driving"}], "right": [{"id": -1, "width": 3.5, "roadMark": {}, "predecessors": [], "successors": [], "type": "driving"}]},
