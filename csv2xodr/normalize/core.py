@@ -740,8 +740,12 @@ def build_geometry_segments(
             target_x: float,
             target_y: float,
             target_hdg: float,
+            preferred_curvature: float,
         ) -> Tuple[float, float, float, float, float]:
             curvature = float(initial_curvature)
+            preferred_sign = 0.0
+            if abs(preferred_curvature) > 1e-12:
+                preferred_sign = math.copysign(1.0, preferred_curvature)
             weight_angle = 0.25
             for _ in range(8):
                 end_x, end_y, end_hdg = _integrate_segment(start_x, start_y, start_hdg, curvature, length)
@@ -773,10 +777,17 @@ def build_geometry_segments(
                 if abs(delta) <= 1e-12:
                     break
 
-                curvature += delta
+                next_curvature = curvature + delta
+                if preferred_sign and next_curvature * preferred_sign < 0:
+                    next_curvature = float(preferred_curvature)
+                curvature = next_curvature
 
             end_x, end_y, end_hdg = _integrate_segment(start_x, start_y, start_hdg, curvature, length)
             endpoint_error = math.hypot(end_x - target_x, end_y - target_y)
+            if preferred_sign and curvature * preferred_sign < 0:
+                curvature = float(preferred_curvature)
+                end_x, end_y, end_hdg = _integrate_segment(start_x, start_y, start_hdg, curvature, length)
+                endpoint_error = math.hypot(end_x - target_x, end_y - target_y)
             return curvature, end_x, end_y, end_hdg, endpoint_error
 
         current_s = ordered_points[0]
@@ -790,6 +801,9 @@ def build_geometry_segments(
             if length_total <= 1e-6:
                 continue
             curvature_dataset = _curvature_for_interval(start, end)
+            preferred_sign = 0.0
+            if abs(curvature_dataset) > 1e-12:
+                preferred_sign = math.copysign(1.0, curvature_dataset)
 
             target_x, target_y, target_hdg = _interpolate_centerline(centerline, end)
 
@@ -798,6 +812,9 @@ def build_geometry_segments(
             if abs(delta_target) > 1e-5 and length_total > 1e-6:
                 curvature_guess = curvature_dataset + (delta_target - delta_dataset) / length_total
             else:
+                curvature_guess = curvature_dataset
+
+            if preferred_sign and curvature_guess * preferred_sign < 0:
                 curvature_guess = curvature_dataset
 
             next_x, next_y, next_hdg = _integrate_segment(
@@ -815,9 +832,17 @@ def build_geometry_segments(
                     target_x,
                     target_y,
                     target_hdg,
+                    curvature_dataset,
                 )
             else:
                 refined_curvature = curvature_guess
+
+            if preferred_sign and refined_curvature * preferred_sign < 0:
+                refined_curvature = float(curvature_dataset)
+                next_x, next_y, next_hdg = _integrate_segment(
+                    current_x, current_y, current_hdg, refined_curvature, length_total
+                )
+                endpoint_error = math.hypot(next_x - target_x, next_y - target_y)
 
             steps = max(1, int(math.ceil(length_total / effective_len)))
             step_length = length_total / steps
