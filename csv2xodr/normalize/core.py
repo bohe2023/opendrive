@@ -646,9 +646,17 @@ def build_geometry_segments(
     centerline_s = [float(v) for v in centerline["s"].to_list()]
 
     def _build_segments(max_len: float) -> Tuple[List[Dict[str, float]], float]:
-        breakpoints = {0.0, total_length}
+        def _clamp(value: float) -> float:
+            clamped = max(0.0, min(total_length, float(value)))
+            # 标记点在浮点运算中会出现微小误差，这里统一取 9 位小数以便后续
+            # 查找时能够复用相同的键，避免 densify 过程中产生的重复点无法被
+            # 正确识别为同一个位置。
+            return round(clamped, 9)
+
+        anchor_points: Dict[float, bool] = {_clamp(0.0): True, _clamp(total_length): True}
+
         for value in centerline_s:
-            breakpoints.add(max(0.0, min(total_length, float(value))))
+            anchor_points.setdefault(_clamp(value), True)
 
         if max_len <= 0:
             effective_len = 2.0
@@ -660,27 +668,16 @@ def build_geometry_segments(
         # 的情况下压制误差，将曲率分段进一步按照参考线采样 densify。
         # 这里允许调用方传入更小的 densify 间距；如果输入的最大长度
         # 失效，则退回默认的 2 米。
-        if len(centerline_s) >= 2:
-            for idx in range(1, len(centerline_s)):
-                start_s = max(0.0, min(total_length, float(centerline_s[idx - 1])))
-                end_s = max(0.0, min(total_length, float(centerline_s[idx])))
-                if end_s <= start_s:
-                    continue
-                span = end_s - start_s
-                if span <= effective_len:
-                    continue
-                steps = int(math.ceil(span / effective_len))
-                step_len = span / steps
-                for step in range(1, steps):
-                    breakpoints.add(start_s + step * step_len)
+        # densify 由后续针对每个主控制点区间的细分逻辑统一处理，这里无需
+        # 额外插入中间节点。
 
         for seg in curvature_segments:
-            s0 = max(0.0, min(total_length, float(seg["s0"])) )
-            s1 = max(0.0, min(total_length, float(seg["s1"])) )
-            breakpoints.add(s0)
-            breakpoints.add(s1)
+            s0 = _clamp(seg["s0"])
+            s1 = _clamp(seg["s1"])
+            anchor_points.setdefault(s0, True)
+            anchor_points.setdefault(s1, True)
 
-        ordered_points = sorted(breakpoints)
+        ordered_points = sorted(anchor_points.keys())
         segments: List[Dict[str, float]] = []
 
         def _curvature_for_interval(start: float, end: float) -> float:
@@ -782,28 +779,29 @@ def build_geometry_segments(
             endpoint_error = math.hypot(end_x - target_x, end_y - target_y)
             return curvature, end_x, end_y, end_hdg, endpoint_error
 
-        current_x, current_y, current_hdg = _interpolate_centerline(centerline, ordered_points[0])
+        current_s = ordered_points[0]
+        current_x, current_y, current_hdg = _interpolate_centerline(centerline, current_s)
         max_observed_endpoint_deviation = 0.0
 
         for idx in range(len(ordered_points) - 1):
             start = ordered_points[idx]
             end = ordered_points[idx + 1]
-            length = end - start
-            if length <= 1e-6:
+            length_total = end - start
+            if length_total <= 1e-6:
                 continue
             curvature_dataset = _curvature_for_interval(start, end)
 
             target_x, target_y, target_hdg = _interpolate_centerline(centerline, end)
 
             delta_target = _normalize_angle(target_hdg - current_hdg)
-            delta_dataset = curvature_dataset * length
-            if abs(delta_target) > 1e-5 and length > 1e-6:
-                curvature_guess = curvature_dataset + (delta_target - delta_dataset) / length
+            delta_dataset = curvature_dataset * length_total
+            if abs(delta_target) > 1e-5 and length_total > 1e-6:
+                curvature_guess = curvature_dataset + (delta_target - delta_dataset) / length_total
             else:
                 curvature_guess = curvature_dataset
 
             next_x, next_y, next_hdg = _integrate_segment(
-                current_x, current_y, current_hdg, curvature_guess, length
+                current_x, current_y, current_hdg, curvature_guess, length_total
             )
             endpoint_error = math.hypot(next_x - target_x, next_y - target_y)
 
@@ -812,7 +810,7 @@ def build_geometry_segments(
                     current_x,
                     current_y,
                     current_hdg,
-                    length,
+                    length_total,
                     curvature_guess,
                     target_x,
                     target_y,
@@ -821,24 +819,39 @@ def build_geometry_segments(
             else:
                 refined_curvature = curvature_guess
 
-            segments.append(
-                {
-                    "s": start,
-                    "x": current_x,
-                    "y": current_y,
-                    "hdg": current_hdg,
-                    "length": length,
-                    "curvature": refined_curvature,
-                }
-            )
+            steps = max(1, int(math.ceil(length_total / effective_len)))
+            step_length = length_total / steps
+            seg_start_s = start
+            seg_start_x = current_x
+            seg_start_y = current_y
+            seg_start_hdg = current_hdg
+
+            for step in range(steps):
+                seg_s = seg_start_s + step * step_length
+                seg_x = seg_start_x
+                seg_y = seg_start_y
+                seg_hdg = seg_start_hdg
+
+                segments.append(
+                    {
+                        "s": seg_s,
+                        "x": seg_x,
+                        "y": seg_y,
+                        "hdg": seg_hdg,
+                        "length": step_length,
+                        "curvature": refined_curvature,
+                    }
+                )
+
+                seg_start_x, seg_start_y, seg_start_hdg = _integrate_segment(
+                    seg_x, seg_y, seg_hdg, refined_curvature, step_length
+                )
+
+            current_x, current_y, current_hdg = seg_start_x, seg_start_y, seg_start_hdg
+            current_s = end
 
             if endpoint_error > max_observed_endpoint_deviation:
                 max_observed_endpoint_deviation = endpoint_error
-
-            # 直接沿着曲率段的理论终点继续拼接，以保证导出的 planView
-            # 几何在 OpenDRIVE 查看器中不存在微小豁口。一旦累计偏移超过
-            # 阈值，整个几何仍会回退到折线表达，从而与测线保持一致。
-            current_x, current_y, current_hdg = next_x, next_y, next_hdg
 
         return segments, max_observed_endpoint_deviation
 
