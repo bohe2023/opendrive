@@ -124,15 +124,24 @@ def build_line_geometry_lookup(
                 "lon": [],
                 "z": [],
                 "offset": [],
-                "is_retrans": True,
+                "has_true": False,
+                "has_false": False,
+                "has_flag": False,
             },
         )
 
-        retrans_flag = False
+        retrans_flag = None
         if is_retrans_col is not None:
-            retrans_flag = str(row[is_retrans_col]).strip().lower() == "true"
-        if not retrans_flag:
-            entry["is_retrans"] = False
+            entry["has_flag"] = True
+            value = row[is_retrans_col]
+            if isinstance(value, bool):
+                retrans_flag = value
+            else:
+                retrans_flag = str(value).strip().lower() == "true"
+        if retrans_flag is True:
+            entry["has_true"] = True
+        elif retrans_flag is False:
+            entry["has_false"] = True
 
         entry["lat"].append(lat_val)
         entry["lon"].append(lon_val)
@@ -147,7 +156,10 @@ def build_line_geometry_lookup(
     lookup: Dict[str, List[Dict[str, Any]]] = {}
 
     for entry in grouped.values():
-        if entry.get("is_retrans", False):
+        has_true = entry.get("has_true", False)
+        has_false = entry.get("has_false", False)
+        has_flag = entry.get("has_flag", False)
+        if has_flag and has_true and not has_false:
             continue
 
         offsets_m = [value - base_offset for value in entry["offset"]]

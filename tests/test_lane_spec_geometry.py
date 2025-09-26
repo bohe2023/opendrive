@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from csv2xodr.lane_spec import build_lane_spec
+from csv2xodr.lane_spec import build_lane_spec, _build_division_lookup
 from csv2xodr.simpletable import DataFrame
 
 
@@ -84,3 +84,31 @@ def test_lane_spec_attaches_geometry_and_clips():
     assert geom_second["s"][0] == pytest.approx(4.0)
     assert geom_second["s"][-1] == pytest.approx(10.0)
     assert geom_second["x"][0] == pytest.approx(4.0)
+
+
+def test_build_division_lookup_prefers_true_retransmission_segments():
+    lane_div = DataFrame(
+        [
+            {
+                "区画線ID": "100",
+                "Offset[cm]": "0",
+                "End Offset[cm]": "100",
+                "種別": "1",
+                "Is Retransmission": "false",
+            },
+            {
+                "区画線ID": "100",
+                "Offset[cm]": "0",
+                "End Offset[cm]": "100",
+                "種別": "3",
+                "Is Retransmission": "true",
+            },
+        ]
+    )
+
+    lookup = _build_division_lookup(lane_div)
+
+    segments = lookup["100"]["segments"]
+    assert len(segments) == 1
+    assert segments[0]["type"] == "broken", "segment should reflect the true retransmission row"
+    assert "_is_retrans" not in segments[0]
