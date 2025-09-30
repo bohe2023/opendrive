@@ -401,6 +401,9 @@ def build_lane_spec(
         )
     ]
 
+    if lane_count and len(ordered_lane_numbers) > lane_count:
+        ordered_lane_numbers = ordered_lane_numbers[:lane_count]
+
     if positive_bases and negative_bases:
         # When the input data contains explicit lane number signs we rely on
         # them to determine the side of the reference line.  This avoids
@@ -415,10 +418,17 @@ def build_lane_spec(
         else:
             target_left = len(ordered_lane_numbers) // 2
         left_lane_numbers = set(ordered_lane_numbers[:target_left])
+        if lane_count:
+            right_limit = min(lane_count, len(ordered_lane_numbers))
+        else:
+            right_limit = len(ordered_lane_numbers)
+        right_lane_numbers = set(ordered_lane_numbers[target_left:right_limit])
         left_bases = [
             base for base in base_ids if lane_no_by_base.get(base) in left_lane_numbers
         ]
-        right_bases = [base for base in base_ids if base not in left_bases]
+        right_bases = [
+            base for base in base_ids if lane_no_by_base.get(base) in right_lane_numbers
+        ]
     if not left_bases and base_ids:
         left_bases = base_ids[:1]
         right_bases = [base for base in base_ids if base not in left_bases]
