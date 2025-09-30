@@ -20,6 +20,8 @@ from csv2xodr.normalize.core import (
     build_shoulder_profile,
     build_slope_profile,
     build_superelevation_profile,
+    filter_dataframe_by_path,
+    select_best_path_id,
 )
 from csv2xodr.line_geometry import build_line_geometry_lookup
 from csv2xodr.topology.core import make_sections, build_lane_topology
@@ -75,6 +77,12 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
     else:
         cfg = mini_yaml_load(config_path)
     dfs = load_all(input_dir, cfg)
+    primary_path = select_best_path_id(dfs.get("line_geometry"))
+    if primary_path is not None:
+        for key, table in list(dfs.items()):
+            filtered = filter_dataframe_by_path(table, primary_path)
+            if filtered is not None:
+                dfs[key] = filtered
     _apply_dataset_overrides(dfs, cfg)
 
     # planView (centerline) from line geometry + geo origin
