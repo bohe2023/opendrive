@@ -394,30 +394,34 @@ def build_lane_spec(
     lane_id_map: Dict[str, int] = {}
     lane_side_map: Dict[str, str] = {}
 
-    left_id_by_lane_no: Dict[int, int] = {}
+    left_id_by_lane_no: Dict[Tuple[Optional[str], int], int] = {}
     current_id = 1
     for base in left_bases:
         ordered = reversed(sorted(lane_groups.get(base, []), key=lambda x: lane_info[x]["lane_no"]))
         for uid in ordered:
-            lane_no = lane_info[uid]["lane_no"]
-            assigned = left_id_by_lane_no.get(lane_no)
+            info = lane_info[uid]
+            lane_no = info["lane_no"]
+            key = (info.get("base_id"), lane_no)
+            assigned = left_id_by_lane_no.get(key)
             if assigned is None:
                 assigned = current_id
-                left_id_by_lane_no[lane_no] = assigned
+                left_id_by_lane_no[key] = assigned
                 current_id += 1
             lane_id_map[uid] = assigned
             lane_side_map[uid] = "left"
 
-    right_id_by_lane_no: Dict[int, int] = {}
+    right_id_by_lane_no: Dict[Tuple[Optional[str], int], int] = {}
     current_id = -1
     for base in right_bases:
         ordered = reversed(sorted(lane_groups.get(base, []), key=lambda x: lane_info[x]["lane_no"]))
         for uid in ordered:
-            lane_no = lane_info[uid]["lane_no"]
-            assigned = right_id_by_lane_no.get(lane_no)
+            info = lane_info[uid]
+            lane_no = info["lane_no"]
+            key = (info.get("base_id"), lane_no)
+            assigned = right_id_by_lane_no.get(key)
             if assigned is None:
                 assigned = current_id
-                right_id_by_lane_no[lane_no] = assigned
+                right_id_by_lane_no[key] = assigned
                 current_id -= 1
             lane_id_map[uid] = assigned
             lane_side_map[uid] = "right"
