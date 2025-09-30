@@ -1,4 +1,5 @@
 import math
+import statistics
 from typing import Callable, Iterable, List, Tuple, Optional, Any, Dict
 
 from csv2xodr.simpletable import DataFrame
@@ -179,10 +180,23 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
         if offsets_f:
             start = offsets_f[0]
             offsets_norm = [v - start for v in offsets_f]
-            if s[-1] > 0 and offsets_norm[-1] > 0:
-                ratio = offsets_norm[-1] / s[-1]
-                if ratio > 10.0:
-                    offsets_norm = [v * 0.01 for v in offsets_norm]
+            if s[-1] > 0:
+                ratios = []
+                for i in range(1, len(offsets_norm)):
+                    delta_offset = offsets_norm[i] - offsets_norm[i - 1]
+                    delta_s = s[i] - s[i - 1]
+                    if delta_offset <= 0 or delta_s <= 0:
+                        continue
+                    ratios.append(delta_offset / delta_s)
+                scale = 1.0
+                if ratios:
+                    typical = statistics.median(ratios)
+                    if typical > 10.0:
+                        scale = 0.01
+                    elif typical < 0.1:
+                        scale = 100.0
+                if scale != 1.0:
+                    offsets_norm = [v * scale for v in offsets_norm]
             offsets_column = offsets_norm
 
     data = {"s": s, "x": x, "y": y, "hdg": hdg}
