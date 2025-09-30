@@ -349,7 +349,32 @@ def build_lane_spec(
         lane_div_df, line_geometry_lookup=line_geometry_lookup, offset_mapper=offset_mapper
     )
 
-    base_ids = sorted(lane_groups.keys())
+    lane_no_by_base: Dict[str, Optional[int]] = {}
+    base_start: Dict[str, float] = {}
+
+    for base_id, uids in lane_groups.items():
+        lane_numbers: List[int] = []
+        first_start: Optional[float] = None
+        for uid in uids:
+            info = lane_info.get(uid) or {}
+            lane_no = info.get("lane_no")
+            if isinstance(lane_no, (int, float)):
+                lane_numbers.append(int(lane_no))
+            for segment in info.get("segments", []):
+                try:
+                    start_val = float(segment.get("start", 0.0))
+                except (TypeError, ValueError):
+                    continue
+                if first_start is None or start_val < first_start:
+                    first_start = start_val
+        lane_no_by_base[base_id] = min(lane_numbers) if lane_numbers else None
+        base_start[base_id] = first_start or 0.0
+
+    def _base_sort_key(base_id: str) -> Tuple[int, float, str]:
+        lane_number = lane_no_by_base.get(base_id)
+        return (lane_number if lane_number is not None else 0, base_start.get(base_id, 0.0), base_id)
+
+    base_ids = sorted(lane_groups.keys(), key=_base_sort_key)
     lanes_per_base = {base: len(lane_groups[base]) for base in base_ids}
 
     def _bases_with_sign(sign: int) -> List[str]:
@@ -369,6 +394,12 @@ def build_lane_spec(
 
     positive_bases = _bases_with_sign(1)
     negative_bases = _bases_with_sign(-1)
+    ordered_lane_numbers = [
+        lane_no
+        for lane_no in sorted(
+            {val for val in lane_no_by_base.values() if val is not None}
+        )
+    ]
 
     if positive_bases and negative_bases:
         # When the input data contains explicit lane number signs we rely on
@@ -379,13 +410,14 @@ def build_lane_spec(
         left_bases = sorted(set(positive_bases), key=lambda b: base_ids.index(b))
         right_bases = sorted(set(negative_bases), key=lambda b: base_ids.index(b))
     else:
-        target_left = lane_count // 2 if lane_count else sum(lanes_per_base.values()) // 2
-        left_bases = []
-        acc = 0
-        for base in base_ids:
-            if acc < target_left:
-                left_bases.append(base)
-                acc += lanes_per_base[base]
+        if lane_count:
+            target_left = lane_count // 2
+        else:
+            target_left = len(ordered_lane_numbers) // 2
+        left_lane_numbers = set(ordered_lane_numbers[:target_left])
+        left_bases = [
+            base for base in base_ids if lane_no_by_base.get(base) in left_lane_numbers
+        ]
         right_bases = [base for base in base_ids if base not in left_bases]
     if not left_bases and base_ids:
         left_bases = base_ids[:1]
