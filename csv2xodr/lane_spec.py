@@ -450,6 +450,21 @@ def build_lane_spec(
         for order, sec_idx in enumerate(indices):
             lane_section_pos[(uid, sec_idx)] = order
 
+    lane_segment_ranges: Dict[str, List[Tuple[float, float]]] = {}
+    for uid, info in lane_info.items():
+        segments = []
+        for seg in info.get("segments", []):
+            try:
+                start = float(seg.get("start", 0.0))
+                end = float(seg.get("end", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if end <= start:
+                continue
+            segments.append((start, end))
+        if segments:
+            lane_segment_ranges[uid] = segments
+
     out: List[Dict[str, Any]] = []
     for idx, sec in enumerate(sections_list):
         section_left: List[Dict[str, Any]] = []
@@ -475,14 +490,24 @@ def build_lane_spec(
             lane_indices = lane_section_indices[uid]
             order = lane_section_pos[(uid, idx)]
 
+            current_start = float(segment.get("start", s0))
+            current_end = float(segment.get("end", s1))
+
             predecessors: List[int] = []
             if order > 0:
                 predecessors.append(lane_id)
             else:
                 for target in segment.get("predecessors", []):
                     mapped = lane_id_map.get(target)
-                    if mapped is not None:
-                        predecessors.append(mapped)
+                    if mapped is None:
+                        continue
+
+                    ranges = lane_segment_ranges.get(target, [])
+                    for start, end in ranges:
+                        if end <= current_start + 1e-3:
+                            if mapped not in predecessors:
+                                predecessors.append(mapped)
+                            break
 
             successors: List[int] = []
             if order < len(lane_indices) - 1:
@@ -490,8 +515,15 @@ def build_lane_spec(
             else:
                 for target in segment.get("successors", []):
                     mapped = lane_id_map.get(target)
-                    if mapped is not None:
-                        successors.append(mapped)
+                    if mapped is None:
+                        continue
+
+                    ranges = lane_segment_ranges.get(target, [])
+                    for start, end in ranges:
+                        if start >= current_end - 1e-3:
+                            if mapped not in successors:
+                                successors.append(mapped)
+                            break
 
             pos_key = 2 if side == "left" else 1
             alt_key = 1 if side == "left" else 2
