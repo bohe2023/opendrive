@@ -82,8 +82,7 @@ def build_line_geometry_lookup(
         return {}
 
     grouped: Dict[Tuple[str, Any, Any, Any, Any], Dict[str, Any]] = {}
-
-    offsets_raw: List[float] = []
+    base_offsets: Dict[str, float] = {}
 
     for idx in range(len(line_geom_df)):
         row = line_geom_df.iloc[idx]
@@ -109,8 +108,6 @@ def build_line_geometry_lookup(
 
         if off_val is None:
             continue
-
-        offsets_raw.append(off_val)
 
         group_key = (
             line_id,
@@ -147,15 +144,18 @@ def build_line_geometry_lookup(
         elif retrans_flag is False:
             entry["has_false"] = True
 
+        off_m = off_val / 100.0
+        current_base = base_offsets.get(line_id)
+        if current_base is None or off_m < current_base:
+            base_offsets[line_id] = off_m
+
         entry["lat"].append(lat_val)
         entry["lon"].append(lon_val)
         entry["z"].append(z_val)
-        entry["offset"].append(off_val / 100.0)
+        entry["offset"].append(off_m)
 
     if not grouped:
         return {}
-
-    base_offset = min(offsets_raw) / 100.0 if offsets_raw else 0.0
 
     lookup: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -166,7 +166,12 @@ def build_line_geometry_lookup(
         if has_flag and has_true and not has_false:
             continue
 
-        offsets_m = [value - base_offset for value in entry["offset"]]
+        offsets_raw = entry.get("offset", [])
+        if offsets_raw:
+            base_offset = base_offsets.get(entry["line_id"], 0.0)
+            offsets_m = [value - base_offset for value in offsets_raw]
+        else:
+            offsets_m = []
         if offset_mapper is not None:
             mapped_s = [offset_mapper(value) for value in offsets_m]
         else:
