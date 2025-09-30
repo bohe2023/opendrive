@@ -1,0 +1,5 @@
+# 占位配置文件：待US格式的CSV转换流程确定后再补充实际字段映射。
+encoding_priority:
+  - utf-8
+
+files: {}

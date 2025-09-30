@@ -26,24 +26,36 @@ from csv2xodr.topology.core import make_sections, build_lane_topology
 from csv2xodr.writer.xodr_writer import write_xodr
 from csv2xodr.lane_spec import build_lane_spec
 
-def main():
+
+def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
+    """Convert a directory of CSV files into an OpenDRIVE file.
+
+    Parameters
+    ----------
+    input_dir:
+        Directory containing the CSV files that describe the road network.
+    output_path:
+        Target path for the generated ``.xodr`` file.
+    config_path:
+        Path to the YAML configuration that describes how to read ``input_dir``.
+
+    Returns
+    -------
+    dict
+        Statistics about the conversion, including input counts and metadata about
+        the generated OpenDRIVE file.
+    """
     try:
         import yaml  # type: ignore
     except ModuleNotFoundError:  # pragma: no cover - optional dependency
         yaml = None
         from csv2xodr.mini_yaml import load as mini_yaml_load
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--input", required=True, help="directory containing CSVs")
-    ap.add_argument("--output", required=True, help="path to output .xodr")
-    ap.add_argument("--config", default="config.yaml")
-    args = ap.parse_args()
-
     if yaml is not None:
-        with open(args.config, encoding="utf-8") as fh:
+        with open(config_path, encoding="utf-8") as fh:
             cfg = yaml.safe_load(fh)
     else:
-        cfg = mini_yaml_load(args.config)
-    dfs = load_all(args.input, cfg)
+        cfg = mini_yaml_load(config_path)
+    dfs = load_all(input_dir, cfg)
 
     # planView (centerline) from line geometry + geo origin
     center, (lat0, lon0) = build_centerline(dfs["line_geometry"], dfs["map_base_point"])
@@ -108,7 +120,8 @@ def main():
     apply_shoulder_profile(lane_specs, shoulder_profile, defaults=cfg.get("defaults", {}))
 
     # write xodr
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    output_path = Path(output_path)
+    os.makedirs(output_path.parent, exist_ok=True)
     geo_ref = f"LOCAL_XY origin={lat0},{lon0}"
     road_cfg_raw = cfg.get("road") or {}
     if not isinstance(road_cfg_raw, dict):
@@ -122,11 +135,11 @@ def main():
     else:
         road_cfg["speed"] = {"max": 50 / 3.6, "unit": "m/s"}
 
-    output_path = write_xodr(
+    output_file_path = write_xodr(
         center,
         sections,
         lane_specs,
-        args.output,
+        str(output_path),
         geo_ref=geo_ref,
         elevation_profile=elevation_profile,
         geometry_segments=geometry_segments,
@@ -134,13 +147,13 @@ def main():
         road_metadata=road_cfg,
     )
 
-    output_path = Path(output_path)
+    output_file_path = Path(output_file_path)
     try:
-        file_size = output_path.stat().st_size
+        file_size = output_file_path.stat().st_size
     except FileNotFoundError:
         file_size = 0
     try:
-        with output_path.open("rb") as fh:
+        with output_file_path.open("rb") as fh:
             line_count = sum(1 for _ in fh)
     except FileNotFoundError:
         line_count = 0
@@ -157,14 +170,26 @@ def main():
         },
         "road_length_m": float(center["s"].iloc[-1]) if len(center["s"]) else 0.0,
         "xodr_file": {
-            "path": str(output_path.resolve()),
+            "path": str(output_file_path.resolve()),
             "size_bytes": file_size,
             "line_count": line_count,
         },
     }
-    log_path = os.path.join(os.path.dirname(args.output), "report.json")
+    log_path = output_path.parent / "report.json"
     with open(log_path, "w", encoding="utf-8") as f:
         json.dump(stats, f, ensure_ascii=False, indent=2)
+
+    return stats
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--input", required=True, help="directory containing CSVs")
+    ap.add_argument("--output", required=True, help="path to output .xodr")
+    ap.add_argument("--config", default="config.yaml")
+    args = ap.parse_args()
+
+    stats = convert_dataset(args.input, args.output, args.config)
     print(json.dumps(stats, ensure_ascii=False, indent=2))
 
 if __name__ == "__main__":
