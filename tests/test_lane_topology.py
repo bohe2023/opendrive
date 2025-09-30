@@ -35,3 +35,28 @@ def test_build_lane_topology_prefers_true_retransmission_segments():
     segments = topology["lanes"]["A:1"]["segments"]
     assert len(segments) == 1
     assert segments[0]["is_retrans"] is True
+
+
+def test_build_lane_topology_reads_total_lane_count_column():
+    df = DataFrame(
+        [
+            {
+                "Offset[cm]": "0",
+                "End Offset[cm]": "100",
+                "レーンID": "A",
+                "レーン番号": "1",
+                "レーン総数": "4",
+            },
+            {
+                "Offset[cm]": "0",
+                "End Offset[cm]": "100",
+                "レーンID": "B",
+                "レーン番号": "2",
+                "レーン総数": "4",
+            },
+        ]
+    )
+
+    topology = build_lane_topology(df)
+
+    assert topology["lane_count"] == 4

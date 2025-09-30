@@ -116,3 +116,48 @@ def test_lane_spec_flags_and_writer_links(tmp_path):
     assert last_right_link is not None
     assert last_right_link.find("predecessor").attrib["id"] == "-1"
     assert last_right_link.find("successor") is None
+
+
+def test_lane_spec_uses_lane_count_when_only_positive_lane_numbers():
+    sections = [{"s0": 0.0, "s1": 10.0}]
+
+    lane_topology = {
+        "lane_count": 4,
+        "groups": {
+            "A": ["A:1"],
+            "B": ["B:2"],
+            "C": ["C:3"],
+            "D": ["D:4"],
+        },
+        "lanes": {
+            "A:1": {
+                "base_id": "A",
+                "lane_no": 1,
+                "segments": [{"start": 0.0, "end": 10.0, "width": 3.5, "successors": [], "predecessors": [], "line_positions": {}}],
+            },
+            "B:2": {
+                "base_id": "B",
+                "lane_no": 2,
+                "segments": [{"start": 0.0, "end": 10.0, "width": 3.5, "successors": [], "predecessors": [], "line_positions": {}}],
+            },
+            "C:3": {
+                "base_id": "C",
+                "lane_no": 3,
+                "segments": [{"start": 0.0, "end": 10.0, "width": 3.5, "successors": [], "predecessors": [], "line_positions": {}}],
+            },
+            "D:4": {
+                "base_id": "D",
+                "lane_no": 4,
+                "segments": [{"start": 0.0, "end": 10.0, "width": 3.5, "successors": [], "predecessors": [], "line_positions": {}}],
+            },
+        },
+    }
+
+    specs = build_lane_spec(sections, lane_topology, defaults={}, lane_div_df=None)
+
+    assert len(specs) == 1
+    left_ids = [lane["id"] for lane in specs[0]["left"]]
+    right_ids = [lane["id"] for lane in specs[0]["right"]]
+
+    assert left_ids == [1, 2]
+    assert right_ids == [-1, -2]

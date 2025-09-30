@@ -370,7 +370,7 @@ def build_lane_spec(
     positive_bases = _bases_with_sign(1)
     negative_bases = _bases_with_sign(-1)
 
-    if positive_bases or negative_bases:
+    if positive_bases and negative_bases:
         # When the input data contains explicit lane number signs we rely on
         # them to determine the side of the reference line.  This avoids
         # mis-classifying sequential lane groups that belong to the same
