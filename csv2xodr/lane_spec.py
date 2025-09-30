@@ -129,8 +129,20 @@ def _build_division_lookup(lane_div_df: Optional[DataFrame],
     start_col = find_col("Offset")
     end_col = find_col("End", "Offset")
     line_id_col = find_col("区画線ID") or find_col("ライン", "ID") or find_col("対象の区画線ID")
+    if line_id_col is None:
+        for col in cols:
+            lowered = col.strip().lower()
+            if "lane line id" in lowered and "数" not in lowered:
+                line_id_col = col
+                break
     start_w_col = find_col("始点側線幅")
     end_w_col = find_col("終点側線幅")
+    width_code_col = None
+    for col in cols:
+        lowered = col.strip().lower()
+        if "lane line width" in lowered:
+            width_code_col = col
+            break
     is_retrans_col = find_col("Is", "Retransmission")
 
     if line_id_col is None or start_col is None or end_col is None:
@@ -163,6 +175,16 @@ def _build_division_lookup(lane_div_df: Optional[DataFrame],
             except Exception:
                 continue
         width = sum(width_values) / len(width_values) if width_values else None
+        if width is None and width_code_col is not None:
+            try:
+                code = int(float(str(row[width_code_col]).strip()))
+            except Exception:
+                code = None
+            if code is not None:
+                width_lookup = {0: 0.10, 1: 0.15, 2: 0.20}
+                mapped = width_lookup.get(code)
+                if mapped is not None:
+                    width = mapped
 
         is_retrans = False
         if is_retrans_col:

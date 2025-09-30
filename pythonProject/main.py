@@ -1,10 +1,9 @@
 """Command line helper to convert CSV datasets into OpenDRIVE files.
 
 This script understands different CSV layouts (currently JPN and US) and
-dispatches them to their dedicated conversion pipeline.  The actual
-conversion logic for the JPN format delegates to ``csv2xodr.csv2xodr`` while
-the US workflow will be filled in a later step when the specification becomes
-available.
+dispatches them to their dedicated conversion pipeline.  Both formats reuse
+the conversion machinery in ``csv2xodr.csv2xodr`` while supplying their
+format-specific configuration files.
 """
 
 from __future__ import annotations
@@ -65,16 +64,9 @@ def build_pipeline_registry() -> Dict[str, FormatPipeline]:
 
 
 def _run_us_pipeline(input_dir: str, output_path: str, config_path: str) -> Dict:
-    """Placeholder for the US conversion pipeline.
+    """Execute the US-specific CSV → OpenDRIVE workflow."""
 
-    The real implementation will arrive once the processing details are
-    confirmed.  Raising ``NotImplementedError`` makes the limitation explicit
-    to users running the helper script.
-    """
-
-    raise NotImplementedError(
-        "US格式的CSV转换流程尚未实现，请在获取规格后再调用该格式。"
-    )
+    return convert_dataset(input_dir, output_path, config_path)
 
 
 def run_pipeline(pipeline: FormatPipeline) -> Dict:
@@ -112,7 +104,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     parser.add_argument(
         "--all",
         action="store_true",
-        help="一次性转换所有支持的格式。US格式目前会提示暂未实现。",
+        help="一次性转换所有支持的格式。",
     )
 
     args = parser.parse_args(list(argv) if argv is not None else None)

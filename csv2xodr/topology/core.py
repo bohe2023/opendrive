@@ -152,7 +152,7 @@ def build_lane_topology(lane_link_df: DataFrame,
     line_pos_cols: Dict[int, str] = {}
     for col in cols:
         stripped = col.strip()
-        if "ライン型地物ID" in stripped:
+        if "ライン型地物ID" in stripped or ("lane line id" in stripped.lower() and "数" not in stripped):
             try:
                 idx = int(stripped.split("(")[1].split(")")[0])
             except Exception:

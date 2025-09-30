@@ -16,6 +16,17 @@ def mark_type_from_division_row(row: Series) -> str:
                 pass
 
     for c in row.index:
+        lowered = str(c).strip().lower()
+        if "lane line type" in lowered and notna(row[c]):
+            try:
+                v = int(float(str(row[c]).strip()))
+            except Exception:
+                continue
+            if v in (2, 3):
+                return "broken"
+            return "solid"
+
+    for c in row.index:
         if "種別" in c and notna(row[c]):
             try:
                 v = int(row[c])

@@ -57,7 +57,11 @@ def build_line_geometry_lookup(
 
     cols = list(line_geom_df.columns)
 
-    line_id_col = _find_column(cols, "ライン", "ID") or _find_column(cols, "区画線", "ID")
+    line_id_col = (
+        _find_column(cols, "ライン", "ID")
+        or _find_column(cols, "区画線", "ID")
+        or _find_column(cols, "lane", "line", "id")
+    )
     lat_col = _find_column(cols, "緯度") or _find_column(cols, "Latitude")
     lon_col = _find_column(cols, "経度") or _find_column(cols, "Longitude")
     z_col = _find_column(cols, "高さ") or _find_column(cols, "標高") or _find_column(cols, "Height")
