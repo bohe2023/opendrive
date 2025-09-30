@@ -41,6 +41,29 @@ def _normalize_angle(angle: float) -> float:
     return angle
 
 
+def _advance_pose(
+    start_x: float,
+    start_y: float,
+    start_hdg: float,
+    curvature: float,
+    length: float,
+) -> Tuple[float, float, float]:
+    """Integrate a constant-curvature segment from the provided pose."""
+
+    if abs(curvature) <= 1e-12:
+        end_x = start_x + length * math.cos(start_hdg)
+        end_y = start_y + length * math.sin(start_hdg)
+        end_hdg = start_hdg
+    else:
+        end_hdg = _normalize_angle(start_hdg + curvature * length)
+        radius = 1.0 / curvature
+        dx = radius * (math.sin(end_hdg) - math.sin(start_hdg))
+        dy = -radius * (math.cos(end_hdg) - math.cos(start_hdg))
+        end_x = start_x + dx
+        end_y = start_y + dy
+    return end_x, end_y, end_hdg
+
+
 def _find_height_column(df: DataFrame) -> Optional[str]:
     for col in df.columns:
         stripped = col.strip()
@@ -640,7 +663,31 @@ def build_geometry_segments(
     if total_length <= 0:
         return []
 
-    centerline_s = [float(v) for v in centerline["s"].to_list()]
+    centerline_s_raw = [float(v) for v in centerline["s"].to_list()]
+
+    min_anchor_spacing = 0.5
+    try:
+        candidate_spacing = float(max_segment_length) * 0.5
+    except (TypeError, ValueError):
+        candidate_spacing = None
+    if candidate_spacing is not None and candidate_spacing > 0:
+        min_anchor_spacing = max(min_anchor_spacing, candidate_spacing)
+
+    centerline_s: List[float] = []
+    for value in centerline_s_raw:
+        if not centerline_s:
+            centerline_s.append(value)
+            continue
+
+        if value - centerline_s[-1] < min_anchor_spacing:
+            continue
+
+        centerline_s.append(value)
+
+    if centerline_s_raw:
+        last_value = centerline_s_raw[-1]
+        if not centerline_s or abs(centerline_s[-1] - last_value) > 1e-9:
+            centerline_s.append(last_value)
 
     def _build_segments(max_len: float) -> Tuple[List[Dict[str, float]], float]:
         def _clamp(value: float) -> float:
@@ -683,26 +730,6 @@ def build_geometry_segments(
                 if seg["s0"] <= mid <= seg["s1"]:
                     return float(seg["curvature"])
             return 0.0
-
-        def _integrate_segment(
-            start_x: float,
-            start_y: float,
-            start_hdg: float,
-            curvature: float,
-            length: float,
-        ) -> Tuple[float, float, float]:
-            if abs(curvature) <= 1e-12:
-                end_x = start_x + length * math.cos(start_hdg)
-                end_y = start_y + length * math.sin(start_hdg)
-                end_hdg = start_hdg
-            else:
-                end_hdg = _normalize_angle(start_hdg + curvature * length)
-                radius = 1.0 / curvature
-                dx = radius * (math.sin(end_hdg) - math.sin(start_hdg))
-                dy = -radius * (math.cos(end_hdg) - math.cos(start_hdg))
-                end_x = start_x + dx
-                end_y = start_y + dy
-            return end_x, end_y, end_hdg
 
         def _segment_derivatives(
             start_hdg: float,
@@ -760,7 +787,7 @@ def build_geometry_segments(
                 preferred_sign = math.copysign(1.0, preferred_curvature)
             weight_angle = max(0.25, length * length)
             for _ in range(8):
-                end_x, end_y, end_hdg = _integrate_segment(start_x, start_y, start_hdg, curvature, length)
+                end_x, end_y, end_hdg = _advance_pose(start_x, start_y, start_hdg, curvature, length)
                 err_x = target_x - end_x
                 err_y = target_y - end_y
                 err_theta = _normalize_angle(target_hdg - end_hdg)
@@ -794,11 +821,11 @@ def build_geometry_segments(
                     next_curvature = float(preferred_curvature)
                 curvature = next_curvature
 
-            end_x, end_y, end_hdg = _integrate_segment(start_x, start_y, start_hdg, curvature, length)
+            end_x, end_y, end_hdg = _advance_pose(start_x, start_y, start_hdg, curvature, length)
             endpoint_error = _combined_error(end_x, end_y, end_hdg, target_x, target_y, target_hdg, length)
             if preferred_sign and curvature * preferred_sign < 0:
                 curvature = float(preferred_curvature)
-                end_x, end_y, end_hdg = _integrate_segment(start_x, start_y, start_hdg, curvature, length)
+                end_x, end_y, end_hdg = _advance_pose(start_x, start_y, start_hdg, curvature, length)
                 endpoint_error = _combined_error(end_x, end_y, end_hdg, target_x, target_y, target_hdg, length)
             return curvature, end_x, end_y, end_hdg, endpoint_error
 
@@ -835,7 +862,7 @@ def build_geometry_segments(
             if preferred_sign and curvature_guess * preferred_sign < 0:
                 curvature_guess = preferred_curvature
 
-            next_x, next_y, next_hdg = _integrate_segment(
+            next_x, next_y, next_hdg = _advance_pose(
                 current_x, current_y, current_hdg, curvature_guess, length_total
             )
             endpoint_error = _combined_error(next_x, next_y, next_hdg, target_x, target_y, target_hdg, length_total)
@@ -857,7 +884,7 @@ def build_geometry_segments(
 
             if preferred_sign and refined_curvature * preferred_sign < 0:
                 refined_curvature = float(preferred_curvature)
-                next_x, next_y, next_hdg = _integrate_segment(
+                next_x, next_y, next_hdg = _advance_pose(
                     current_x, current_y, current_hdg, refined_curvature, length_total
                 )
                 endpoint_error = _combined_error(next_x, next_y, next_hdg, target_x, target_y, target_hdg, length_total)
@@ -886,7 +913,7 @@ def build_geometry_segments(
                     }
                 )
 
-                seg_start_x, seg_start_y, seg_start_hdg = _integrate_segment(
+                seg_start_x, seg_start_y, seg_start_hdg = _advance_pose(
                     seg_x, seg_y, seg_hdg, refined_curvature, step_length
                 )
 
@@ -919,6 +946,7 @@ def build_geometry_segments(
     if not segments:
         return []
 
+    segments = _merge_geometry_segments(segments, max_segment_length=initial_len)
     _record_best(segments, deviation)
 
     min_len = max(0.25, initial_len / 16.0)
@@ -933,7 +961,7 @@ def build_geometry_segments(
         if not candidate_segments:
             break
 
-        segments = candidate_segments
+        segments = _merge_geometry_segments(candidate_segments, max_segment_length=initial_len)
         deviation = candidate_deviation
         _record_best(segments, deviation)
 
@@ -941,6 +969,63 @@ def build_geometry_segments(
         return best_segments
 
     return segments
+
+
+def _merge_geometry_segments(
+    segments: List[Dict[str, float]],
+    *,
+    curvature_tol: float = 1e-9,
+    position_tol: float = 1e-6,
+    heading_tol: float = 1e-6,
+    max_segment_length: Optional[float] = None,
+) -> List[Dict[str, float]]:
+    """Collapse consecutive geometry segments that share the same curvature."""
+
+    if not segments:
+        return []
+
+    merged: List[Dict[str, float]] = []
+    current = dict(segments[0])
+    merge_threshold = None
+    if max_segment_length is not None and math.isfinite(max_segment_length):
+        try:
+            merge_threshold = max(0.0, float(max_segment_length))
+        except (TypeError, ValueError):
+            merge_threshold = None
+
+    for seg in segments[1:]:
+        next_seg = dict(seg)
+        current_curv = float(current.get("curvature", 0.0))
+        seg_curv = float(next_seg.get("curvature", 0.0))
+        same_curvature = abs(seg_curv - current_curv) <= curvature_tol
+
+        expected_s = current["s"] + current["length"]
+        end_x, end_y, end_hdg = _advance_pose(
+            current["x"], current["y"], current["hdg"], current_curv, current["length"]
+        )
+
+        contiguous = (
+            abs(next_seg["s"] - expected_s) <= 1e-8
+            and math.hypot(next_seg["x"] - end_x, next_seg["y"] - end_y) <= position_tol
+            and abs(_normalize_angle(next_seg["hdg"] - end_hdg)) <= heading_tol
+        )
+
+        if (
+            same_curvature
+            and contiguous
+            and (
+                merge_threshold is None
+                or (current["length"] + next_seg["length"] <= merge_threshold)
+            )
+        ):
+            current["length"] += next_seg["length"]
+            continue
+
+        merged.append(current)
+        current = next_seg
+
+    merged.append(current)
+    return merged
 
 
 def build_shoulder_profile(
