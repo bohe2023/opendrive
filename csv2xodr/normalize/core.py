@@ -116,7 +116,7 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
         df_line_geo = grouped
         lat = [float(v) for v in grouped[lat_col].to_list()]
         lon = [float(v) for v in grouped[lon_col].to_list()]
-        offsets = [float(v) for v in grouped[offset_col].to_list()]
+        offsets = [float(v) for v in grouped[offset_col].astype(float).to_list()]
     else:
         lat = [float(v) for v in df_line_geo[lat_col].astype(float).to_list()]
         lon = [float(v) for v in df_line_geo[lon_col].astype(float).to_list()]
@@ -152,6 +152,15 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
         df_line_geo = df_line_geo.loc[keep_mask].reset_index(drop=True)
         lat = [value for value, keep in zip(lat, keep_mask) if keep]
         lon = [value for value, keep in zip(lon, keep_mask) if keep]
+        if offsets is not None:
+            offsets = [value for value, keep in zip(offsets, keep_mask) if keep]
+
+    if offsets is not None and len(offsets) == len(lat):
+        order = sorted(range(len(offsets)), key=lambda idx: offsets[idx])
+        if any(idx != order[idx] for idx in range(len(order))):
+            lat = [lat[idx] for idx in order]
+            lon = [lon[idx] for idx in order]
+            offsets = [offsets[idx] for idx in order]
 
     # choose origin
     if df_base is not None and len(df_base) > 0:
