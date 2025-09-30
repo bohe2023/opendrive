@@ -489,12 +489,14 @@ def build_lane_spec(
 
             lane_indices = lane_section_indices[uid]
             order = lane_section_pos[(uid, idx)]
+            prev_index = lane_indices[order - 1] if order > 0 else None
+            next_index = lane_indices[order + 1] if order < len(lane_indices) - 1 else None
 
             current_start = float(segment.get("start", s0))
             current_end = float(segment.get("end", s1))
 
             predecessors: List[int] = []
-            if order > 0:
+            if order > 0 and prev_index is not None and idx - prev_index == 1:
                 predecessors.append(lane_id)
             else:
                 for target in segment.get("predecessors", []):
@@ -510,7 +512,11 @@ def build_lane_spec(
                             break
 
             successors: List[int] = []
-            if order < len(lane_indices) - 1:
+            if (
+                next_index is not None
+                and order < len(lane_indices) - 1
+                and next_index - idx == 1
+            ):
                 successors.append(lane_id)
             else:
                 for target in segment.get("successors", []):
