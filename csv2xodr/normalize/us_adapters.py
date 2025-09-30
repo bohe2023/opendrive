@@ -40,12 +40,23 @@ def merge_lane_width_into_links(
         return lane_link_df
 
     width_lane_col = _find_column(lane_width_df.columns, "lane", "number")
-    width_value_col = None
+    width_candidates = []
     for col in lane_width_df.columns:
-        lowered = col.strip().lower()
-        if "width" in lowered or "幅員" in col:
+        stripped = col.strip()
+        lowered = stripped.lower()
+        if "width" in lowered or "幅員" in stripped:
+            width_candidates.append(col)
+
+    width_value_col = None
+    for col in width_candidates:
+        stripped = col.strip()
+        lowered = stripped.lower()
+        if "値" in stripped or "value" in lowered:
             width_value_col = col
             break
+
+    if width_value_col is None and width_candidates:
+        width_value_col = width_candidates[0]
 
     if width_lane_col is None or width_value_col is None:
         return lane_link_df
