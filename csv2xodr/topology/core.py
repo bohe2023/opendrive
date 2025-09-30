@@ -140,7 +140,11 @@ def build_lane_topology(lane_link_df: DataFrame,
     end_col = _find_column(cols, "End", "Offset")
     lane_id_col = _find_column(cols, "レーンID") or _find_column(cols, "Lane", "ID")
     lane_no_col = _find_column(cols, "レーン番号") or _find_column(cols, "Lane", "番号")
-    lane_count_col = _find_column(cols, "Lane", "Number")
+    lane_count_col = (
+        _find_column(cols, "総数")
+        or _find_column(cols, "Count")
+        or _find_column(cols, "count")
+    )
     width_col = _find_column(cols, "幅員")
     is_retrans_col = _find_column(cols, "Is", "Retransmission")
     left_col = _find_column(cols, "左側車線")
