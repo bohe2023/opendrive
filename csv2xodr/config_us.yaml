@@ -1,5 +1,28 @@
-# 占位配置文件：待US格式的CSV转换流程确定后再补充实际字段映射。
 encoding_priority:
   - utf-8
+  - cp932
+  - cp1252
 
-files: {}
+files:
+  map_base_point: PROFILE_MPU_MAP_DATA_BASE_POINT.csv
+  line_geometry: PROFILETYPE_MPU_US_LANE_LINE_GEOMETRY.csv
+  lane_link: PROFILETYPE_MPU_US_LANE_LINK_INFO.csv
+  lane_division: PROFILETYPE_MPU_US_LANE_LINE.csv
+  lane_width: PROFILETYPE_MPU_US_LANE_WIDTH.csv
+  curvature: PROFILETYPE_MPU_US_CURVATURE.csv
+  slope: PROFILETYPE_MPU_US_SLOPE.csv
+  sign: PROFILETYPE_MPU_US_SIGN.csv
+
+defaults:
+  lane_width_m: 3.6
+  shoulder_width_m: 0.5
+
+geometry:
+  max_endpoint_deviation_m: 0.75
+  max_segment_length_m: 2.5
+
+road:
+  type: motorway
+  speed:
+    max: 29.0576      # 約65 mph
+    unit: m/s

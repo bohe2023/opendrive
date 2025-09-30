@@ -27,6 +27,25 @@ from csv2xodr.writer.xodr_writer import write_xodr
 from csv2xodr.lane_spec import build_lane_spec
 
 
+def _apply_dataset_overrides(dfs, cfg) -> None:
+    """Adjust loaded CSV tables based on optional configuration hints."""
+
+    lane_link = dfs.get("lane_link")
+    lane_width = dfs.get("lane_width")
+
+    if lane_link is None or lane_width is None:
+        return
+
+    try:
+        from csv2xodr.normalize.us_adapters import merge_lane_width_into_links
+    except Exception:  # pragma: no cover - optional helper
+        return
+
+    enriched = merge_lane_width_into_links(lane_link, lane_width)
+    if enriched is not None:
+        dfs["lane_link"] = enriched
+
+
 def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
     """Convert a directory of CSV files into an OpenDRIVE file.
 
@@ -56,6 +75,7 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
     else:
         cfg = mini_yaml_load(config_path)
     dfs = load_all(input_dir, cfg)
+    _apply_dataset_overrides(dfs, cfg)
 
     # planView (centerline) from line geometry + geo origin
     center, (lat0, lon0) = build_centerline(dfs["line_geometry"], dfs["map_base_point"])
