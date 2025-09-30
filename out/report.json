@@ -18,8 +18,8 @@
   },
   "road_length_m": 1403.1712753071367,
   "xodr_file": {
-    "path": "/workspace/opendrive/out/sample.xodr",
-    "size_bytes": 38392,
-    "line_count": 951
+    "path": "D:\\opendrive_git\\out\\sample.xodr",
+    "size_bytes": 564186,
+    "line_count": 9342
   }
 }
