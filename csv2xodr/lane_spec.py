@@ -688,3 +688,76 @@ def apply_shoulder_profile(
 
         section["left"].sort(key=lambda item: item["id"])
         section["right"].sort(key=lambda item: item["id"], reverse=True)
+
+
+def normalize_lane_ids(lane_sections: List[Dict[str, Any]]) -> None:
+    """Renumber lane IDs so that they are compact and sequential."""
+
+    if not lane_sections:
+        return
+
+    occurrence: Dict[Tuple[int, int], int] = {}
+
+    # First pass: remember the original identifiers and assign new IDs based on
+    # the positional order within each section.
+    for sec_idx, section in enumerate(lane_sections):
+        for side in ("left", "right"):
+            lanes = section.get(side, []) or []
+            sign = 1 if side == "left" else -1
+            for lane_idx, lane in enumerate(lanes):
+                try:
+                    original_id = int(lane.get("id"))
+                except (TypeError, ValueError):
+                    continue
+
+                lane["__orig_id"] = original_id
+                new_id = (lane_idx + 1) * sign
+                lane["id"] = new_id
+                occurrence[(sec_idx, original_id)] = new_id
+
+            if side == "left":
+                lanes.sort(key=lambda item: float(item.get("id", 0)))
+            else:
+                lanes.sort(key=lambda item: float(item.get("id", 0)), reverse=True)
+
+    def _lookup(section_index: int, target: int, direction: int) -> int:
+        idx = section_index + direction
+        while 0 <= idx < len(lane_sections):
+            mapped = occurrence.get((idx, target))
+            if mapped is not None:
+                return mapped
+            idx += direction
+        mapped = occurrence.get((section_index, target))
+        if mapped is not None:
+            return mapped
+        return target
+
+    # Second pass: remap predecessor/successor identifiers using the new IDs.
+    for sec_idx, section in enumerate(lane_sections):
+        for side in ("left", "right"):
+            lanes = section.get(side, []) or []
+            for lane in lanes:
+                original_id = lane.pop("__orig_id", None)
+                preds = lane.get("predecessors") or []
+                if preds:
+                    remapped = []
+                    for pid in preds:
+                        try:
+                            target = int(pid)
+                        except (TypeError, ValueError):
+                            remapped.append(pid)
+                            continue
+                        remapped.append(_lookup(sec_idx, target, direction=-1))
+                    lane["predecessors"] = remapped
+
+                succs = lane.get("successors") or []
+                if succs:
+                    remapped = []
+                    for sid in succs:
+                        try:
+                            target = int(sid)
+                        except (TypeError, ValueError):
+                            remapped.append(sid)
+                            continue
+                        remapped.append(_lookup(sec_idx, target, direction=1))
+                    lane["successors"] = remapped

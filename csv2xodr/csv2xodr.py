@@ -24,7 +24,7 @@ from csv2xodr.normalize.core import (
 from csv2xodr.line_geometry import build_line_geometry_lookup
 from csv2xodr.topology.core import make_sections, build_lane_topology
 from csv2xodr.writer.xodr_writer import write_xodr
-from csv2xodr.lane_spec import build_lane_spec
+from csv2xodr.lane_spec import build_lane_spec, normalize_lane_ids
 
 
 def _apply_dataset_overrides(dfs, cfg) -> None:
@@ -138,6 +138,7 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
     from csv2xodr.lane_spec import apply_shoulder_profile  # local import to avoid cycle
 
     apply_shoulder_profile(lane_specs, shoulder_profile, defaults=cfg.get("defaults", {}))
+    normalize_lane_ids(lane_specs)
 
     # write xodr
     output_path = Path(output_path)
