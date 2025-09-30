@@ -3,6 +3,7 @@ import statistics
 from typing import Callable, Iterable, List, Tuple, Optional, Any, Dict
 
 from csv2xodr.simpletable import DataFrame
+from csv2xodr.topology.core import _canonical_numeric
 
 def _col_like(df: DataFrame, keyword: str):
     cols = [c for c in df.columns if keyword in c]
@@ -90,6 +91,123 @@ def latlon_to_local_xy(lat: Iterable[float], lon: Iterable[float], lat0: float, 
     y_vals = [(lat_v - lat0_rad) * R for lat_v in lat_rad]
     return x_vals, y_vals
 
+
+def select_best_path_id(df_line_geo: Optional[DataFrame]) -> Optional[str]:
+    """Return the Path Id that best represents the reference alignment.
+
+    The CSV datasets may contain multiple ``Path Id`` polylines (for example,
+    one per carriageway).  The conversion pipeline expects to work on a single
+    alignment, therefore we pick the longest available polyline and reuse that
+    identifier for every other table.
+    """
+
+    if df_line_geo is None or len(df_line_geo) == 0:
+        return None
+
+    path_col = _col_like(df_line_geo, "Path")
+    if path_col is None:
+        return None
+
+    unique_paths = df_line_geo[path_col].dropna().unique()
+    if len(unique_paths) == 0:
+        return None
+    if len(unique_paths) == 1:
+        raw_value = unique_paths[0]
+        canonical = _canonical_numeric(raw_value, allow_negative=True)
+        return canonical or (str(raw_value).strip() or None)
+
+    lat_candidates = list(df_line_geo.filter(like="緯度").columns)
+    if not lat_candidates:
+        lat_candidates = list(df_line_geo.filter(like="Latitude").columns)
+    lon_candidates = list(df_line_geo.filter(like="経度").columns)
+    if not lon_candidates:
+        lon_candidates = list(df_line_geo.filter(like="Longitude").columns)
+    if not lat_candidates or not lon_candidates:
+        return None
+
+    lat_col = lat_candidates[0]
+    lon_col = lon_candidates[0]
+
+    path_points: Dict[str, List[Tuple[float, float]]] = {}
+    order: List[str] = []
+
+    for idx in range(len(df_line_geo)):
+        row = df_line_geo.iloc[idx]
+        path_raw = row[path_col]
+        canonical = _canonical_numeric(path_raw, allow_negative=True)
+        if canonical is None:
+            canonical = str(path_raw).strip()
+        if not canonical:
+            continue
+
+        lat_val = _to_float(row[lat_col])
+        lon_val = _to_float(row[lon_col])
+        if lat_val is None or lon_val is None:
+            continue
+
+        if canonical not in path_points:
+            path_points[canonical] = []
+            order.append(canonical)
+        path_points[canonical].append((lat_val, lon_val))
+
+    best_path: Optional[str] = None
+    best_length = -1.0
+
+    for path_id in order:
+        points = path_points.get(path_id, [])
+        if len(points) < 2:
+            continue
+        lat_vals = [lat for lat, _ in points]
+        lon_vals = [lon for _, lon in points]
+        lat0 = lat_vals[0]
+        lon0 = lon_vals[0]
+        x_vals, y_vals = latlon_to_local_xy(lat_vals, lon_vals, lat0, lon0)
+        length = 0.0
+        for i in range(len(x_vals) - 1):
+            dx = x_vals[i + 1] - x_vals[i]
+            dy = y_vals[i + 1] - y_vals[i]
+            length += math.hypot(dx, dy)
+
+        if length > best_length:
+            best_length = length
+            best_path = path_id
+
+    return best_path
+
+
+def filter_dataframe_by_path(df: Optional[DataFrame], path_id: Optional[str]) -> Optional[DataFrame]:
+    """Return a DataFrame that only contains rows matching ``path_id``."""
+
+    if df is None or len(df) == 0 or path_id is None:
+        return df
+
+    target_canonical = _canonical_numeric(path_id, allow_negative=True)
+    target_text = str(path_id).strip()
+
+    path_col = _col_like(df, "Path")
+    if path_col is None:
+        return df
+
+    keep_mask: List[bool] = []
+    series = df[path_col]
+    for idx in range(len(df)):
+        raw_value = series.iloc[idx]
+        raw_canonical = _canonical_numeric(raw_value, allow_negative=True)
+        match = False
+        if raw_canonical is not None and target_canonical is not None:
+            match = raw_canonical == target_canonical
+        else:
+            match = str(raw_value).strip() == target_text
+        keep_mask.append(match)
+
+    if not any(keep_mask):
+        return df
+    if all(keep_mask):
+        return df
+
+    filtered = df.loc[keep_mask]
+    return filtered.reset_index(drop=True)
+
 def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
     """
     Build centerline planView from PROFILETYPE_MPU_LINE_GEOMETRY (lat/lon series).
@@ -97,6 +215,12 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
     """
     if df_line_geo is None or len(df_line_geo) == 0:
         raise ValueError("line_geometry CSV is required")
+
+    best_path_id = select_best_path_id(df_line_geo)
+    if best_path_id is not None:
+        filtered = filter_dataframe_by_path(df_line_geo, best_path_id)
+        if filtered is not None:
+            df_line_geo = filtered
 
     lat_col = df_line_geo.filter(like="緯度").columns[0]
     lon_col = df_line_geo.filter(like="経度").columns[0]
@@ -121,39 +245,6 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
         lat = [float(v) for v in df_line_geo[lat_col].astype(float).to_list()]
         lon = [float(v) for v in df_line_geo[lon_col].astype(float).to_list()]
         offsets = offsets_series.to_list() if offsets_series is not None else None
-
-    # Some datasets interleave multiple Path Id polylines. Stick to the longest one to
-    # avoid creating self-crossing planViews.
-    path_col = _col_like(df_line_geo, "Path")
-    if path_col is not None and df_line_geo[path_col].nunique(dropna=True) > 1:
-        approx_lat0 = float(lat[0])
-        approx_lon0 = float(lon[0])
-        x_tmp, y_tmp = latlon_to_local_xy(lat, lon, approx_lat0, approx_lon0)
-        lengths = {}
-        path_series = df_line_geo[path_col]
-        for pid in path_series.dropna().unique():
-            indices = [i for i, value in enumerate(path_series.to_list()) if value == pid]
-            if len(indices) < 2:
-                continue
-            ds_total = 0.0
-            for i in range(len(indices) - 1):
-                a = indices[i]
-                b = indices[i + 1]
-                dx = x_tmp[b] - x_tmp[a]
-                dy = y_tmp[b] - y_tmp[a]
-                ds_total += math.hypot(dx, dy)
-            if ds_total > 0:
-                lengths[pid] = ds_total
-        if lengths:
-            best_pid = max(lengths, key=lengths.get)
-        else:
-            best_pid = path_series.dropna().iloc[0]
-        keep_mask = [value == best_pid for value in path_series.to_list()]
-        df_line_geo = df_line_geo.loc[keep_mask].reset_index(drop=True)
-        lat = [value for value, keep in zip(lat, keep_mask) if keep]
-        lon = [value for value, keep in zip(lon, keep_mask) if keep]
-        if offsets is not None:
-            offsets = [value for value, keep in zip(offsets, keep_mask) if keep]
 
     if offsets is not None and len(offsets) == len(lat):
         order = sorted(range(len(offsets)), key=lambda idx: offsets[idx])
