@@ -1111,10 +1111,13 @@ def build_geometry_segments(
             preferred_curvature = 0.0
             preferred_sign = 0.0
             if abs(curvature_dataset) > 1e-12:
-                agrees_with_target = True
-                if abs(delta_target) > 1e-6 and abs(delta_dataset) > 1e-9:
-                    agrees_with_target = delta_target * delta_dataset >= 0
-                if agrees_with_target:
+                alignment_error = abs(_normalize_angle(delta_target - delta_dataset))
+                # When the curvature samples are noisy the heading delta derived
+                # from the centreline provides a more reliable reference.  Only
+                # trust the CSV curvature if it produces a similar change in
+                # heading, otherwise allow the solver to determine the sign.
+                tolerance = max(5e-4, abs(delta_target) * 0.5)
+                if alignment_error <= tolerance:
                     preferred_curvature = curvature_dataset
                     preferred_sign = math.copysign(1.0, curvature_dataset)
 
