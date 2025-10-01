@@ -108,7 +108,9 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
         offset_mapper=offset_mapper,
     )
 
-    curvature_profile = build_curvature_profile(dfs.get("curvature"), offset_mapper=offset_mapper)
+    curvature_profile = build_curvature_profile(
+        dfs.get("curvature"), offset_mapper=offset_mapper, centerline=center
+    )
 
     geometry_cfg_raw = cfg.get("geometry") or {}
     if not isinstance(geometry_cfg_raw, dict):
