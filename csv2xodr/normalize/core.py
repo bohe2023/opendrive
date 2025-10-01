@@ -605,6 +605,8 @@ def build_curvature_profile(
 
     lane_origins: Dict[Tuple[Optional[Any], Optional[Any]], float] = {}
     groups: Dict[Tuple[Optional[Any], Optional[Any], float, float], Dict[str, Any]] = {}
+    lane_segments: Dict[Tuple[Optional[Any], Optional[Any]], List[Dict[str, float]]] = {}
+    lane_stats: Dict[Tuple[Optional[Any], Optional[Any]], Dict[str, float]] = {}
 
     for idx in range(len(df_curvature)):
         row = df_curvature.iloc[idx]
@@ -755,7 +757,60 @@ def build_curvature_profile(
             if not math.isfinite(curvature_val):
                 continue
 
-            profile.append({"s0": s0, "s1": s1, "curvature": curvature_val})
+            lane_token = (path_key, lane_key)
+            segment = {"s0": s0, "s1": s1, "curvature": curvature_val}
+            lane_segments.setdefault(lane_token, []).append(segment)
+            stats = lane_stats.setdefault(
+                lane_token,
+                {"coverage": 0.0, "samples": 0.0},
+            )
+            stats["coverage"] += s1 - s0
+            stats["samples"] += 1.0
+
+    if not lane_segments:
+        return []
+
+    def _lane_priority(
+        lane_key: Optional[Any],
+        stats: Dict[str, float],
+    ) -> Tuple[float, float, float, float, str]:
+        coverage = float(stats.get("coverage", 0.0))
+        samples = float(stats.get("samples", 0.0))
+        numeric_value = None
+        try:
+            if isinstance(lane_key, (int, float)) and math.isfinite(float(lane_key)):
+                numeric_value = float(lane_key)
+        except Exception:  # pragma: no cover - defensive
+            numeric_value = None
+
+        if numeric_value is not None:
+            proximity = abs(numeric_value)
+            signed_value = numeric_value
+        else:
+            proximity = float("inf")
+            signed_value = float("inf")
+
+        lane_text = "" if lane_key is None else str(lane_key)
+        return (-coverage, -samples, proximity, signed_value, lane_text)
+
+    segments_by_path: Dict[Optional[Any], List[Tuple[Optional[Any], List[Dict[str, float]]]]] = {}
+    for (path_key, lane_key), segments in lane_segments.items():
+        segments_by_path.setdefault(path_key, []).append((lane_key, segments))
+
+    for path_key, lane_entries in segments_by_path.items():
+        if not lane_entries:
+            continue
+
+        best_lane_key, best_segments = min(
+            (
+                (lane_key, segments)
+                for lane_key, segments in lane_entries
+            ),
+            key=lambda item: _lane_priority(item[0], lane_stats.get((path_key, item[0]), {})),
+        )
+
+        ordered_segments = sorted(best_segments, key=lambda seg: seg["s0"])
+        profile.extend(ordered_segments)
 
     profile.sort(key=lambda item: item["s0"])
     return profile
