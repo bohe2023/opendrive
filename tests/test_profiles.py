@@ -202,6 +202,64 @@ def test_geometry_segments_are_densified_for_long_spans():
     assert all(seg["length"] <= 2.0 + 1e-9 for seg in geometry)
 
 
+def test_curvature_profile_uses_shape_index_segments():
+    curvature_df = DataFrame(
+        {
+            "Path Id": ["1"] * 7,
+            "Lane Number": ["1"] * 7,
+            "Offset[cm]": [0, 0, 0, 0, 0, 0, 0],
+            "End Offset[cm]": [200, 200, 200, 200, 200, 200, 200],
+            "形状インデックス": [0, 1, 2, 2, 3, 3, 4],
+            "曲率値[rad/m]": [0.6, -0.6, 0.6, -0.2, -0.6, -0.6, 0.6],
+            "Is Retransmission": [
+                "False",
+                "False",
+                "False",
+                "False",
+                "True",
+                "False",
+                "False",
+            ],
+        }
+    )
+
+    curvature_segments = build_curvature_profile(
+        curvature_df, offset_mapper=lambda value: value
+    )
+
+    assert len(curvature_segments) == 4
+
+    spans = [seg["s1"] - seg["s0"] for seg in curvature_segments]
+    assert all(math.isclose(span, 0.5, abs_tol=1e-9) for span in spans)
+
+    curvatures = [seg["curvature"] for seg in curvature_segments]
+    assert curvatures == [0.6, -0.6, 0.6, -0.6]
+
+    center = DataFrame(
+        {
+            "s": [0.0, 0.5, 1.0, 1.5, 2.0],
+            "x": [0.0, 0.5, 1.0, 1.5, 2.0],
+            "y": [0.0, 0.0, 0.0, 0.0, 0.0],
+            "hdg": [0.0, 0.0, 0.0, 0.0, 0.0],
+        }
+    )
+
+    geometry = build_geometry_segments(
+        center,
+        curvature_segments,
+        max_endpoint_deviation=0.01,
+        max_segment_length=0.5,
+    )
+
+    geometry_curvatures = [seg.get("curvature", 0.0) for seg in geometry]
+    transitions = sum(
+        1
+        for i in range(1, len(geometry_curvatures))
+        if geometry_curvatures[i - 1] * geometry_curvatures[i] < 0
+    )
+    assert transitions >= 2
+
+
 def test_geometry_segments_honours_custom_densify_threshold():
     center = DataFrame(
         {
