@@ -1116,7 +1116,10 @@ def build_geometry_segments(
                 # from the centreline provides a more reliable reference.  Only
                 # trust the CSV curvature if it produces a similar change in
                 # heading, otherwise allow the solver to determine the sign.
-                tolerance = max(5e-4, abs(delta_target) * 0.5)
+                base_tolerance = 1e-3
+                curvature_tolerance = abs(delta_dataset) * 0.25
+                target_tolerance = abs(delta_target) * 0.5
+                tolerance = max(base_tolerance, curvature_tolerance, target_tolerance)
                 if alignment_error <= tolerance:
                     preferred_curvature = curvature_dataset
                     preferred_sign = math.copysign(1.0, curvature_dataset)
