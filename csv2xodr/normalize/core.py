@@ -1257,6 +1257,12 @@ def build_geometry_segments(
             length_total = end - start
             if length_total <= 1e-6:
                 continue
+
+            # Re-anchor the start pose to the analytical centreline to avoid
+            # drift from the previous segment accumulating into visible gaps.
+            if current_s != start:
+                current_s = start
+            current_x, current_y, current_hdg = _interpolate_centerline(centerline, current_s)
             curvature_dataset = _curvature_for_interval(start, end)
             target_x, target_y, base_target_hdg = _interpolate_centerline(centerline, end)
             target_hdg = _normalize_angle(base_target_hdg + heading_offset)
@@ -1334,16 +1340,10 @@ def build_geometry_segments(
 
             steps = max(1, int(math.ceil(length_total / effective_len)))
             step_length = length_total / steps
-            seg_start_s = start
-            seg_start_x = current_x
-            seg_start_y = current_y
-            seg_start_hdg = current_hdg
 
             for step in range(steps):
-                seg_s = seg_start_s + step * step_length
-                seg_x = seg_start_x
-                seg_y = seg_start_y
-                seg_hdg = seg_start_hdg
+                seg_s = start + step * step_length
+                seg_x, seg_y, seg_hdg = _interpolate_centerline(centerline, seg_s)
 
                 segments.append(
                     {
@@ -1356,12 +1356,13 @@ def build_geometry_segments(
                     }
                 )
 
-                seg_start_x, seg_start_y, seg_start_hdg = _advance_pose(
-                    seg_x, seg_y, seg_hdg, refined_curvature, step_length
-                )
-
-            current_x, current_y, current_hdg = seg_start_x, seg_start_y, seg_start_hdg
+            current_x, current_y, current_hdg = next_x, next_y, next_hdg
             current_s = end
+
+            # Snap the tail of the segment back onto the centreline so the next
+            # iteration starts from the reference alignment instead of the
+            # numerically integrated pose.
+            current_x, current_y, current_hdg = _interpolate_centerline(centerline, current_s)
 
             heading_offset = _normalize_angle(target_hdg - base_target_hdg)
 
