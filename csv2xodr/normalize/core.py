@@ -716,7 +716,21 @@ def build_curvature_profile(
             if s1 <= s0:
                 continue
 
-            curvature_val = float(curv0)
+            dataset_span = offset1 - offset0
+            if dataset_span <= 0:
+                continue
+
+            s_span = s1 - s0
+            if s_span <= 0:
+                continue
+
+            curv0_val = float(curv0)
+            if not math.isfinite(curv0_val):
+                continue
+
+            scale = dataset_span / s_span if s_span > 1e-12 else 1.0
+            curvature_val = curv0_val * scale
+
             if not math.isfinite(curvature_val):
                 continue
 
