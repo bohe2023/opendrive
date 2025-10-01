@@ -58,3 +58,36 @@ def test_build_elevation_profile_averages_and_slopes():
     assert second["s"] == 1.0
     assert second["a"] == 13.0  # average of 12 and 14
     assert second["b"] == 0.0  # final segment flattens to avoid spikes
+
+
+def test_build_elevation_profile_ignores_outliers():
+    rows = [
+        {
+            "Offset[cm]": "0",
+            "高さ[m]": "60.0",
+            "Path Id": "1",
+            "Is Retransmission": "False",
+        },
+        {
+            "Offset[cm]": "0",
+            "高さ[m]": "83886.07",  # sentinel-style invalid reading
+            "Path Id": "1",
+            "Is Retransmission": "False",
+        },
+        {
+            "Offset[cm]": "100",
+            "高さ[m]": "61.0",
+            "Path Id": "1",
+            "Is Retransmission": "False",
+        },
+    ]
+
+    df = DataFrame(rows)
+
+    profile = build_elevation_profile(df)
+
+    assert len(profile) == 2
+    first, second = profile
+
+    assert first["a"] == 60.0
+    assert second["a"] == 61.0

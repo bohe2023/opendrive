@@ -385,7 +385,9 @@ def build_elevation_profile(
         if counts:
             best_path = max(counts, key=counts.get)
 
-    grouped: dict = {}
+    grouped: Dict[float, List[float]] = {}
+    all_heights: List[float] = []
+
     for idx in range(len(df_line_geo)):
         row = df_line_geo.iloc[idx]
 
@@ -409,10 +411,21 @@ def build_elevation_profile(
         except (TypeError, ValueError):
             continue
 
+        if not math.isfinite(height):
+            continue
+
         grouped.setdefault(offset_cm, []).append(height)
+        all_heights.append(height)
 
     if not grouped:
         return []
+
+    typical_height: Optional[float] = None
+    if all_heights:
+        try:
+            typical_height = statistics.median(all_heights)
+        except statistics.StatisticsError:  # pragma: no cover - defensive guard
+            typical_height = None
 
     origin_cm = min(grouped.keys())
 
@@ -421,7 +434,27 @@ def build_elevation_profile(
         heights = grouped[offset_cm]
         if not heights:
             continue
-        avg_height = sum(heights) / len(heights)
+
+        filtered: List[float] = []
+        for value in heights:
+            if not math.isfinite(value):
+                continue
+
+            if abs(value) >= 1e6:
+                continue
+
+            if typical_height is not None:
+                deviation = abs(value - typical_height)
+                allowed = max(50.0, abs(typical_height) * 5.0)
+                if deviation > allowed:
+                    continue
+
+            filtered.append(value)
+
+        if not filtered:
+            continue
+
+        avg_height = sum(filtered) / len(filtered)
         offset_m = max(0.0, (offset_cm - origin_cm) * 0.01)
         if offset_mapper is not None:
             s_val = float(offset_mapper(offset_m))
