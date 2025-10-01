@@ -652,12 +652,22 @@ def build_curvature_profile(
         )
         bucket = groups.setdefault(segment_key, {"shapes": {}})
 
-        # Skip duplicate shape indices which appear in retransmission data.
         shape_idx = float(shape_val)
-        if shape_idx in bucket["shapes"]:
+        try:
+            curvature_val_f = float(curvature_val)
+        except (TypeError, ValueError):
             continue
 
-        bucket["shapes"][shape_idx] = float(curvature_val)
+        # Aggregate duplicate samples for the same shape index instead of
+        # picking whichever record happens to appear first.  Some datasets
+        # retransmit curvature rows without flipping the retransmission flag,
+        # in which case the repeated entries may carry slightly different
+        # values.  Averaging them keeps the per-point curvature consistent and
+        # avoids injecting sharp heading jumps when neighbouring intervals are
+        # stitched together.
+        bucket_entry = bucket["shapes"].setdefault(shape_idx, {"sum": 0.0, "count": 0})
+        bucket_entry["sum"] += curvature_val_f
+        bucket_entry["count"] += 1
 
     if not groups:
         return []
@@ -684,10 +694,21 @@ def build_curvature_profile(
             continue
 
         shapes = bucket.get("shapes", {})
-        if len(shapes) < 2:
+        averaged_shapes: List[Tuple[float, float]] = []
+        for idx_val, stats in shapes.items():
+            total = float(stats.get("sum", 0.0))
+            count = float(stats.get("count", 0.0))
+            if count <= 0 or not math.isfinite(total):
+                continue
+            averaged = total / count
+            if not math.isfinite(averaged):
+                continue
+            averaged_shapes.append((float(idx_val), averaged))
+
+        if len(averaged_shapes) < 2:
             continue
 
-        ordered = sorted(shapes.items(), key=lambda item: item[0])
+        ordered = sorted(averaged_shapes, key=lambda item: item[0])
         idx_min = ordered[0][0]
         idx_max = ordered[-1][0]
         span_idx = idx_max - idx_min
