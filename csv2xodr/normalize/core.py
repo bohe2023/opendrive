@@ -500,14 +500,111 @@ def build_curvature_profile(
     )
     path_col = _find_column(df_curvature, "path")
     retrans_col = _find_column(df_curvature, "is", "retransmission")
+    lane_col = (
+        _find_column(df_curvature, "lane", "number")
+        or _find_column(df_curvature, "lane", "no")
+        or _find_column(df_curvature, "lane")
+    )
+    shape_col = (
+        _find_column(df_curvature, "形状", "インデックス")
+        or _find_column(df_curvature, "shape", "index")
+        or _find_column(df_curvature, "index")
+    )
 
     if start_col is None or end_col is None or curvature_col is None:
         return []
 
+    def _legacy_profile() -> List[Dict[str, float]]:
+        best_path = _select_best_path(df_curvature, path_col)
+
+        entries: List[Tuple[float, float, float]] = []
+        origin_cm: Optional[float] = None
+
+        for idx in range(len(df_curvature)):
+            row = df_curvature.iloc[idx]
+
+            if retrans_col is not None:
+                retrans_val = str(row[retrans_col]).strip().lower()
+                if retrans_val == "true":
+                    continue
+
+            if best_path is not None and path_col is not None and row[path_col] != best_path:
+                continue
+
+            start_cm = _to_float(row[start_col])
+            end_cm = _to_float(row[end_col])
+            curvature_val = _to_float(row[curvature_col])
+
+            if start_cm is None or end_cm is None or curvature_val is None:
+                continue
+
+            if origin_cm is None or start_cm < origin_cm:
+                origin_cm = start_cm
+
+            entries.append((start_cm, end_cm, curvature_val))
+
+        if origin_cm is None:
+            return []
+
+        grouped: Dict[Tuple[float, float], Dict[str, List[float]]] = {}
+
+        for start_cm, end_cm, curvature_val in entries:
+            start_m = max(0.0, (start_cm - origin_cm) * 0.01)
+            end_m = max(0.0, (end_cm - origin_cm) * 0.01)
+            if end_m <= start_m:
+                continue
+
+            key = _prepare_segment_key(start_m, end_m)
+            bucket = grouped.setdefault(key, {"curvature": [], "length": []})
+            bucket["curvature"].append(curvature_val)
+            bucket["length"].append(end_m - start_m)
+
+        if not grouped:
+            return []
+
+        profile: List[Dict[str, float]] = []
+        for (start_m, end_m), values in sorted(grouped.items(), key=lambda item: item[0]):
+            curv_values = values["curvature"]
+            if not curv_values:
+                continue
+            avg_curvature = sum(curv_values) / len(curv_values)
+            s0 = float(offset_mapper(start_m)) if offset_mapper is not None else float(start_m)
+            s1 = float(offset_mapper(end_m)) if offset_mapper is not None else float(end_m)
+            if s1 <= s0:
+                continue
+            if values["length"]:
+                avg_length = sum(values["length"]) / len(values["length"])
+            else:
+                avg_length = end_m - start_m
+            if avg_length <= 0:
+                continue
+            span = s1 - s0
+            if span <= 0:
+                continue
+            scale = avg_length / span
+            profile.append({"s0": s0, "s1": s1, "curvature": avg_curvature * scale})
+
+        return profile
+
+    # Datasets that expose "形状インデックス" encode a per-sample curvature
+    # sequence which requires finer interpolation.  Fall back to the legacy
+    # behaviour when the column is not present.
+    if shape_col is None or lane_col is None:
+        return _legacy_profile()
+
     best_path = _select_best_path(df_curvature, path_col)
 
-    entries: List[Tuple[float, float, float]] = []
-    origin_cm: Optional[float] = None
+    def _normalise_key(value: Any) -> Optional[Any]:
+        canonical = _canonical_numeric(value, allow_negative=True)
+        if canonical is not None:
+            return canonical
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    lane_origins: Dict[Tuple[Optional[Any], Optional[Any]], float] = {}
+    groups: Dict[Tuple[Optional[Any], Optional[Any], float, float], Dict[str, Any]] = {}
 
     for idx in range(len(df_curvature)):
         row = df_curvature.iloc[idx]
@@ -517,62 +614,115 @@ def build_curvature_profile(
             if retrans_val == "true":
                 continue
 
-        if best_path is not None and path_col is not None and row[path_col] != best_path:
+        raw_path = row[path_col] if path_col is not None else None
+        path_key = _normalise_key(raw_path)
+        if best_path is not None:
+            best_key = _normalise_key(best_path)
+            if path_key != best_key:
+                continue
+            path_key = best_key
+
+        lane_key = _normalise_key(row[lane_col])
+        if lane_key is None:
             continue
 
         start_cm = _to_float(row[start_col])
         end_cm = _to_float(row[end_col])
         curvature_val = _to_float(row[curvature_col])
+        shape_val = _to_float(row[shape_col])
 
-        if start_cm is None or end_cm is None or curvature_val is None:
+        if (
+            start_cm is None
+            or end_cm is None
+            or curvature_val is None
+            or shape_val is None
+        ):
             continue
 
-        if origin_cm is None or start_cm < origin_cm:
-            origin_cm = start_cm
+        lane_origin_key = (path_key, lane_key)
+        current_origin = lane_origins.get(lane_origin_key)
+        if current_origin is None or start_cm < current_origin:
+            lane_origins[lane_origin_key] = start_cm
 
-        entries.append((start_cm, end_cm, curvature_val))
+        segment_key = (
+            path_key,
+            lane_key,
+            float(start_cm),
+            float(end_cm),
+        )
+        bucket = groups.setdefault(segment_key, {"shapes": {}})
 
-    if origin_cm is None:
+        # Skip duplicate shape indices which appear in retransmission data.
+        shape_idx = float(shape_val)
+        if shape_idx in bucket["shapes"]:
+            continue
+
+        bucket["shapes"][shape_idx] = float(curvature_val)
+
+    if not groups:
         return []
 
-    grouped: Dict[Tuple[float, float], Dict[str, List[float]]] = {}
+    profile: List[Dict[str, float]] = []
 
-    for start_cm, end_cm, curvature_val in entries:
+    def _sort_key(item: Tuple[Tuple[Optional[Any], Optional[Any], float, float], Dict[str, Any]]):
+        path_key, lane_key, start_cm, end_cm = item[0]
+        path_text = "" if path_key is None else str(path_key)
+        lane_text = "" if lane_key is None else str(lane_key)
+        return (path_text, lane_text, start_cm, end_cm)
+
+    for (path_key, lane_key, start_cm, end_cm), bucket in sorted(
+        groups.items(),
+        key=_sort_key,
+    ):
+        origin_cm = lane_origins.get((path_key, lane_key))
+        if origin_cm is None:
+            continue
+
         start_m = max(0.0, (start_cm - origin_cm) * 0.01)
         end_m = max(0.0, (end_cm - origin_cm) * 0.01)
         if end_m <= start_m:
             continue
 
-        key = _prepare_segment_key(start_m, end_m)
-        bucket = grouped.setdefault(key, {"curvature": [], "length": []})
-        bucket["curvature"].append(curvature_val)
-        bucket["length"].append(end_m - start_m)
+        shapes = bucket.get("shapes", {})
+        if len(shapes) < 2:
+            continue
 
-    if not grouped:
-        return []
+        ordered = sorted(shapes.items(), key=lambda item: item[0])
+        idx_min = ordered[0][0]
+        idx_max = ordered[-1][0]
+        span_idx = idx_max - idx_min
+        if abs(span_idx) <= 1e-12:
+            continue
 
-    profile: List[Dict[str, float]] = []
-    for (start_m, end_m), values in sorted(grouped.items(), key=lambda item: item[0]):
-        curv_values = values["curvature"]
-        if not curv_values:
-            continue
-        avg_curvature = sum(curv_values) / len(curv_values)
-        s0 = float(offset_mapper(start_m)) if offset_mapper is not None else float(start_m)
-        s1 = float(offset_mapper(end_m)) if offset_mapper is not None else float(end_m)
-        if s1 <= s0:
-            continue
-        if values["length"]:
-            avg_length = sum(values["length"]) / len(values["length"])
-        else:
-            avg_length = end_m - start_m
-        if avg_length <= 0:
-            continue
-        span = s1 - s0
-        if span <= 0:
-            continue
-        scale = avg_length / span
-        profile.append({"s0": s0, "s1": s1, "curvature": avg_curvature * scale})
+        for i in range(len(ordered) - 1):
+            idx0, curv0 = ordered[i]
+            idx1, curv1 = ordered[i + 1]
+            if idx1 <= idx0:
+                continue
 
+            frac0 = (idx0 - idx_min) / span_idx
+            frac1 = (idx1 - idx_min) / span_idx
+            offset0 = start_m + (end_m - start_m) * frac0
+            offset1 = start_m + (end_m - start_m) * frac1
+
+            if offset1 <= offset0:
+                continue
+
+            s0 = float(offset_mapper(offset0)) if offset_mapper is not None else float(offset0)
+            s1 = float(offset_mapper(offset1)) if offset_mapper is not None else float(offset1)
+
+            if not (math.isfinite(s0) and math.isfinite(s1)):
+                continue
+            if s1 <= s0:
+                continue
+
+            curvature_val = float(curv0)
+            if not math.isfinite(curvature_val):
+                continue
+
+            profile.append({"s0": s0, "s1": s1, "curvature": curvature_val})
+
+    profile.sort(key=lambda item: item["s0"])
     return profile
 
 
