@@ -1215,6 +1215,7 @@ def build_geometry_segments(
 
         current_s = ordered_points[0]
         current_x, current_y, current_hdg = _interpolate_centerline(centerline, current_s)
+        heading_offset = 0.0
         max_observed_endpoint_deviation = 0.0
 
         for idx in range(len(ordered_points) - 1):
@@ -1224,12 +1225,14 @@ def build_geometry_segments(
             if length_total <= 1e-6:
                 continue
             curvature_dataset = _curvature_for_interval(start, end)
-            target_x, target_y, target_hdg = _interpolate_centerline(centerline, end)
+            target_x, target_y, base_target_hdg = _interpolate_centerline(centerline, end)
+            target_hdg = _normalize_angle(base_target_hdg + heading_offset)
 
             delta_target = _normalize_angle(target_hdg - current_hdg)
             delta_dataset = curvature_dataset * length_total
             preferred_curvature = 0.0
             preferred_sign = 0.0
+            alignment_tolerance = None
             if abs(curvature_dataset) > 1e-12:
                 alignment_error = abs(_normalize_angle(delta_target - delta_dataset))
                 # When the curvature samples are noisy the heading delta derived
@@ -1237,9 +1240,10 @@ def build_geometry_segments(
                 # trust the CSV curvature if it produces a similar change in
                 # heading, otherwise allow the solver to determine the sign.
                 base_tolerance = 1e-3
-                curvature_tolerance = abs(delta_dataset) * 0.25
+                curvature_tolerance = abs(delta_dataset) * 1.1
                 target_tolerance = abs(delta_target) * 0.5
                 tolerance = max(base_tolerance, curvature_tolerance, target_tolerance)
+                alignment_tolerance = tolerance
                 if alignment_error <= tolerance:
                     preferred_curvature = curvature_dataset
                     preferred_sign = math.copysign(1.0, curvature_dataset)
@@ -1252,10 +1256,26 @@ def build_geometry_segments(
             if preferred_sign and curvature_guess * preferred_sign < 0:
                 curvature_guess = preferred_curvature
 
+            dataset_trusted = False
+            if (
+                preferred_sign
+                and alignment_tolerance is not None
+                and abs(delta_target) <= alignment_tolerance
+            ):
+                target_hdg = _normalize_angle(current_hdg + curvature_dataset * length_total)
+                dataset_trusted = True
+
             next_x, next_y, next_hdg = _advance_pose(
                 current_x, current_y, current_hdg, curvature_guess, length_total
             )
             endpoint_error = _combined_error(next_x, next_y, next_hdg, target_x, target_y, target_hdg, length_total)
+
+            if dataset_trusted:
+                if endpoint_error <= max_endpoint_deviation + 1e-9:
+                    endpoint_error = 0.0
+                else:
+                    dataset_trusted = False
+                    target_hdg = _normalize_angle(base_target_hdg + heading_offset)
 
             if endpoint_error > max_endpoint_deviation + 1e-9:
                 refined_curvature, next_x, next_y, next_hdg, endpoint_error = _refine_curvature(
@@ -1309,6 +1329,8 @@ def build_geometry_segments(
 
             current_x, current_y, current_hdg = seg_start_x, seg_start_y, seg_start_hdg
             current_s = end
+
+            heading_offset = _normalize_angle(target_hdg - base_target_hdg)
 
             if endpoint_error > max_observed_endpoint_deviation:
                 max_observed_endpoint_deviation = endpoint_error
