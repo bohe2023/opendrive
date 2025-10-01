@@ -484,6 +484,7 @@ def build_curvature_profile(
     df_curvature: Optional[DataFrame],
     *,
     offset_mapper: Optional[Callable[[float], float]] = None,
+    centerline: Optional[DataFrame] = None,
 ) -> List[Dict[str, float]]:
     if df_curvature is None or len(df_curvature) == 0:
         return []
@@ -717,6 +718,8 @@ def build_curvature_profile(
         if abs(span_idx) <= 1e-12:
             continue
 
+        bucket_segments: List[Dict[str, float]] = []
+
         for i in range(len(ordered) - 1):
             idx0, curv0 = ordered[i]
             idx1, curv1 = ordered[i + 1]
@@ -757,14 +760,41 @@ def build_curvature_profile(
             if not math.isfinite(curvature_val):
                 continue
 
-            lane_token = (path_key, lane_key)
-            segment = {"s0": s0, "s1": s1, "curvature": curvature_val}
+            bucket_segments.append({"s0": s0, "s1": s1, "curvature": curvature_val})
+
+        if not bucket_segments:
+            continue
+
+        if centerline is not None:
+            start_s = bucket_segments[0]["s0"]
+            end_s = bucket_segments[-1]["s1"]
+            _, _, start_hdg = _interpolate_centerline(centerline, start_s)
+            _, _, end_hdg = _interpolate_centerline(centerline, end_s)
+            target_delta = _normalize_angle(end_hdg - start_hdg)
+            dataset_delta = 0.0
+            total_span = 0.0
+            for seg in bucket_segments:
+                span = seg["s1"] - seg["s0"]
+                dataset_delta += seg["curvature"] * span
+                total_span += span
+            if abs(dataset_delta) > 1e-12 and math.isfinite(dataset_delta):
+                scale_factor = target_delta / dataset_delta if math.isfinite(target_delta) else 1.0
+                if math.isfinite(scale_factor):
+                    for seg in bucket_segments:
+                        seg["curvature"] *= scale_factor
+            elif total_span > 1e-9:
+                uniform_curv = target_delta / total_span
+                for seg in bucket_segments:
+                    seg["curvature"] = uniform_curv
+
+        lane_token = (path_key, lane_key)
+        stats = lane_stats.setdefault(
+            lane_token,
+            {"coverage": 0.0, "samples": 0.0},
+        )
+        for segment in bucket_segments:
             lane_segments.setdefault(lane_token, []).append(segment)
-            stats = lane_stats.setdefault(
-                lane_token,
-                {"coverage": 0.0, "samples": 0.0},
-            )
-            stats["coverage"] += s1 - s0
+            stats["coverage"] += segment["s1"] - segment["s0"]
             stats["samples"] += 1.0
 
     if not lane_segments:
