@@ -233,7 +233,7 @@ def test_curvature_profile_uses_shape_index_segments():
     assert all(math.isclose(span, 0.5, abs_tol=1e-9) for span in spans)
 
     curvatures = [seg["curvature"] for seg in curvature_segments]
-    assert curvatures == [0.6, -0.6, 0.6, -0.6]
+    assert all(math.isclose(curv, expected) for curv, expected in zip(curvatures, [0.6, -0.6, 0.2, -0.6]))
 
     center = DataFrame(
         {
@@ -258,6 +258,27 @@ def test_curvature_profile_uses_shape_index_segments():
         if geometry_curvatures[i - 1] * geometry_curvatures[i] < 0
     )
     assert transitions >= 2
+
+
+def test_curvature_profile_averages_duplicate_shape_indices():
+    curvature_df = DataFrame(
+        {
+            "Offset[cm]": [0, 0, 0, 0],
+            "End Offset[cm]": [200, 200, 200, 200],
+            "Lane Number": ["A", "A", "A", "A"],
+            "形状インデックス": [0, 0, 1, 2],
+            "曲率値[rad/m]": [0.4, 0.8, 1.0, 1.2],
+            "Is Retransmission": ["False", "False", "False", "False"],
+        }
+    )
+
+    curvature_segments = build_curvature_profile(curvature_df)
+
+    assert len(curvature_segments) == 2
+
+    first, second = curvature_segments
+    assert math.isclose(first["curvature"], 0.6)
+    assert math.isclose(second["curvature"], 1.0)
 
 
 def test_geometry_segments_honours_custom_densify_threshold():
