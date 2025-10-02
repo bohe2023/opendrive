@@ -792,10 +792,13 @@ def build_lane_spec(
                 [base for base in negative_bases if base in remaining_bases]
             )
         else:
-            if not negative_bases and not hinted_right:
+            has_right_evidence = bool(negative_bases or hinted_right)
+            has_left_evidence = bool(positive_bases or hinted_left)
+
+            if not has_right_evidence:
                 derived_left = list(remaining_bases)
                 derived_right = []
-            elif not positive_bases and not hinted_left:
+            elif not has_left_evidence:
                 derived_right = list(remaining_bases)
                 derived_left = []
             else:
