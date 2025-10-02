@@ -18,8 +18,8 @@
   },
   "road_length_m": 1476.3343669898945,
   "xodr_file": {
-    "path": "/workspace/opendrive/out/JPN/output.xodr",
-    "size_bytes": 88536,
-    "line_count": 1909
+    "path": "/workspace/opendrive/out/JPN/map.xodr",
+    "size_bytes": 207774,
+    "line_count": 3775
   }
 }
