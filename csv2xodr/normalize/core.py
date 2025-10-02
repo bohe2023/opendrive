@@ -1414,22 +1414,25 @@ def build_geometry_segments(
                 idx += 1
                 continue
 
-            # Re-anchor the start pose to the analytical centreline to avoid
-            # drift from the previous segment accumulating into visible gaps.
-            # 即便 ``start`` 与 ``current_s`` 数值完全一致，上一个区段的数值积分
-            # 结果仍然可能存在亚米级的横向漂移。为了确保后续区段始终与解析中心线
-            # 对齐，这里优先采用中心线插值得到的姿态作为新的起点。
-            # 无论 ``start`` 是否与前一分段的终点数值相同，都需要重新对齐
-            # 至解析中心线。否则将持续沿用上一段数值积分后的坐标，积累的
-            # 浮点误差会在下一个区段放大为明显的横向漂移，正是查看器中所
-            # 看到的“断裂”现象。
+            # Re-anchor the analytical pose for diagnostics, but keep the
+            # numerically propagated start unless the drift becomes excessive.
             current_s = start
 
-            continuous_x, continuous_y, continuous_hdg = _interpolate_centerline(
-                centerline, start
-            )
+            anchor_x, anchor_y, anchor_hdg = _interpolate_centerline(centerline, start)
 
-            current_x, current_y, current_hdg = continuous_x, continuous_y, continuous_hdg
+            drift_pos = math.hypot(anchor_x - continuous_x, anchor_y - continuous_y)
+            drift_hdg = abs(_normalize_angle(anchor_hdg - continuous_hdg))
+
+            # 形状インデックス数据的分段更密集，直接将起点强行重置到解析
+            # 中心线会让上一段的数值积分结果与新的起点出现 2~3cm 的错位。
+            # 当误差仍处于几十厘米以内时，保留连续积分得到的起点可以维持
+            # 几何连续性；只有当累积漂移明显放大时才回退到解析中心线重新
+            # 对齐，从而兼顾稳定性与准确度。
+            if drift_pos > 0.1 or drift_hdg > 2e-2:
+                current_x, current_y, current_hdg = anchor_x, anchor_y, anchor_hdg
+                continuous_x, continuous_y, continuous_hdg = anchor_x, anchor_y, anchor_hdg
+            else:
+                current_x, current_y, current_hdg = continuous_x, continuous_y, continuous_hdg
             curvature_dataset = _curvature_for_interval(start, end)
             target_x, target_y, target_hdg = _interpolate_centerline(centerline, end)
 
