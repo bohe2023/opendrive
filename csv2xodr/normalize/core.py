@@ -566,6 +566,13 @@ def build_elevation_profile(
         if not math.isfinite(height):
             continue
 
+        if abs(height) >= 1e4:
+            # Sentinel-style placeholders in some datasets use extremely large
+            # values (for example ``83886.07``) to signal that the real
+            # elevation measurement is unavailable.  Treat them as missing data
+            # instead of letting them skew the typical height statistics.
+            continue
+
         grouped.setdefault(offset_cm, []).append(height)
         all_heights.append(height)
 
@@ -590,9 +597,6 @@ def build_elevation_profile(
         filtered: List[float] = []
         for value in heights:
             if not math.isfinite(value):
-                continue
-
-            if abs(value) >= 1e6:
                 continue
 
             if typical_height is not None:

@@ -104,9 +104,16 @@ def build_line_geometry_lookup(
         if lat_val is None or lon_val is None:
             continue
 
-        z_val = _to_float(row[z_col]) if z_col else 0.0
+        z_val = _to_float(row[z_col]) if z_col else None
+        if z_val is not None:
+            if not math.isfinite(z_val) or abs(z_val) >= 1e4:
+                z_val = None
         if z_val is None:
-            z_val = 0.0
+            existing = entry.get("z", []) or []
+            if existing:
+                z_val = existing[-1]
+            else:
+                z_val = 0.0
 
         off_cm_raw = None
         if offset_col is not None:
