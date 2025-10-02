@@ -1249,7 +1249,6 @@ def build_geometry_segments(
         current_s = ordered_points[0]
         current_x, current_y, current_hdg = _interpolate_centerline(centerline, current_s)
         continuous_x, continuous_y, continuous_hdg = current_x, current_y, current_hdg
-        heading_offset = 0.0
         max_observed_endpoint_deviation = 0.0
 
         min_split_length = max(0.25, effective_len * 0.25)
@@ -1273,8 +1272,7 @@ def build_geometry_segments(
 
             current_x, current_y, current_hdg = continuous_x, continuous_y, continuous_hdg
             curvature_dataset = _curvature_for_interval(start, end)
-            target_x, target_y, base_target_hdg = _interpolate_centerline(centerline, end)
-            target_hdg = _normalize_angle(base_target_hdg + heading_offset)
+            target_x, target_y, target_hdg = _interpolate_centerline(centerline, end)
 
             delta_target = _normalize_angle(target_hdg - current_hdg)
             delta_dataset = curvature_dataset * length_total
@@ -1304,15 +1302,6 @@ def build_geometry_segments(
             if preferred_sign and curvature_guess * preferred_sign < 0:
                 curvature_guess = preferred_curvature
 
-            dataset_trusted = False
-            if (
-                preferred_sign
-                and alignment_tolerance is not None
-                and abs(delta_target) <= alignment_tolerance
-            ):
-                target_hdg = _normalize_angle(current_hdg + curvature_dataset * length_total)
-                dataset_trusted = True
-
             next_x, next_y, next_hdg = _advance_pose(
                 current_x, current_y, current_hdg, curvature_guess, length_total
             )
@@ -1339,30 +1328,19 @@ def build_geometry_segments(
             midpoint_error = _midpoint_error(curvature_guess)
             segment_error = max(endpoint_error, midpoint_error)
 
-            if dataset_trusted:
-                if segment_error <= max_endpoint_deviation + 1e-9:
-                    endpoint_error = segment_error
-                else:
-                    dataset_trusted = False
-                    target_hdg = _normalize_angle(base_target_hdg + heading_offset)
-
-            if not dataset_trusted or segment_error > max_endpoint_deviation + 1e-9:
-                refined_curvature, next_x, next_y, next_hdg, endpoint_error = _refine_curvature(
-                    current_x,
-                    current_y,
-                    current_hdg,
-                    length_total,
-                    curvature_guess,
-                    target_x,
-                    target_y,
-                    target_hdg,
-                    preferred_curvature,
-                )
-                midpoint_error = _midpoint_error(refined_curvature)
-                segment_error = max(endpoint_error, midpoint_error)
-            else:
-                refined_curvature = curvature_guess
-                endpoint_error = segment_error
+            refined_curvature, next_x, next_y, next_hdg, endpoint_error = _refine_curvature(
+                current_x,
+                current_y,
+                current_hdg,
+                length_total,
+                curvature_guess,
+                target_x,
+                target_y,
+                target_hdg,
+                preferred_curvature,
+            )
+            midpoint_error = _midpoint_error(refined_curvature)
+            segment_error = max(endpoint_error, midpoint_error)
 
             if preferred_sign and refined_curvature * preferred_sign < 0:
                 refined_curvature = float(preferred_curvature)
@@ -1424,9 +1402,7 @@ def build_geometry_segments(
             # Record the analytical centreline pose for diagnostic purposes while
             # keeping ``continuous_*`` anchored to the numerically integrated
             # result so the emitted geometry remains contiguous.
-            current_x, current_y, current_hdg = target_x, target_y, base_target_hdg
-
-            heading_offset = _normalize_angle(target_hdg - base_target_hdg)
+            current_x, current_y, current_hdg = target_x, target_y, target_hdg
 
             if segment_error > max_observed_endpoint_deviation:
                 max_observed_endpoint_deviation = segment_error
