@@ -596,11 +596,10 @@ def build_lane_spec(
         if hint in {"left", "right"}:
             if parent_hint in {"left", "right"} and parent_hint != hint:
                 if alias == parent:
-                    # Treat the conflict as ambiguous: keep the group
-                    # unassigned for now so that later heuristics can decide
-                    # based on lane counts or topology instead of blindly
-                    # trusting either source.
-                    continue
+                    # 当几何信息与车道编号推断出现矛盾时，更信任几何提示，
+                    # 否则像 JPN 数据集这样的场景会把所有车道都塞到参考线
+                    # 同一侧，导致导出的 OpenDRIVE 出现车道交错的问题。
+                    geometry_side_hint[alias] = parent_hint
                 else:
                     # For split groups ("::pos"/"::neg") the derived hint
                     # still carries meaningful information about how the
