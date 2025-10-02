@@ -753,17 +753,31 @@ def build_lane_spec(
         and positive_bases
     ):
         # 没有任何右侧提示且全部车道编号为正，说明输入数据没有明确区分两侧。
-        # 此时利用 lane_count 和 lane_no 顺序进行一次平均划分，
-        # 让编号靠后的车道落在参考线右侧，避免所有车道都堆叠在左侧。
-        half = max(1, lane_count // 2)
+        # 过去的实现会强行按照 lane_count 平均拆分左右车道，导致生成的
+        # 右侧车道与真实拓扑不符。现在改为根据已有提示或配置默认值，将
+        # 所有基准车道保持在同一侧。
+        preferred_side: Optional[str] = None
+        for side in geometry_side_hint.values():
+            if side in {"left", "right"}:
+                preferred_side = side
+                break
+
+        if preferred_side is None:
+            raw_default = None
+            if isinstance(defaults, dict):
+                raw_default = defaults.get("default_lane_side")
+            if isinstance(raw_default, str):
+                lowered = raw_default.strip().lower()
+                if lowered in {"left", "right"}:
+                    preferred_side = "left" if lowered == "left" else "right"
+
+        if preferred_side is None:
+            preferred_side = "left"
+
         for base in base_ids:
-            lane_number = lane_no_by_base.get(base)
-            if lane_number is None:
+            if lane_no_by_base.get(base) is None:
                 continue
-            if lane_number > half:
-                geometry_side_hint[base] = "right"
-            else:
-                geometry_side_hint.setdefault(base, "left")
+            geometry_side_hint.setdefault(base, preferred_side)
 
     def _ordered_subset(candidates: Iterable[str]) -> List[str]:
         seen: List[str] = []
