@@ -1422,9 +1422,18 @@ def build_geometry_segments(
             if current_s != start:
                 current_s = start
 
-            continuous_x, continuous_y, continuous_hdg = _interpolate_centerline(
-                centerline, start
-            )
+            anchor_x, anchor_y, anchor_hdg = _interpolate_centerline(centerline, start)
+            drift = math.hypot(continuous_x - anchor_x, continuous_y - anchor_y)
+            heading_drift = abs(_normalize_angle(continuous_hdg - anchor_hdg))
+
+            # Keep the numerically integrated pose unless the accumulated error
+            # grows beyond the tolerance.  This preserves geometric continuity
+            # between consecutive segments while still allowing a controlled
+            # re-anchor to the analytical centreline when the drift becomes too
+            # large (for example after solver fallback or noisy curvature
+            # samples).
+            if drift > max_endpoint_deviation or heading_drift > 0.5:
+                continuous_x, continuous_y, continuous_hdg = anchor_x, anchor_y, anchor_hdg
 
             current_x, current_y, current_hdg = continuous_x, continuous_y, continuous_hdg
             curvature_dataset = _curvature_for_interval(start, end)
