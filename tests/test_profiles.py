@@ -7,6 +7,8 @@ from csv2xodr.normalize.core import (
     build_shoulder_profile,
     build_slope_profile,
     build_superelevation_profile,
+    _advance_pose,
+    _merge_geometry_segments,
     _normalize_angle,
 )
 from csv2xodr.lane_spec import apply_shoulder_profile
@@ -185,6 +187,40 @@ def test_geometry_segments_remain_continuous():
             0.0,
             abs_tol=1e-9,
         )
+
+
+def test_merge_geometry_segments_snaps_small_drift():
+    segments = [
+        {"s": 0.0, "x": 0.0, "y": 0.0, "hdg": 0.0, "length": 5.0, "curvature": 0.001},
+        {
+            "s": 5.0,
+            "x": 5.003,
+            "y": 0.002,
+            "hdg": 0.0018,
+            "length": 4.0,
+            "curvature": 0.0012,
+        },
+    ]
+
+    merged = _merge_geometry_segments(segments)
+    assert len(merged) == 2
+
+    expected_x, expected_y, expected_hdg = _advance_pose(
+        segments[0]["x"],
+        segments[0]["y"],
+        segments[0]["hdg"],
+        segments[0]["curvature"],
+        segments[0]["length"],
+    )
+
+    second = merged[1]
+    assert math.isclose(second["x"], expected_x, abs_tol=1e-6)
+    assert math.isclose(second["y"], expected_y, abs_tol=1e-6)
+    assert math.isclose(
+        _normalize_angle(second["hdg"] - expected_hdg),
+        0.0,
+        abs_tol=1e-6,
+    )
 
 
 def test_geometry_segments_are_densified_for_long_spans():

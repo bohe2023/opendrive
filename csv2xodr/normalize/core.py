@@ -1725,7 +1725,32 @@ def _merge_geometry_segments(
         delta_pos = math.hypot(next_seg["x"] - end_x, next_seg["y"] - end_y)
         delta_hdg = abs(_normalize_angle(next_seg["hdg"] - end_hdg))
 
-        if delta_s <= 1e-8 and delta_pos <= position_tol and delta_hdg <= heading_tol:
+        # Shape-index datasets may accumulate millimetre-level drift between
+        # consecutive curvature spans.  Allow a slightly looser tolerance that
+        # scales with the local geometry so that neighbouring segments snap back
+        # to the analytically continuous pose instead of rendering as disjoint
+        # road pieces in OpenDRIVE viewers.
+        length_scale = max(
+            float(current.get("length", 0.0)),
+            float(next_seg.get("length", 0.0)),
+            1e-9,
+        )
+        adaptive_position_tol = max(
+            position_tol,
+            min(0.05, 0.001 + 0.005 * length_scale),
+        )
+        heading_budget = abs(current_curv * current.get("length", 0.0)) + abs(
+            seg_curv * next_seg.get("length", 0.0)
+        )
+        adaptive_heading_tol = max(
+            heading_tol,
+            min(0.01, 0.0025 + 0.5 * heading_budget),
+        )
+
+        if delta_s <= 1e-8:
+            # When the arc-length is continuous treat the numerically
+            # integrated pose as authoritative so the emitted geometry remains
+            # contiguous even if the dataset introduces small lateral offsets.
             next_seg["s"] = expected_s
             next_seg["x"] = end_x
             next_seg["y"] = end_y
@@ -1733,8 +1758,8 @@ def _merge_geometry_segments(
 
         contiguous = (
             abs(next_seg["s"] - expected_s) <= 1e-8
-            and math.hypot(next_seg["x"] - end_x, next_seg["y"] - end_y) <= position_tol
-            and abs(_normalize_angle(next_seg["hdg"] - end_hdg)) <= heading_tol
+            and math.hypot(next_seg["x"] - end_x, next_seg["y"] - end_y) <= adaptive_position_tol
+            and abs(_normalize_angle(next_seg["hdg"] - end_hdg)) <= adaptive_heading_tol
         )
 
         if (
