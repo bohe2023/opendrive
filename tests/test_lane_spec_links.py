@@ -160,7 +160,7 @@ def test_lane_spec_flags_and_writer_links(tmp_path):
     assert last_right_link.find("successor") is None
 
 
-def test_lane_spec_uses_lane_count_when_only_positive_lane_numbers():
+def test_lane_spec_keeps_positive_lane_numbers_on_same_side():
     sections = [{"s0": 0.0, "s1": 10.0}]
 
     lane_topology = {
@@ -199,10 +199,9 @@ def test_lane_spec_uses_lane_count_when_only_positive_lane_numbers():
 
     assert len(specs) == 1
     left_ids = [lane["id"] for lane in specs[0]["left"]]
-    right_ids = [lane["id"] for lane in specs[0]["right"]]
 
-    assert left_ids == [1, 2]
-    assert right_ids == [-1, -2]
+    assert left_ids == [1, 2, 3, 4]
+    assert specs[0]["right"] == []
 
 
 def test_write_xodr_ignores_zero_length_centerline_segments(tmp_path):
