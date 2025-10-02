@@ -64,22 +64,28 @@ def _find_column(columns: List[str], *keywords: str) -> Optional[str]:
 def _offset_series(df: DataFrame):
     if df is None or len(df) == 0:
         return None, None
+
+    # Offsets are provided in centimetres measured along the reference line.  The
+    # converter maps them back to the centreline ``s`` coordinate via
+    # ``offset_mapper`` which already compensates for non-zero origins.  Do not
+    # subtract the local minimum here – doing so desynchronises datasets that do
+    # not start at the very first sample (common in partial exports) and causes
+    # lane sections and markings to shift upstream.  Instead, only convert the
+    # units to metres and keep the absolute reference intact.
     off_cols = [c for c in df.columns if "Offset" in c]             # Offset[cm]
     end_cols = [c for c in df.columns if "End Offset" in c]         # End Offset[cm]
+
     off = None
     end = None
-    base_offset = None
+
     if off_cols:
         off_values = df[off_cols[0]].astype(float).to_list()
-        off_m = [v / 100.0 for v in off_values]
-        base_offset = min(off_m) if off_m else 0.0
-        off = Series([v - base_offset for v in off_m], name=off_cols[0], kind="column")
+        off = Series([v / 100.0 for v in off_values], name=off_cols[0], kind="column")
+
     if end_cols:
         end_values = df[end_cols[0]].astype(float).to_list()
-        end_m = [v / 100.0 for v in end_values]
-        if base_offset is None:
-            base_offset = min(end_m) if end_m else 0.0
-        end = Series([v - base_offset for v in end_m], name=end_cols[0], kind="column")
+        end = Series([v / 100.0 for v in end_values], name=end_cols[0], kind="column")
+
     return off, end
 
 def make_sections(centerline: DataFrame,
