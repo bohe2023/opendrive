@@ -1248,6 +1248,7 @@ def build_geometry_segments(
 
         current_s = ordered_points[0]
         current_x, current_y, current_hdg = _interpolate_centerline(centerline, current_s)
+        continuous_x, continuous_y, continuous_hdg = current_x, current_y, current_hdg
         heading_offset = 0.0
         max_observed_endpoint_deviation = 0.0
 
@@ -1262,7 +1263,11 @@ def build_geometry_segments(
             # drift from the previous segment accumulating into visible gaps.
             if current_s != start:
                 current_s = start
-            current_x, current_y, current_hdg = _interpolate_centerline(centerline, current_s)
+                continuous_x, continuous_y, continuous_hdg = _interpolate_centerline(
+                    centerline, current_s
+                )
+
+            current_x, current_y, current_hdg = continuous_x, continuous_y, continuous_hdg
             curvature_dataset = _curvature_for_interval(start, end)
             target_x, target_y, base_target_hdg = _interpolate_centerline(centerline, end)
             target_hdg = _normalize_angle(base_target_hdg + heading_offset)
@@ -1341,28 +1346,37 @@ def build_geometry_segments(
             steps = max(1, int(math.ceil(length_total / effective_len)))
             step_length = length_total / steps
 
+            propagated_x, propagated_y, propagated_hdg = current_x, current_y, current_hdg
+
             for step in range(steps):
                 seg_s = start + step * step_length
-                seg_x, seg_y, seg_hdg = _interpolate_centerline(centerline, seg_s)
 
                 segments.append(
                     {
                         "s": seg_s,
-                        "x": seg_x,
-                        "y": seg_y,
-                        "hdg": seg_hdg,
+                        "x": propagated_x,
+                        "y": propagated_y,
+                        "hdg": propagated_hdg,
                         "length": step_length,
                         "curvature": refined_curvature,
                     }
                 )
 
-            current_x, current_y, current_hdg = next_x, next_y, next_hdg
+                propagated_x, propagated_y, propagated_hdg = _advance_pose(
+                    propagated_x,
+                    propagated_y,
+                    propagated_hdg,
+                    refined_curvature,
+                    step_length,
+                )
+
+            continuous_x, continuous_y, continuous_hdg = propagated_x, propagated_y, propagated_hdg
             current_s = end
 
-            # Snap the tail of the segment back onto the centreline so the next
-            # iteration starts from the reference alignment instead of the
-            # numerically integrated pose.
-            current_x, current_y, current_hdg = _interpolate_centerline(centerline, current_s)
+            # Record the analytical centreline pose for diagnostic purposes while
+            # keeping ``continuous_*`` anchored to the numerically integrated
+            # result so the emitted geometry remains contiguous.
+            current_x, current_y, current_hdg = target_x, target_y, base_target_hdg
 
             heading_offset = _normalize_angle(target_hdg - base_target_hdg)
 
