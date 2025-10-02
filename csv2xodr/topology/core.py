@@ -1,3 +1,4 @@
+import math
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -65,26 +66,43 @@ def _offset_series(df: DataFrame):
     if df is None or len(df) == 0:
         return None, None
 
-    # Offsets are provided in centimetres measured along the reference line.  The
-    # converter maps them back to the centreline ``s`` coordinate via
-    # ``offset_mapper`` which already compensates for non-zero origins.  Do not
-    # subtract the local minimum here – doing so desynchronises datasets that do
-    # not start at the very first sample (common in partial exports) and causes
-    # lane sections and markings to shift upstream.  Instead, only convert the
-    # units to metres and keep the absolute reference intact.
-    off_cols = [c for c in df.columns if "Offset" in c]             # Offset[cm]
-    end_cols = [c for c in df.columns if "End Offset" in c]         # End Offset[cm]
+    # Offsets are provided in centimetres measured along the reference line.
+    # They use the same absolute origin as the geometry CSV.  The centreline
+    # normalisation step (``build_centerline``) already re-bases the offsets so
+    # that the first sample maps to ``s = 0``.  To keep lane sections aligned
+    # with the plan view we replicate that behaviour here and subtract the
+    # earliest valid offset before converting to metres.
+    off_cols = [c for c in df.columns if "Offset" in c]  # Offset[cm]
+    end_cols = [c for c in df.columns if "End Offset" in c]  # End Offset[cm]
 
-    off = None
-    end = None
+    off_values: List[float] = []
+    end_values: List[float] = []
 
     if off_cols:
-        off_values = df[off_cols[0]].astype(float).to_list()
-        off = Series([v / 100.0 for v in off_values], name=off_cols[0], kind="column")
+        try:
+            off_values = [float(v) / 100.0 for v in df[off_cols[0]].astype(float).to_list()]
+        except Exception:
+            off_values = []
 
     if end_cols:
-        end_values = df[end_cols[0]].astype(float).to_list()
-        end = Series([v / 100.0 for v in end_values], name=end_cols[0], kind="column")
+        try:
+            end_values = [float(v) / 100.0 for v in df[end_cols[0]].astype(float).to_list()]
+        except Exception:
+            end_values = []
+
+    base_offset: Optional[float] = None
+    for seq in (off_values, end_values):
+        for value in seq:
+            if not math.isfinite(value):
+                continue
+            base_offset = value if base_offset is None else min(base_offset, value)
+
+    if base_offset is not None:
+        off_values = [value - base_offset if math.isfinite(value) else value for value in off_values]
+        end_values = [value - base_offset if math.isfinite(value) else value for value in end_values]
+
+    off = Series(off_values, name=off_cols[0], kind="column") if off_cols and off_values else None
+    end = Series(end_values, name=end_cols[0], kind="column") if end_cols and end_values else None
 
     return off, end
 
