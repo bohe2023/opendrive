@@ -1,0 +1,22 @@
+{
+  "input_counts": {
+    "map_base_point": 11,
+    "line_geometry": 848,
+    "lane_link": 47,
+    "lane_division": 61,
+    "lane_width": 652,
+    "slope": 652,
+    "sign": 5
+  },
+  "output_counts": {
+    "roads": 1,
+    "laneSections": 1,
+    "lanes_total": 50
+  },
+  "road_length_m": 1335.6507217769836,
+  "xodr_file": {
+    "path": "D:\\opendrive_git\\out\\US\\map.xodr",
+    "size_bytes": 20758,
+    "line_count": 446
+  }
+}

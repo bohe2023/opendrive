@@ -772,9 +772,6 @@ def build_curvature_profile(
 
         return profile
 
-    # Datasets that expose "形状インデックス" encode a per-sample curvature
-    # sequence which requires finer interpolation.  Fall back to the legacy
-    # behaviour when the column is not present.
     if shape_col is None or lane_col is None:
         return _legacy_profile()
 
@@ -1414,8 +1411,7 @@ def build_geometry_segments(
                 idx += 1
                 continue
 
-            # Re-anchor the analytical pose for diagnostics, but keep the
-            # numerically propagated start unless the drift becomes excessive.
+
             current_s = start
 
             anchor_x, anchor_y, anchor_hdg = _interpolate_centerline(centerline, start)
