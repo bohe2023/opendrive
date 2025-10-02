@@ -20,11 +20,13 @@ from csv2xodr.normalize.core import (
     build_shoulder_profile,
     build_slope_profile,
     build_superelevation_profile,
+    filter_dataframe_by_path,
+    select_best_path_id,
 )
 from csv2xodr.line_geometry import build_line_geometry_lookup
 from csv2xodr.topology.core import make_sections, build_lane_topology
 from csv2xodr.writer.xodr_writer import write_xodr
-from csv2xodr.lane_spec import build_lane_spec
+from csv2xodr.lane_spec import build_lane_spec, normalize_lane_ids
 
 
 def _apply_dataset_overrides(dfs, cfg) -> None:
@@ -75,6 +77,12 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
     else:
         cfg = mini_yaml_load(config_path)
     dfs = load_all(input_dir, cfg)
+    primary_path = select_best_path_id(dfs.get("line_geometry"))
+    if primary_path is not None:
+        for key, table in list(dfs.items()):
+            filtered = filter_dataframe_by_path(table, primary_path)
+            if filtered is not None:
+                dfs[key] = filtered
     _apply_dataset_overrides(dfs, cfg)
 
     # planView (centerline) from line geometry + geo origin
@@ -98,9 +106,14 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
         dfs["lane_division"],
         line_geometry_lookup=line_geometry_lookup,
         offset_mapper=offset_mapper,
+        lanes_geometry_df=dfs.get("lanes_geometry"),
+        centerline=center,
+        geo_origin=(lat0, lon0),
     )
 
-    curvature_profile = build_curvature_profile(dfs.get("curvature"), offset_mapper=offset_mapper)
+    curvature_profile = build_curvature_profile(
+        dfs.get("curvature"), offset_mapper=offset_mapper, centerline=center
+    )
 
     geometry_cfg_raw = cfg.get("geometry") or {}
     if not isinstance(geometry_cfg_raw, dict):
@@ -138,6 +151,7 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
     from csv2xodr.lane_spec import apply_shoulder_profile  # local import to avoid cycle
 
     apply_shoulder_profile(lane_specs, shoulder_profile, defaults=cfg.get("defaults", {}))
+    normalize_lane_ids(lane_specs)
 
     # write xodr
     output_path = Path(output_path)

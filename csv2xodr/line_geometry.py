@@ -77,13 +77,19 @@ def build_line_geometry_lookup(
     instance_col = _find_column(cols, "Instance") or _find_column(cols, "インスタンス")
     flag_col = _find_column(cols, "3D") or _find_column(cols, "属性")
     is_retrans_col = _find_column(cols, "Is", "Retransmission")
+    shape_count_col = (
+        _find_column(cols, "形状", "要素")
+        or _find_column(cols, "shape", "count")
+        or _find_column(cols, "shape", "points")
+    )
 
     if line_id_col is None or lat_col is None or lon_col is None:
         return {}
 
     grouped: Dict[Tuple[str, Any, Any, Any, Any], Dict[str, Any]] = {}
+    global_base_offset_m: Optional[float] = None
 
-    offsets_raw: List[float] = []
+    segment_progress: Dict[Tuple[Any, Any, Any, Any, Any, float, Optional[float]], Dict[str, float]] = {}
 
     for idx in range(len(line_geom_df)):
         row = line_geom_df.iloc[idx]
@@ -101,16 +107,65 @@ def build_line_geometry_lookup(
         if z_val is None:
             z_val = 0.0
 
-        off_val = None
+        off_cm_raw = None
         if offset_col is not None:
-            off_val = _to_float(row[offset_col])
-        if off_val is None and end_offset_col is not None:
-            off_val = _to_float(row[end_offset_col])
+            off_cm_raw = _to_float(row[offset_col])
+        if off_cm_raw is None and end_offset_col is not None:
+            off_cm_raw = _to_float(row[end_offset_col])
 
-        if off_val is None:
+        if off_cm_raw is None:
             continue
 
-        offsets_raw.append(off_val)
+        end_cm_val = _to_float(row[end_offset_col]) if end_offset_col is not None else None
+
+        segment_key = (
+            line_id,
+            row[logtime_col] if logtime_col else None,
+            row[instance_col] if instance_col else None,
+            row[flag_col] if flag_col else None,
+            row[type_col] if type_col else None,
+            float(off_cm_raw),
+            float(end_cm_val) if end_cm_val is not None else None,
+        )
+
+        tracker = segment_progress.get(segment_key)
+        if tracker is None:
+            count_val: Optional[int] = None
+            if shape_count_col is not None:
+                try:
+                    raw_value = row[shape_count_col]
+                except Exception:  # pragma: no cover - defensive
+                    raw_value = None
+                raw_count = _to_float(raw_value)
+                if raw_count is not None and raw_count > 0:
+                    try:
+                        count_val = int(round(raw_count))
+                    except Exception:  # pragma: no cover - defensive
+                        count_val = None
+            step_val: Optional[float] = None
+            if count_val is not None and count_val > 1 and end_cm_val is not None:
+                step_val = (float(end_cm_val) - float(off_cm_raw)) / float(count_val - 1)
+            tracker = {
+                "index": 0,
+                "count": count_val,
+                "step": step_val,
+                "start": float(off_cm_raw),
+            }
+            segment_progress[segment_key] = tracker
+
+        index = int(tracker.get("index", 0))
+        tracker["index"] = index + 1
+        count_val = tracker.get("count")
+        step_val = tracker.get("step")
+        start_cm = tracker.get("start", float(off_cm_raw))
+
+        if count_val is not None and tracker["index"] >= count_val:
+            segment_progress.pop(segment_key, None)
+
+        if step_val is not None and count_val is not None and count_val > 1:
+            off_val = start_cm + step_val * index
+        else:
+            off_val = float(off_cm_raw)
 
         group_key = (
             line_id,
@@ -147,15 +202,17 @@ def build_line_geometry_lookup(
         elif retrans_flag is False:
             entry["has_false"] = True
 
+        off_m = off_val / 100.0
+        if global_base_offset_m is None or off_m < global_base_offset_m:
+            global_base_offset_m = off_m
+
         entry["lat"].append(lat_val)
         entry["lon"].append(lon_val)
         entry["z"].append(z_val)
-        entry["offset"].append(off_val / 100.0)
+        entry["offset"].append(off_m)
 
     if not grouped:
         return {}
-
-    base_offset = min(offsets_raw) / 100.0 if offsets_raw else 0.0
 
     lookup: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -166,7 +223,12 @@ def build_line_geometry_lookup(
         if has_flag and has_true and not has_false:
             continue
 
-        offsets_m = [value - base_offset for value in entry["offset"]]
+        offsets_raw = entry.get("offset", [])
+        if offsets_raw:
+            base_offset = global_base_offset_m if global_base_offset_m is not None else min(offsets_raw)
+            offsets_m = [value - base_offset for value in offsets_raw]
+        else:
+            offsets_m = []
         if offset_mapper is not None:
             mapped_s = [offset_mapper(value) for value in offsets_m]
         else:
@@ -174,24 +236,70 @@ def build_line_geometry_lookup(
 
         x_vals, y_vals = latlon_to_local_xy(entry["lat"], entry["lon"], lat0, lon0)
 
-        points = list(zip(mapped_s, x_vals, y_vals, entry["z"]))
-        if not points:
+        if not mapped_s or len(mapped_s) != len(x_vals) or len(x_vals) != len(entry["z"]):
             continue
 
-        signature = _geometry_signature(points)
+        # The Japanese datasets reuse the same ``line_id`` across multiple
+        # carriageway segments.  Each time the offset restarts from zero the
+        # geometry would jump back to the beginning of the alignment, producing
+        # spaghetti-like lane lines in the viewer.  Split the sequence whenever
+        # the longitudinal coordinate decreases noticeably so every emitted
+        # polyline remains strictly monotonic along ``s``.
+        sequences: List[List[Tuple[float, float, float, float]]] = []
+        current: List[Tuple[float, float, float, float]] = []
+        last_s: Optional[float] = None
+        reset_threshold = 1e-4  # tolerate sub-millimetre jitter while catching real resets
+
+        for s_val, x_val, y_val, z_val in zip(mapped_s, x_vals, y_vals, entry["z"]):
+            try:
+                s_float = float(s_val)
+            except (TypeError, ValueError):
+                continue
+
+            if last_s is not None and s_float < last_s - reset_threshold:
+                if len(current) >= 2:
+                    sequences.append(current)
+                current = []
+                last_s = None
+
+            if current:
+                prev_s, prev_x, prev_y, prev_z = current[-1]
+                if (
+                    abs(s_float - prev_s) <= 1e-9
+                    and abs(x_val - prev_x) <= 1e-9
+                    and abs(y_val - prev_y) <= 1e-9
+                    and abs(z_val - prev_z) <= 1e-9
+                ):
+                    # Skip duplicate samples that would otherwise collapse into
+                    # zero-length segments after splitting.
+                    last_s = s_float
+                    continue
+
+            current.append((s_float, float(x_val), float(y_val), float(z_val)))
+            last_s = s_float
+
+        if len(current) >= 2:
+            sequences.append(current)
 
         geoms = lookup.setdefault(entry["line_id"], [])
-        if any(_geometry_signature(list(zip(g["s"], g["x"], g["y"], g["z"]))) == signature for g in geoms):
-            continue
 
-        geoms.append(
-            {
-                "s": mapped_s,
-                "x": x_vals,
-                "y": y_vals,
-                "z": entry["z"],
-            }
-        )
+        for seq in sequences:
+            points = list(seq)
+            signature = _geometry_signature(points)
+            if any(
+                _geometry_signature(list(zip(g["s"], g["x"], g["y"], g["z"]))) == signature
+                for g in geoms
+            ):
+                continue
+
+            geoms.append(
+                {
+                    "s": [p[0] for p in points],
+                    "x": [p[1] for p in points],
+                    "y": [p[2] for p in points],
+                    "z": [p[3] for p in points],
+                }
+            )
 
     return lookup
 

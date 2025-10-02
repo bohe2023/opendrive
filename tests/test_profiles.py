@@ -7,6 +7,8 @@ from csv2xodr.normalize.core import (
     build_shoulder_profile,
     build_slope_profile,
     build_superelevation_profile,
+    _advance_pose,
+    _merge_geometry_segments,
     _normalize_angle,
 )
 from csv2xodr.lane_spec import apply_shoulder_profile
@@ -49,12 +51,17 @@ def test_build_slope_profiles_and_elevation():
 
 
 def test_geometry_segments_from_curvature():
-    center = DataFrame({
-        "s": [0.0, 1.0, 2.0],
-        "x": [0.0, 1.0, 2.0],
-        "y": [0.0, 0.0, 0.0],
-        "hdg": [0.0, 0.0, 0.0],
-    })
+    # The centreline follows a straight 1 m segment and then a 0.1 rad/m arc
+    # so the curvature profile is geometrically consistent with the anchor
+    # points.
+    center = DataFrame(
+        {
+            "s": [0.0, 1.0, 2.0],
+            "x": [0.0, 1.0, 1.9983341664682815],
+            "y": [0.0, 0.0, 0.049958347219741794],
+            "hdg": [0.0, 0.0, 0.1],
+        }
+    )
 
     curvature_df = DataFrame(
         {
@@ -182,6 +189,40 @@ def test_geometry_segments_remain_continuous():
         )
 
 
+def test_merge_geometry_segments_snaps_small_drift():
+    segments = [
+        {"s": 0.0, "x": 0.0, "y": 0.0, "hdg": 0.0, "length": 5.0, "curvature": 0.001},
+        {
+            "s": 5.0,
+            "x": 5.003,
+            "y": 0.002,
+            "hdg": 0.0018,
+            "length": 4.0,
+            "curvature": 0.0012,
+        },
+    ]
+
+    merged = _merge_geometry_segments(segments)
+    assert len(merged) == 2
+
+    expected_x, expected_y, expected_hdg = _advance_pose(
+        segments[0]["x"],
+        segments[0]["y"],
+        segments[0]["hdg"],
+        segments[0]["curvature"],
+        segments[0]["length"],
+    )
+
+    second = merged[1]
+    assert math.isclose(second["x"], expected_x, abs_tol=1e-6)
+    assert math.isclose(second["y"], expected_y, abs_tol=1e-6)
+    assert math.isclose(
+        _normalize_angle(second["hdg"] - expected_hdg),
+        0.0,
+        abs_tol=1e-6,
+    )
+
+
 def test_geometry_segments_are_densified_for_long_spans():
     center = DataFrame(
         {
@@ -200,6 +241,85 @@ def test_geometry_segments_are_densified_for_long_spans():
 
     assert len(geometry) >= 50
     assert all(seg["length"] <= 2.0 + 1e-9 for seg in geometry)
+
+
+def test_curvature_profile_uses_shape_index_segments():
+    curvature_df = DataFrame(
+        {
+            "Path Id": ["1"] * 7,
+            "Lane Number": ["1"] * 7,
+            "Offset[cm]": [0, 0, 0, 0, 0, 0, 0],
+            "End Offset[cm]": [200, 200, 200, 200, 200, 200, 200],
+            "形状インデックス": [0, 1, 2, 2, 3, 3, 4],
+            "曲率値[rad/m]": [0.6, -0.6, 0.6, -0.2, -0.6, -0.6, 0.6],
+            "Is Retransmission": [
+                "False",
+                "False",
+                "False",
+                "False",
+                "True",
+                "False",
+                "False",
+            ],
+        }
+    )
+
+    curvature_segments = build_curvature_profile(
+        curvature_df, offset_mapper=lambda value: value
+    )
+
+    assert len(curvature_segments) == 4
+
+    spans = [seg["s1"] - seg["s0"] for seg in curvature_segments]
+    assert all(math.isclose(span, 0.5, abs_tol=1e-9) for span in spans)
+
+    curvatures = [seg["curvature"] for seg in curvature_segments]
+    assert all(math.isclose(curv, expected) for curv, expected in zip(curvatures, [0.6, -0.6, 0.2, -0.6]))
+
+    center = DataFrame(
+        {
+            "s": [0.0, 0.5, 1.0, 1.5, 2.0],
+            "x": [0.0, 0.5, 1.0, 1.5, 2.0],
+            "y": [0.0, 0.0, 0.0, 0.0, 0.0],
+            "hdg": [0.0, 0.0, 0.0, 0.0, 0.0],
+        }
+    )
+
+    geometry = build_geometry_segments(
+        center,
+        curvature_segments,
+        max_endpoint_deviation=0.01,
+        max_segment_length=0.5,
+    )
+
+    geometry_curvatures = [seg.get("curvature", 0.0) for seg in geometry]
+    transitions = sum(
+        1
+        for i in range(1, len(geometry_curvatures))
+        if geometry_curvatures[i - 1] * geometry_curvatures[i] < 0
+    )
+    assert transitions >= 2
+
+
+def test_curvature_profile_averages_duplicate_shape_indices():
+    curvature_df = DataFrame(
+        {
+            "Offset[cm]": [0, 0, 0, 0],
+            "End Offset[cm]": [200, 200, 200, 200],
+            "Lane Number": ["A", "A", "A", "A"],
+            "形状インデックス": [0, 0, 1, 2],
+            "曲率値[rad/m]": [0.4, 0.8, 1.0, 1.2],
+            "Is Retransmission": ["False", "False", "False", "False"],
+        }
+    )
+
+    curvature_segments = build_curvature_profile(curvature_df)
+
+    assert len(curvature_segments) == 2
+
+    first, second = curvature_segments
+    assert math.isclose(first["curvature"], 0.6)
+    assert math.isclose(second["curvature"], 1.0)
 
 
 def test_geometry_segments_honours_custom_densify_threshold():

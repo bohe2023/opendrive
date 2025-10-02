@@ -1,11 +1,13 @@
 """Helpers for building per-section lane specifications."""
 
+import math
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from csv2xodr.mapping.core import mark_type_from_division_row
 
 from csv2xodr.simpletable import DataFrame
 from csv2xodr.topology.core import _canonical_numeric
+from csv2xodr.normalize.core import latlon_to_local_xy
 
 
 def _clip_geometry_segment(geom: Dict[str, List[float]], s0: float, s1: float) -> Optional[Dict[str, List[float]]]:
@@ -111,9 +113,134 @@ def _lookup_line_segment(entry: Dict[str, Any], s0: float, s1: float) -> Tuple[O
     return selected, geom_segment
 
 
-def _build_division_lookup(lane_div_df: Optional[DataFrame],
-                           line_geometry_lookup: Optional[Dict[str, List[Dict[str, Any]]]] = None,
-                           offset_mapper=None) -> Dict[str, Dict[str, Any]]:
+def _interpolate_centerline_pose(centerline: DataFrame, target_s: float) -> Tuple[float, float, float]:
+    s_vals = [float(v) for v in centerline["s"].to_list()]
+    x_vals = [float(v) for v in centerline["x"].to_list()]
+    y_vals = [float(v) for v in centerline["y"].to_list()]
+    hdg_vals = [float(v) for v in centerline["hdg"].to_list()]
+
+    if not s_vals:
+        return 0.0, 0.0, 0.0
+
+    if target_s <= s_vals[0]:
+        return x_vals[0], y_vals[0], hdg_vals[0]
+
+    for idx in range(1, len(s_vals)):
+        s_prev = s_vals[idx - 1]
+        s_curr = s_vals[idx]
+        if target_s <= s_curr:
+            span = s_curr - s_prev
+            if span <= 0.0:
+                return x_vals[idx], y_vals[idx], hdg_vals[idx]
+            t = (target_s - s_prev) / span
+            x = x_vals[idx - 1] + t * (x_vals[idx] - x_vals[idx - 1])
+            y = y_vals[idx - 1] + t * (y_vals[idx] - y_vals[idx - 1])
+            if abs(target_s - s_curr) <= 1e-6:
+                hdg = hdg_vals[min(idx, len(hdg_vals) - 1)]
+            else:
+                hdg = hdg_vals[idx - 1]
+            return x, y, hdg
+
+    return x_vals[-1], y_vals[-1], hdg_vals[-1]
+
+
+def _estimate_lane_side_from_geometry(
+    lanes_geom_df: Optional[DataFrame],
+    centerline: Optional[DataFrame],
+    *,
+    offset_mapper=None,
+    geo_origin: Optional[Tuple[float, float]] = None,
+) -> Dict[str, str]:
+    if (
+        lanes_geom_df is None
+        or len(lanes_geom_df) == 0
+        or centerline is None
+        or len(centerline) == 0
+    ):
+        return {}
+
+    cols = list(lanes_geom_df.columns)
+
+    def find_col(*keywords: str) -> Optional[str]:
+        for col in cols:
+            stripped = col.strip()
+            if all(keyword in stripped for keyword in keywords):
+                return col
+        return None
+
+    lane_id_col = find_col("Lane", "ID") or find_col("レーンID")
+    lat_col = find_col("緯度") or find_col("Latitude")
+    lon_col = find_col("経度") or find_col("Longitude")
+    offset_col = find_col("Offset")
+
+    if lane_id_col is None or lat_col is None or lon_col is None or offset_col is None:
+        return {}
+
+    try:
+        lat_vals = [float(v) for v in lanes_geom_df[lat_col].astype(float).to_list()]
+        lon_vals = [float(v) for v in lanes_geom_df[lon_col].astype(float).to_list()]
+        offsets_cm = [float(v) for v in lanes_geom_df[offset_col].astype(float).to_list()]
+    except Exception:
+        return {}
+
+    lane_ids = [
+        _canonical_numeric(value)
+        for value in lanes_geom_df[lane_id_col].to_list()
+    ]
+
+    if not lane_ids or len(lane_ids) != len(offsets_cm):
+        return {}
+
+    if geo_origin is not None:
+        lat0, lon0 = geo_origin
+    else:
+        lat0 = lat_vals[0]
+        lon0 = lon_vals[0]
+
+    x_vals, y_vals = latlon_to_local_xy(lat_vals, lon_vals, lat0, lon0)
+
+    side_samples: Dict[str, List[float]] = {}
+
+    for lane_id, off_cm, px, py in zip(lane_ids, offsets_cm, x_vals, y_vals):
+        if lane_id is None:
+            continue
+        try:
+            s_val = float(off_cm) / 100.0
+        except (TypeError, ValueError):
+            continue
+        if offset_mapper is not None:
+            try:
+                s_val = float(offset_mapper(s_val))
+            except Exception:
+                continue
+
+        cx, cy, hdg = _interpolate_centerline_pose(centerline, s_val)
+        dx = px - cx
+        dy = py - cy
+        left_x = -math.sin(hdg)
+        left_y = math.cos(hdg)
+        signed = dx * left_x + dy * left_y
+        if not math.isfinite(signed):
+            continue
+        side_samples.setdefault(lane_id, []).append(signed)
+
+    side_map: Dict[str, str] = {}
+    for lane_id, values in side_samples.items():
+        if not values:
+            continue
+        avg = sum(values) / len(values)
+        if abs(avg) <= 0.05:
+            continue
+        side_map[lane_id] = "left" if avg > 0.0 else "right"
+
+    return side_map
+
+
+def _build_division_lookup(
+    lane_div_df: Optional[DataFrame],
+    line_geometry_lookup: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    offset_mapper=None,
+) -> Dict[str, Dict[str, Any]]:
     if lane_div_df is None or len(lane_div_df) == 0:
         return {}
 
@@ -294,6 +421,9 @@ def build_lane_spec(
     *,
     line_geometry_lookup: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     offset_mapper=None,
+    lanes_geometry_df: Optional[DataFrame] = None,
+    centerline: Optional[DataFrame] = None,
+    geo_origin: Optional[Tuple[float, float]] = None,
 ) -> List[Dict[str, Any]]:
     """Return metadata for each lane section used by the writer."""
 
@@ -349,7 +479,39 @@ def build_lane_spec(
         lane_div_df, line_geometry_lookup=line_geometry_lookup, offset_mapper=offset_mapper
     )
 
-    base_ids = sorted(lane_groups.keys())
+    geometry_side_hint = _estimate_lane_side_from_geometry(
+        lanes_geometry_df,
+        centerline,
+        offset_mapper=offset_mapper,
+        geo_origin=geo_origin,
+    )
+
+    lane_no_by_base: Dict[str, Optional[int]] = {}
+    base_start: Dict[str, float] = {}
+
+    for base_id, uids in lane_groups.items():
+        lane_numbers: List[int] = []
+        first_start: Optional[float] = None
+        for uid in uids:
+            info = lane_info.get(uid) or {}
+            lane_no = info.get("lane_no")
+            if isinstance(lane_no, (int, float)):
+                lane_numbers.append(int(lane_no))
+            for segment in info.get("segments", []):
+                try:
+                    start_val = float(segment.get("start", 0.0))
+                except (TypeError, ValueError):
+                    continue
+                if first_start is None or start_val < first_start:
+                    first_start = start_val
+        lane_no_by_base[base_id] = min(lane_numbers) if lane_numbers else None
+        base_start[base_id] = first_start or 0.0
+
+    def _base_sort_key(base_id: str) -> Tuple[int, float, str]:
+        lane_number = lane_no_by_base.get(base_id)
+        return (lane_number if lane_number is not None else 0, base_start.get(base_id, 0.0), base_id)
+
+    base_ids = sorted(lane_groups.keys(), key=_base_sort_key)
     lanes_per_base = {base: len(lane_groups[base]) for base in base_ids}
 
     def _bases_with_sign(sign: int) -> List[str]:
@@ -369,55 +531,127 @@ def build_lane_spec(
 
     positive_bases = _bases_with_sign(1)
     negative_bases = _bases_with_sign(-1)
+    ordered_lane_numbers = [
+        lane_no
+        for lane_no in sorted(
+            {val for val in lane_no_by_base.values() if val is not None}
+        )
+    ]
 
-    if positive_bases or negative_bases:
-        # When the input data contains explicit lane number signs we rely on
-        # them to determine the side of the reference line.  This avoids
-        # mis-classifying sequential lane groups that belong to the same
-        # carriageway (a frequent pattern in MPUs where lane IDs change along
-        # the path but the driving direction does not).
-        left_bases = sorted(set(positive_bases), key=lambda b: base_ids.index(b))
-        right_bases = sorted(set(negative_bases), key=lambda b: base_ids.index(b))
-    else:
-        target_left = lane_count // 2 if lane_count else sum(lanes_per_base.values()) // 2
-        left_bases = []
-        acc = 0
+    if lane_count and len(ordered_lane_numbers) > lane_count:
+        ordered_lane_numbers = ordered_lane_numbers[:lane_count]
+
+    def _ordered_subset(candidates: Iterable[str]) -> List[str]:
+        seen: List[str] = []
         for base in base_ids:
-            if acc < target_left:
-                left_bases.append(base)
-                acc += lanes_per_base[base]
-        right_bases = [base for base in base_ids if base not in left_bases]
-    if not left_bases and base_ids:
+            if base in candidates and base not in seen:
+                seen.append(base)
+        return seen
+
+    hinted_left = _ordered_subset(
+        [base for base, side in geometry_side_hint.items() if side == "left"]
+    )
+    hinted_right = _ordered_subset(
+        [base for base, side in geometry_side_hint.items() if side == "right"]
+    )
+
+    remaining_bases = [
+        base
+        for base in base_ids
+        if base not in hinted_left and base not in hinted_right
+    ]
+
+    derived_left: List[str] = []
+    derived_right: List[str] = []
+
+    if remaining_bases:
+        if positive_bases and negative_bases:
+            derived_left = _ordered_subset(
+                [base for base in positive_bases if base in remaining_bases]
+            )
+            derived_right = _ordered_subset(
+                [base for base in negative_bases if base in remaining_bases]
+            )
+        else:
+            if lane_count:
+                target_left = lane_count // 2
+            else:
+                target_left = len(ordered_lane_numbers) // 2
+            left_lane_numbers = set(ordered_lane_numbers[:target_left])
+            if lane_count:
+                right_limit = min(lane_count, len(ordered_lane_numbers))
+            else:
+                right_limit = len(ordered_lane_numbers)
+            right_lane_numbers = set(ordered_lane_numbers[target_left:right_limit])
+            derived_left = [
+                base
+                for base in remaining_bases
+                if lane_no_by_base.get(base) in left_lane_numbers
+            ]
+            derived_right = [
+                base
+                for base in remaining_bases
+                if lane_no_by_base.get(base) in right_lane_numbers
+            ]
+
+    left_bases = hinted_left + [
+        base for base in derived_left if base not in hinted_left and base not in hinted_right
+    ]
+    right_bases = hinted_right + [
+        base for base in derived_right if base not in hinted_left and base not in hinted_right
+    ]
+
+    if not hinted_left and not hinted_right:
+        if not left_bases and base_ids:
+            left_bases = base_ids[:1]
+            right_bases = [base for base in base_ids if base not in left_bases]
+        elif not right_bases and base_ids:
+            right_bases = [base for base in base_ids if base not in left_bases]
+
+    unassigned = [
+        base for base in base_ids if base not in left_bases and base not in right_bases
+    ]
+    for base in unassigned:
+        if len(left_bases) <= len(right_bases):
+            left_bases.append(base)
+        else:
+            right_bases.append(base)
+
+    if not left_bases and not right_bases and base_ids:
         left_bases = base_ids[:1]
         right_bases = [base for base in base_ids if base not in left_bases]
 
     lane_id_map: Dict[str, int] = {}
     lane_side_map: Dict[str, str] = {}
 
-    left_id_by_lane_no: Dict[int, int] = {}
+    left_id_by_lane_no: Dict[Tuple[Optional[str], int], int] = {}
     current_id = 1
     for base in left_bases:
         ordered = reversed(sorted(lane_groups.get(base, []), key=lambda x: lane_info[x]["lane_no"]))
         for uid in ordered:
-            lane_no = lane_info[uid]["lane_no"]
-            assigned = left_id_by_lane_no.get(lane_no)
+            info = lane_info[uid]
+            lane_no = info["lane_no"]
+            key = (info.get("base_id"), lane_no)
+            assigned = left_id_by_lane_no.get(key)
             if assigned is None:
                 assigned = current_id
-                left_id_by_lane_no[lane_no] = assigned
+                left_id_by_lane_no[key] = assigned
                 current_id += 1
             lane_id_map[uid] = assigned
             lane_side_map[uid] = "left"
 
-    right_id_by_lane_no: Dict[int, int] = {}
+    right_id_by_lane_no: Dict[Tuple[Optional[str], int], int] = {}
     current_id = -1
     for base in right_bases:
         ordered = reversed(sorted(lane_groups.get(base, []), key=lambda x: lane_info[x]["lane_no"]))
         for uid in ordered:
-            lane_no = lane_info[uid]["lane_no"]
-            assigned = right_id_by_lane_no.get(lane_no)
+            info = lane_info[uid]
+            lane_no = info["lane_no"]
+            key = (info.get("base_id"), lane_no)
+            assigned = right_id_by_lane_no.get(key)
             if assigned is None:
                 assigned = current_id
-                right_id_by_lane_no[lane_no] = assigned
+                right_id_by_lane_no[key] = assigned
                 current_id -= 1
             lane_id_map[uid] = assigned
             lane_side_map[uid] = "right"
@@ -446,6 +680,21 @@ def build_lane_spec(
         for order, sec_idx in enumerate(indices):
             lane_section_pos[(uid, sec_idx)] = order
 
+    lane_segment_ranges: Dict[str, List[Tuple[float, float]]] = {}
+    for uid, info in lane_info.items():
+        segments = []
+        for seg in info.get("segments", []):
+            try:
+                start = float(seg.get("start", 0.0))
+                end = float(seg.get("end", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if end <= start:
+                continue
+            segments.append((start, end))
+        if segments:
+            lane_segment_ranges[uid] = segments
+
     out: List[Dict[str, Any]] = []
     for idx, sec in enumerate(sections_list):
         section_left: List[Dict[str, Any]] = []
@@ -470,24 +719,47 @@ def build_lane_spec(
 
             lane_indices = lane_section_indices[uid]
             order = lane_section_pos[(uid, idx)]
+            prev_index = lane_indices[order - 1] if order > 0 else None
+            next_index = lane_indices[order + 1] if order < len(lane_indices) - 1 else None
+
+            current_start = float(segment.get("start", s0))
+            current_end = float(segment.get("end", s1))
 
             predecessors: List[int] = []
-            if order > 0:
+            if order > 0 and prev_index is not None and idx - prev_index == 1:
                 predecessors.append(lane_id)
             else:
                 for target in segment.get("predecessors", []):
                     mapped = lane_id_map.get(target)
-                    if mapped is not None:
-                        predecessors.append(mapped)
+                    if mapped is None:
+                        continue
+
+                    ranges = lane_segment_ranges.get(target, [])
+                    for start, end in ranges:
+                        if end <= current_start + 1e-3:
+                            if mapped not in predecessors:
+                                predecessors.append(mapped)
+                            break
 
             successors: List[int] = []
-            if order < len(lane_indices) - 1:
+            if (
+                next_index is not None
+                and order < len(lane_indices) - 1
+                and next_index - idx == 1
+            ):
                 successors.append(lane_id)
             else:
                 for target in segment.get("successors", []):
                     mapped = lane_id_map.get(target)
-                    if mapped is not None:
-                        successors.append(mapped)
+                    if mapped is None:
+                        continue
+
+                    ranges = lane_segment_ranges.get(target, [])
+                    for start, end in ranges:
+                        if start >= current_end - 1e-3:
+                            if mapped not in successors:
+                                successors.append(mapped)
+                            break
 
             pos_key = 2 if side == "left" else 1
             alt_key = 1 if side == "left" else 2
@@ -646,3 +918,76 @@ def apply_shoulder_profile(
 
         section["left"].sort(key=lambda item: item["id"])
         section["right"].sort(key=lambda item: item["id"], reverse=True)
+
+
+def normalize_lane_ids(lane_sections: List[Dict[str, Any]]) -> None:
+    """Renumber lane IDs so that they are compact and sequential."""
+
+    if not lane_sections:
+        return
+
+    occurrence: Dict[Tuple[int, int], int] = {}
+
+    # First pass: remember the original identifiers and assign new IDs based on
+    # the positional order within each section.
+    for sec_idx, section in enumerate(lane_sections):
+        for side in ("left", "right"):
+            lanes = section.get(side, []) or []
+            sign = 1 if side == "left" else -1
+            for lane_idx, lane in enumerate(lanes):
+                try:
+                    original_id = int(lane.get("id"))
+                except (TypeError, ValueError):
+                    continue
+
+                lane["__orig_id"] = original_id
+                new_id = (lane_idx + 1) * sign
+                lane["id"] = new_id
+                occurrence[(sec_idx, original_id)] = new_id
+
+            if side == "left":
+                lanes.sort(key=lambda item: float(item.get("id", 0)))
+            else:
+                lanes.sort(key=lambda item: float(item.get("id", 0)), reverse=True)
+
+    def _lookup(section_index: int, target: int, direction: int) -> int:
+        idx = section_index + direction
+        while 0 <= idx < len(lane_sections):
+            mapped = occurrence.get((idx, target))
+            if mapped is not None:
+                return mapped
+            idx += direction
+        mapped = occurrence.get((section_index, target))
+        if mapped is not None:
+            return mapped
+        return target
+
+    # Second pass: remap predecessor/successor identifiers using the new IDs.
+    for sec_idx, section in enumerate(lane_sections):
+        for side in ("left", "right"):
+            lanes = section.get(side, []) or []
+            for lane in lanes:
+                original_id = lane.pop("__orig_id", None)
+                preds = lane.get("predecessors") or []
+                if preds:
+                    remapped = []
+                    for pid in preds:
+                        try:
+                            target = int(pid)
+                        except (TypeError, ValueError):
+                            remapped.append(pid)
+                            continue
+                        remapped.append(_lookup(sec_idx, target, direction=-1))
+                    lane["predecessors"] = remapped
+
+                succs = lane.get("successors") or []
+                if succs:
+                    remapped = []
+                    for sid in succs:
+                        try:
+                            target = int(sid)
+                        except (TypeError, ValueError):
+                            remapped.append(sid)
+                            continue
+                        remapped.append(_lookup(sec_idx, target, direction=1))
+                    lane["successors"] = remapped
