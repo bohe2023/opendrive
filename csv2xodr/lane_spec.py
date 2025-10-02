@@ -793,29 +793,11 @@ def build_lane_spec(
             )
         else:
             if not negative_bases and not hinted_right:
-                preferred_side: Optional[str] = None
-
-                for side in geometry_side_hint.values():
-                    if side in {"left", "right"}:
-                        preferred_side = side
-                        break
-
-                if preferred_side is None and isinstance(defaults, dict):
-                    raw_default = defaults.get("default_lane_side")
-                    if isinstance(raw_default, str):
-                        lowered = raw_default.strip().lower()
-                        if lowered in {"left", "right"}:
-                            preferred_side = "left" if lowered == "left" else "right"
-
-                if preferred_side is None:
-                    preferred_side = "left"
-
-                if preferred_side == "left":
-                    derived_left = list(remaining_bases)
-                    derived_right = []
-                else:
-                    derived_right = list(remaining_bases)
-                    derived_left = []
+                derived_left = list(remaining_bases)
+                derived_right = []
+            elif not positive_bases and not hinted_left:
+                derived_right = list(remaining_bases)
+                derived_left = []
             else:
                 if lane_count:
                     target_left = lane_count // 2
@@ -848,7 +830,7 @@ def build_lane_spec(
     if not hinted_left and not hinted_right:
         has_right_evidence = bool(negative_bases or hinted_right or derived_right)
         if not has_right_evidence:
-            left_bases = list(base_ids)
+            left_bases = list(left_bases or base_ids)
             right_bases = []
         else:
             if not left_bases and base_ids:
