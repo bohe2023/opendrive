@@ -225,7 +225,120 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
     lat_col = df_line_geo.filter(like="緯度").columns[0]
     lon_col = df_line_geo.filter(like="経度").columns[0]
 
+    # 部分数据集中同一 Offset 会重复多次，其内的多条曲线往往对应不同的
+    # 车道边界。观察发现中心线可以通过 "3D 地物属性オプションフラグ" 标记
+    # 出来，并且每个 Offset 分段的首批采样点数量等于 "形状要素点数"。为了
+    # 保留沿纵向的几何细节，需要优先挑选中心线对应的记录，并在分段内部
+    # 仅保留首批采样点，避免在不同车道间往返。
     offset_col = _col_like(df_line_geo, "Offset")
+    end_offset_col = _find_column(df_line_geo, "end", "offset")
+    flag_col: Optional[str] = None
+    for column in df_line_geo.columns:
+        lowered = column.lower()
+        if "3d" in lowered and "オプション" in column:
+            flag_col = column
+            break
+
+    shape_count_col = (
+        _find_column(df_line_geo, "形状", "要素")
+        or _find_column(df_line_geo, "shape", "count")
+        or _find_column(df_line_geo, "shape", "points")
+    )
+
+    primary_rows: Optional[List[Dict[str, Any]]] = None
+    if flag_col is not None and offset_col is not None:
+        # ``DataFrame`` 是一个轻量包装，允许直接访问底层行列表。
+        rows = getattr(df_line_geo, "_rows", None)
+        if isinstance(rows, list):
+            flag_values = []
+            for row in rows:
+                value = row.get(flag_col)
+                if value is None:
+                    continue
+                text = str(value).strip()
+                if text == "":
+                    continue
+                flag_values.append(text)
+
+            chosen_flag: Optional[str] = None
+            if flag_values:
+                unique_flags = set(flag_values)
+                # 数据集中中心线通常使用 4 标记，其次退化为 1/2/0 等其他值。
+                preferred = ["4", "3", "2", "1", "0"]
+                for candidate in preferred:
+                    if candidate in unique_flags:
+                        chosen_flag = candidate
+                        break
+                if chosen_flag is None:
+                    # 尝试从数值最小的标记中挑选，避免完全失效。
+                    numeric: List[Tuple[float, str]] = []
+                    for flag in unique_flags:
+                        try:
+                            numeric.append((abs(float(flag)), flag))
+                        except Exception:  # pragma: no cover - defensive
+                            continue
+                    if numeric:
+                        numeric.sort(key=lambda item: item[0])
+                        chosen_flag = numeric[0][1]
+
+            if chosen_flag is not None:
+                filtered_rows = [
+                    row for row in rows if str(row.get(flag_col)).strip() == chosen_flag
+                ]
+                if filtered_rows:
+                    # 记录 Offset 首次出现的顺序，随后在每个分段内仅保留前
+                    # ``shape_count`` 个采样点，以复原沿参考线的细分信息。
+                    order: List[str] = []
+                    grouped: Dict[str, List[Dict[str, Any]]] = {}
+                    for row in filtered_rows:
+                        key = str(row.get(offset_col))
+                        if key not in grouped:
+                            order.append(key)
+                            grouped[key] = []
+                        grouped[key].append(row)
+
+                    selected: List[Dict[str, Any]] = []
+                    for key in order:
+                        group = grouped.get(key, [])
+                        if not group:
+                            continue
+                        limit: Optional[int] = None
+                        if shape_count_col is not None:
+                            raw_count = group[0].get(shape_count_col)
+                            try:
+                                limit = int(float(raw_count))
+                            except Exception:  # pragma: no cover - defensive
+                                limit = None
+                        if limit is None or limit <= 0 or limit > len(group):
+                            limit = len(group)
+
+                        start_val = _to_float(group[0].get(offset_col))
+                        end_val = (
+                            _to_float(group[0].get(end_offset_col))
+                            if end_offset_col is not None
+                            else None
+                        )
+                        step = None
+                        if (
+                            start_val is not None
+                            and end_val is not None
+                            and limit > 1
+                        ):
+                            step = (end_val - start_val) / (limit - 1)
+
+                        for idx in range(limit):
+                            source = group[idx]
+                            row_copy = dict(source)
+                            if step is not None and offset_col is not None:
+                                row_copy[offset_col] = start_val + step * idx
+                            selected.append(row_copy)
+
+                    if selected:
+                        primary_rows = selected
+
+    used_primary_rows = primary_rows is not None
+    if used_primary_rows:
+        df_line_geo = DataFrame(primary_rows, columns=df_line_geo.columns)
     if offset_col is not None:
         offsets_series = df_line_geo[offset_col].astype(float)
     else:
@@ -235,7 +348,11 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
     # offset.  Averaging the duplicated offsets keeps the geometry focused on a
     # single centerline instead of weaving across multiple boundaries (which
     # renders as a cross/diamond artifact in the exported OpenDRIVE).
-    if offsets_series is not None and offsets_series.duplicated().any():
+    if (
+        offsets_series is not None
+        and offsets_series.duplicated().any()
+        and not used_primary_rows
+    ):
         grouped = df_line_geo.groupby(offset_col, sort=True)[[lat_col, lon_col]].mean().reset_index()
         df_line_geo = grouped
         lat = [float(v) for v in grouped[lat_col].to_list()]

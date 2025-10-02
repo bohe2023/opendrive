@@ -1,25 +1,25 @@
 {
   "input_counts": {
-    "map_base_point": 38,
-    "line_geometry": 3386,
-    "lanes_geometry": 1948,
-    "curvature": 1912,
-    "slope": 1912,
-    "lane_link": 114,
-    "lane_division": 228,
-    "dotline": 76,
-    "shoulder_width": 1274,
-    "sign": 16
+    "map_base_point": 19,
+    "line_geometry": 1693,
+    "lanes_geometry": 974,
+    "curvature": 956,
+    "slope": 956,
+    "lane_link": 57,
+    "lane_division": 114,
+    "dotline": 38,
+    "shoulder_width": 637,
+    "sign": 8
   },
   "output_counts": {
     "roads": 1,
-    "laneSections": 18,
-    "lanes_total": 108
+    "laneSections": 19,
+    "lanes_total": 114
   },
-  "road_length_m": 1403.1712753071367,
+  "road_length_m": 1476.3343669898945,
   "xodr_file": {
     "path": "/workspace/opendrive/out/JPN/map.xodr",
-    "size_bytes": 564173,
-    "line_count": 9342
+    "size_bytes": 1320713,
+    "line_count": 22030
   }
 }
