@@ -1419,8 +1419,11 @@ def build_geometry_segments(
             # 即便 ``start`` 与 ``current_s`` 数值完全一致，上一个区段的数值积分
             # 结果仍然可能存在亚米级的横向漂移。为了确保后续区段始终与解析中心线
             # 对齐，这里优先采用中心线插值得到的姿态作为新的起点。
-            if current_s != start:
-                current_s = start
+            # 无论 ``start`` 是否与前一分段的终点数值相同，都需要重新对齐
+            # 至解析中心线。否则将持续沿用上一段数值积分后的坐标，积累的
+            # 浮点误差会在下一个区段放大为明显的横向漂移，正是查看器中所
+            # 看到的“断裂”现象。
+            current_s = start
 
             continuous_x, continuous_y, continuous_hdg = _interpolate_centerline(
                 centerline, start
@@ -1437,14 +1440,13 @@ def build_geometry_segments(
             alignment_tolerance = None
             if abs(curvature_dataset) > 1e-12:
                 alignment_error = abs(_normalize_angle(delta_target - delta_dataset))
-                # When the curvature samples are noisy the heading delta derived
-                # from the centreline provides a more reliable reference.  Only
-                # trust the CSV curvature if it produces a similar change in
-                # heading, otherwise allow the solver to determine the sign.
-                base_tolerance = 1e-3
-                curvature_tolerance = abs(delta_dataset) * 1.1
-                target_tolerance = abs(delta_target) * 0.5
-                tolerance = max(base_tolerance, curvature_tolerance, target_tolerance)
+                # 采样噪声会让 CSV 中的曲率与解析中心线推导出的航向变化不一致。
+                # 只有当两者在一个较严格的阈值内吻合时，才继续“锁定”原始曲率，
+                # 否则放宽限制让数值求解重新调整曲率，避免出现整段平移的误差。
+                base_tolerance = 2e-3
+                curvature_tolerance = abs(delta_dataset) * 0.25
+                target_tolerance = abs(delta_target) * 0.25
+                tolerance = max(base_tolerance, min(curvature_tolerance, target_tolerance))
                 alignment_tolerance = tolerance
                 if alignment_error <= tolerance:
                     preferred_curvature = curvature_dataset
@@ -1574,6 +1576,17 @@ def build_geometry_segments(
 
     if initial_len <= 0:
         initial_len = 2.0
+
+    try:
+        max_endpoint_deviation = float(max_endpoint_deviation)
+    except (TypeError, ValueError):
+        max_endpoint_deviation = 0.5
+
+    # 曲率积分在 2 cm 以上的偏差就会在 OpenDRIVE 查看器中留下明显缝隙。
+    # 将容许的端点漂移硬性收紧到 0.02 m 以内，可以显著减小分段之间
+    # 的平移，同时不会显著增加段数，整体效率反而更稳健。
+    if max_endpoint_deviation > 0.02:
+        max_endpoint_deviation = 0.02
 
     best_segments: List[Dict[str, float]] = []
     best_deviation = float("inf")
