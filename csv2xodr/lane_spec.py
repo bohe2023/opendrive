@@ -846,11 +846,16 @@ def build_lane_spec(
     ]
 
     if not hinted_left and not hinted_right:
-        if not left_bases and base_ids:
-            left_bases = base_ids[:1]
-            right_bases = [base for base in base_ids if base not in left_bases]
-        elif not right_bases and base_ids:
-            right_bases = [base for base in base_ids if base not in left_bases]
+        has_right_evidence = bool(negative_bases or hinted_right or derived_right)
+        if not has_right_evidence:
+            left_bases = list(base_ids)
+            right_bases = []
+        else:
+            if not left_bases and base_ids:
+                left_bases = base_ids[:1]
+                right_bases = [base for base in base_ids if base not in left_bases]
+            elif not right_bases and base_ids:
+                right_bases = [base for base in base_ids if base not in left_bases]
 
     left_base_set = set(left_bases)
     right_base_set = set(right_bases)
