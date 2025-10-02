@@ -1429,8 +1429,23 @@ def build_geometry_segments(
             # 几何连续性；只有当累积漂移明显放大时才回退到解析中心线重新
             # 对齐，从而兼顾稳定性与准确度。
             if drift_pos > 0.1 or drift_hdg > 2e-2:
-                current_x, current_y, current_hdg = anchor_x, anchor_y, anchor_hdg
-                continuous_x, continuous_y, continuous_hdg = anchor_x, anchor_y, anchor_hdg
+                # 直接将起点重置到解析中心线会让相邻段之间出现十几厘米的跳变。
+                # 当漂移超过硬阈值时，以固定的“步长”逐渐收敛到解析位置，
+                # 每次调整的幅度限制在 2cm 以内，同时按比例压缩航向偏差，
+                # 既能阻止累计误差继续扩大，又能保证输出几何的连续性。
+                if drift_pos > 1e-9:
+                    max_step = min(max(0.02, length_total * 0.25), drift_pos)
+                    factor = max_step / drift_pos
+                    continuous_x += (anchor_x - continuous_x) * factor
+                    continuous_y += (anchor_y - continuous_y) * factor
+                delta_hdg = _normalize_angle(anchor_hdg - continuous_hdg)
+                if abs(delta_hdg) > 1e-9:
+                    max_turn = min(max(2e-3, length_total * 0.1), abs(delta_hdg))
+                    continuous_hdg = _normalize_angle(
+                        continuous_hdg + math.copysign(max_turn, delta_hdg)
+                    )
+
+                current_x, current_y, current_hdg = continuous_x, continuous_y, continuous_hdg
             else:
                 # When the curvature samples are slightly noisier than the
                 # analytical centreline, purely reusing the numerically
