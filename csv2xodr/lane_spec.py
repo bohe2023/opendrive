@@ -183,12 +183,29 @@ def _estimate_lane_side_from_geometry(
     except Exception:
         return {}
 
+    # ``Offset`` values in the raw CSV are absolute centimetre positions measured from
+    # a global reference.  The centreline normalisation logic rebases them so that the
+    # first valid sample maps to ``s = 0``.  Mirror that behaviour here to avoid feeding
+    # extremely large numbers into the mapper (which would collapse everything to the
+    # end of the alignment and cause lane sides to flip erratically).
+    offsets_m: List[float] = [value / 100.0 for value in offsets_cm]
+    base_offset_m: Optional[float] = None
+    for value in offsets_m:
+        if not math.isfinite(value):
+            continue
+        if base_offset_m is None or value < base_offset_m:
+            base_offset_m = value
+    if base_offset_m is not None:
+        offsets_m = [value - base_offset_m if math.isfinite(value) else value for value in offsets_m]
+    else:
+        offsets_m = [0.0 for _ in offsets_m]
+
     lane_ids = [
         _canonical_numeric(value)
         for value in lanes_geom_df[lane_id_col].to_list()
     ]
 
-    if not lane_ids or len(lane_ids) != len(offsets_cm):
+    if not lane_ids or len(lane_ids) != len(offsets_m):
         return {}
 
     if geo_origin is not None:
@@ -201,11 +218,11 @@ def _estimate_lane_side_from_geometry(
 
     side_samples: Dict[str, List[float]] = {}
 
-    for lane_id, off_cm, px, py in zip(lane_ids, offsets_cm, x_vals, y_vals):
+    for lane_id, off_m, px, py in zip(lane_ids, offsets_m, x_vals, y_vals):
         if lane_id is None:
             continue
         try:
-            s_val = float(off_cm) / 100.0
+            s_val = float(off_m)
         except (TypeError, ValueError):
             continue
         if offset_mapper is not None:
