@@ -1430,11 +1430,13 @@ def build_geometry_segments(
             # 对齐，从而兼顾稳定性与准确度。
             if drift_pos > 0.1 or drift_hdg > 2e-2:
                 # 直接将起点重置到解析中心线会让相邻段之间出现十几厘米的跳变。
-                # 当漂移超过硬阈值时，以固定的“步长”逐渐收敛到解析位置，
-                # 每次调整的幅度限制在 2cm 以内，同时按比例压缩航向偏差，
-                # 既能阻止累计误差继续扩大，又能保证输出几何的连续性。
+                # 当漂移超过硬阈值时，以固定的“步长”逐渐收敛到解析位置。
+                # 为了避免明显裂缝，将单次平移压缩到 1cm 以内，同时按比例
+                # 压缩航向偏差，既能阻止累计误差继续扩大，又能保证输出几何
+                # 的连续性。
                 if drift_pos > 1e-9:
-                    max_step = min(max(0.02, length_total * 0.25), drift_pos)
+                    step_cap = max(0.005, min(0.01, length_total * 0.1))
+                    max_step = min(drift_pos, step_cap)
                     factor = max_step / drift_pos
                     continuous_x += (anchor_x - continuous_x) * factor
                     continuous_y += (anchor_y - continuous_y) * factor
@@ -1447,20 +1449,22 @@ def build_geometry_segments(
 
                 current_x, current_y, current_hdg = continuous_x, continuous_y, continuous_hdg
             else:
-                # When the curvature samples are slightly noisier than the
-                # analytical centreline, purely reusing the numerically
-                # propagated pose causes a residual lateral drift that can
-                # accumulate over successive segments.  Instead of waiting for
-                # the error to exceed the hard ``0.1 m`` threshold, gradually
-                # pull the propagated pose back towards the analytical anchor.
-                # This keeps neighbouring segments contiguous while avoiding
-                # the several-centimetre offsets that used to manifest as
-                # visible cracks in the rendered road surface.
-                if drift_pos > 1e-6 or drift_hdg > 1e-6:
+                # 形状インデックスの曲率は、解析中心線に対して数ミリの横ずれ
+                # が頻繁に発生する。ここで過度に位置を引き戻すと前一区間との
+                # 接合部に目視できる段差が残ってしまうため、角度のみを緩やか
+                # に補正しつつ、位置は 3mm を超える場合に限って 1.5mm を上限
+                # とする微小な補正を掛ける。これにより連続性を保ちながら徐々に
+                # 漂移を抑え込める。
+                if drift_pos > 0.003 and drift_pos > 1e-9:
+                    step_cap = max(0.00075, min(0.0015, length_total * 0.02))
+                    max_step = min(drift_pos, step_cap)
+                    factor = max_step / drift_pos
+                    continuous_x += (anchor_x - continuous_x) * factor
+                    continuous_y += (anchor_y - continuous_y) * factor
+
+                delta_hdg = _normalize_angle(anchor_hdg - continuous_hdg)
+                if abs(delta_hdg) > 1e-6:
                     relax = max(0.05, min(0.25, length_total * 0.05))
-                    continuous_x += (anchor_x - continuous_x) * relax
-                    continuous_y += (anchor_y - continuous_y) * relax
-                    delta_hdg = _normalize_angle(anchor_hdg - continuous_hdg)
                     continuous_hdg = _normalize_angle(continuous_hdg + delta_hdg * relax)
 
                 current_x, current_y, current_hdg = continuous_x, continuous_y, continuous_hdg
@@ -1616,11 +1620,16 @@ def build_geometry_segments(
     except (TypeError, ValueError):
         max_endpoint_deviation = 0.5
 
-    # 曲率积分在 2 cm 以上的偏差就会在 OpenDRIVE 查看器中留下明显缝隙。
-    # 将容许的端点漂移硬性收紧到 0.02 m 以内，可以显著减小分段之间
-    # 的平移，同时不会显著增加段数，整体效率反而更稳健。
-    if max_endpoint_deviation > 0.02:
-        max_endpoint_deviation = 0.02
+    # 长距离路段若允许 2cm 以上的端点误差，会在 OpenDRIVE 查看器中留
+    # 下肉眼可见的缝隙；而几米长的短路段则需要保留更宽松的阈值，否
+    # 则在数据略有噪声时无法生成几何。根据参考线总长度自适应收紧
+    # 阈值，可以兼顾长距离道路的连续性与单元测试所覆盖的短样例。
+    if total_length >= 50.0:
+        tightened = 0.01
+    else:
+        tightened = 0.02
+    if max_endpoint_deviation > tightened:
+        max_endpoint_deviation = tightened
 
     best_segments: List[Dict[str, float]] = []
     best_deviation = float("inf")
