@@ -1381,11 +1381,15 @@ def build_geometry_segments(
 
             # Re-anchor the start pose to the analytical centreline to avoid
             # drift from the previous segment accumulating into visible gaps.
+            # 即便 ``start`` 与 ``current_s`` 数值完全一致，上一个区段的数值积分
+            # 结果仍然可能存在亚米级的横向漂移。为了确保后续区段始终与解析中心线
+            # 对齐，这里优先采用中心线插值得到的姿态作为新的起点。
             if current_s != start:
                 current_s = start
-                continuous_x, continuous_y, continuous_hdg = _interpolate_centerline(
-                    centerline, current_s
-                )
+
+            continuous_x, continuous_y, continuous_hdg = _interpolate_centerline(
+                centerline, start
+            )
 
             current_x, current_y, current_hdg = continuous_x, continuous_y, continuous_hdg
             curvature_dataset = _curvature_for_interval(start, end)
@@ -1513,7 +1517,10 @@ def build_geometry_segments(
 
             segments.extend(trial_segments)
 
-            continuous_x, continuous_y, continuous_hdg = propagated_x, propagated_y, propagated_hdg
+            # 计算得到的终点姿态与中心线终点之间可能仍存在毫米级误差；
+            # 为了防止该误差在后续区段中累积，将连续姿态直接重置为解析
+            # 中心线的终点姿态。
+            continuous_x, continuous_y, continuous_hdg = target_x, target_y, target_hdg
             current_s = end
 
             # Record the analytical centreline pose for diagnostic purposes while
