@@ -268,13 +268,26 @@ def build_line_geometry_lookup(
         last_s: Optional[float] = None
         reset_threshold = 1e-4  # tolerate sub-millimetre jitter while catching real resets
 
+        entry_base_offset: Optional[float] = None
+        for raw in offsets_raw:
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(value):
+                continue
+            if entry_base_offset is None or value < entry_base_offset:
+                entry_base_offset = value
+
         for raw_offset, x_val, y_val, z_val in zip(offsets_raw, x_vals, y_vals, z_vals):
             try:
                 offset_m = float(raw_offset)
             except (TypeError, ValueError):
                 continue
 
-            if global_base_offset is not None and math.isfinite(offset_m):
+            if entry_base_offset is not None and math.isfinite(entry_base_offset):
+                offset_m -= entry_base_offset
+            elif global_base_offset is not None and math.isfinite(global_base_offset):
                 offset_m -= global_base_offset
 
             if offset_mapper is not None:
