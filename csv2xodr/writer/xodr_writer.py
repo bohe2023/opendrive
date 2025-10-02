@@ -1,4 +1,5 @@
 from xml.etree.ElementTree import Element, SubElement, tostring
+import math
 import xml.dom.minidom as minidom
 
 
@@ -74,6 +75,17 @@ def write_xodr(
     plan = SubElement(road, "planView")
     if geometry_segments:
         for seg in geometry_segments:
+            try:
+                length = float(seg.get("length", 0.0))
+            except (TypeError, ValueError):
+                continue
+
+            if not math.isfinite(length) or length <= 1e-6:
+                # 参考线在某些数据集中会出现零长度的占位段，如果仍然写入
+                # OpenDRIVE 会被查看器当成新的起点，造成路段出现错位。这里
+                # 直接丢弃这类节点，保持几何连续。
+                continue
+
             geom = SubElement(
                 plan,
                 "geometry",
@@ -87,7 +99,7 @@ def write_xodr(
                     "x": _format_float(seg["x"], precision=12),
                     "y": _format_float(seg["y"], precision=12),
                     "hdg": _format_float(seg["hdg"], precision=15),
-                    "length": _format_float(seg["length"], precision=12),
+                    "length": _format_float(length, precision=12),
                 },
             )
             curvature = float(seg.get("curvature", 0.0))
@@ -104,6 +116,11 @@ def write_xodr(
             x2 = float(centerline["x"].iloc[i + 1])
             y2 = float(centerline["y"].iloc[i + 1])
             seg_len = ((x2 - x) ** 2 + (y2 - y) ** 2) ** 0.5
+            if not math.isfinite(seg_len) or seg_len <= 1e-6:
+                # 如果中心线中存在重复点，会导出零长度几何段，从而在
+                # OpenDRIVE 查看器中显示为断裂。忽略这些异常点，保证
+                # 前后几何段首尾相接。
+                continue
             geom = SubElement(
                 plan,
                 "geometry",
