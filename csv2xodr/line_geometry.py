@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from csv2xodr.normalize.core import latlon_to_local_xy
@@ -87,7 +88,9 @@ def build_line_geometry_lookup(
         return {}
 
     grouped: Dict[Tuple[str, Any, Any, Any, Any], Dict[str, Any]] = {}
-    segment_progress: Dict[Tuple[Any, Any, Any, Any, Any, float, Optional[float]], Dict[str, float]] = {}
+    segment_progress: Dict[
+        Tuple[Any, Any, Any, Any, Any, float, Optional[float]], Dict[str, float]
+    ] = {}
 
     for idx in range(len(line_geom_df)):
         row = line_geom_df.iloc[idx]
@@ -212,26 +215,17 @@ def build_line_geometry_lookup(
 
     lookup: Dict[str, List[Dict[str, Any]]] = {}
 
-    # When the same ``line_id`` spans multiple recording sessions the
-    # longitudinal offset restarts from the session-specific origin.  Using the
-    # minimum per group would therefore collapse every segment back to ``s=0``.
-    # Track the earliest absolute offset observed for each ``line_id`` so that
-    # the rebasing step below preserves the global alignment along the centreline.
-    base_offset_by_line: Dict[str, float] = {}
+    global_base_offset: Optional[float] = None
     for entry in grouped.values():
-        offsets_raw = entry.get("offset", []) or []
-        if not offsets_raw:
-            continue
-        try:
-            entry_min = min(float(value) for value in offsets_raw)
-        except (TypeError, ValueError):
-            continue
-        line_id = entry.get("line_id")
-        if line_id is None:
-            continue
-        current = base_offset_by_line.get(line_id)
-        if current is None or entry_min < current:
-            base_offset_by_line[line_id] = entry_min
+        for raw in entry.get("offset", []) or []:
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(value):
+                continue
+            if global_base_offset is None or value < global_base_offset:
+                global_base_offset = value
 
     for entry in grouped.values():
         has_true = entry.get("has_true", False)
@@ -240,24 +234,20 @@ def build_line_geometry_lookup(
         if has_flag and has_true and not has_false:
             continue
 
-        offsets_raw = entry.get("offset", [])
-        line_id = entry.get("line_id")
-        base_offset = base_offset_by_line.get(line_id) if line_id is not None else None
-        if offsets_raw:
-            if base_offset is None:
-                offsets_m = list(offsets_raw)
-            else:
-                offsets_m = [value - base_offset for value in offsets_raw]
-        else:
-            offsets_m = []
-        if offset_mapper is not None:
-            mapped_s = [offset_mapper(value) for value in offsets_m]
-        else:
-            mapped_s = offsets_m
+        lat_vals = entry.get("lat", []) or []
+        lon_vals = entry.get("lon", []) or []
+        z_vals = entry.get("z", []) or []
+        offsets_raw = entry.get("offset", []) or []
 
-        x_vals, y_vals = latlon_to_local_xy(entry["lat"], entry["lon"], lat0, lon0)
+        if not lat_vals or not lon_vals or not z_vals or not offsets_raw:
+            continue
 
-        if not mapped_s or len(mapped_s) != len(x_vals) or len(x_vals) != len(entry["z"]):
+        try:
+            x_vals, y_vals = latlon_to_local_xy(lat_vals, lon_vals, lat0, lon0)
+        except Exception:  # pragma: no cover - defensive
+            continue
+
+        if len(x_vals) != len(z_vals) or len(x_vals) != len(offsets_raw):
             continue
 
         # The Japanese datasets reuse the same ``line_id`` across multiple
@@ -271,9 +261,30 @@ def build_line_geometry_lookup(
         last_s: Optional[float] = None
         reset_threshold = 1e-4  # tolerate sub-millimetre jitter while catching real resets
 
-        for s_val, x_val, y_val, z_val in zip(mapped_s, x_vals, y_vals, entry["z"]):
+        for raw_offset, x_val, y_val, z_val in zip(offsets_raw, x_vals, y_vals, z_vals):
             try:
-                s_float = float(s_val)
+                offset_m = float(raw_offset)
+            except (TypeError, ValueError):
+                continue
+
+            if global_base_offset is not None and math.isfinite(offset_m):
+                offset_m -= global_base_offset
+
+            if offset_mapper is not None:
+                try:
+                    s_float = float(offset_mapper(offset_m))
+                except Exception:  # pragma: no cover - defensive
+                    continue
+            else:
+                s_float = float(offset_m)
+
+            if not math.isfinite(s_float):
+                continue
+
+            try:
+                x_float = float(x_val)
+                y_float = float(y_val)
+                z_float = float(z_val)
             except (TypeError, ValueError):
                 continue
 
@@ -287,16 +298,16 @@ def build_line_geometry_lookup(
                 prev_s, prev_x, prev_y, prev_z = current[-1]
                 if (
                     abs(s_float - prev_s) <= 1e-9
-                    and abs(x_val - prev_x) <= 1e-9
-                    and abs(y_val - prev_y) <= 1e-9
-                    and abs(z_val - prev_z) <= 1e-9
+                    and abs(x_float - prev_x) <= 1e-9
+                    and abs(y_float - prev_y) <= 1e-9
+                    and abs(z_float - prev_z) <= 1e-9
                 ):
                     # Skip duplicate samples that would otherwise collapse into
                     # zero-length segments after splitting.
                     last_s = s_float
                     continue
 
-            current.append((s_float, float(x_val), float(y_val), float(z_val)))
+            current.append((s_float, x_float, y_float, z_float))
             last_s = s_float
 
         if len(current) >= 2:
