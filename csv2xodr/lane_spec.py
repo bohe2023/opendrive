@@ -446,7 +446,7 @@ def build_lane_spec(
 
     sections_list = list(sections)
     lane_info = (lane_topo or {}).get("lanes") or {}
-    lane_groups = (lane_topo or {}).get("groups") or {}
+    raw_lane_groups = (lane_topo or {}).get("groups") or {}
     lane_count = (lane_topo or {}).get("lane_count") or 0
 
     if not lane_info:
@@ -492,16 +492,93 @@ def build_lane_spec(
             )
         return out
 
+    def _split_lane_groups(
+        groups: Dict[str, List[str]],
+        lane_data: Dict[str, Dict[str, Any]],
+    ) -> Tuple[Dict[str, List[str]], Dict[str, str], Dict[str, str]]:
+        """Split lane groups that mix positive/negative lane numbers."""
+
+        expanded: Dict[str, List[str]] = {}
+        parent_map: Dict[str, str] = {}
+        derived_hints: Dict[str, str] = {}
+
+        for base_id, uids in groups.items():
+            positive: List[str] = []
+            negative: List[str] = []
+            neutral: List[str] = []
+
+            for uid in uids:
+                info = lane_data.get(uid) or {}
+                lane_no = info.get("lane_no")
+                if isinstance(lane_no, (int, float)):
+                    if lane_no > 0:
+                        positive.append(uid)
+                    elif lane_no < 0:
+                        negative.append(uid)
+                    else:
+                        neutral.append(uid)
+                else:
+                    neutral.append(uid)
+
+            buckets: List[Tuple[str, List[str]]] = []
+            if positive:
+                buckets.append(("pos", positive))
+            if negative:
+                buckets.append(("neg", negative))
+            if neutral and (positive or negative):
+                buckets.append(("zero", neutral))
+
+            if len(buckets) <= 1:
+                expanded[base_id] = list(uids)
+                parent_map[base_id] = base_id
+                if positive and not negative:
+                    derived_hints[base_id] = "left"
+                elif negative and not positive:
+                    derived_hints[base_id] = "right"
+                continue
+
+            for suffix, items in buckets:
+                alias = f"{base_id}::{suffix}"
+                expanded[alias] = items
+                parent_map[alias] = base_id
+                if suffix == "pos":
+                    derived_hints[alias] = "left"
+                elif suffix == "neg":
+                    derived_hints[alias] = "right"
+                else:
+                    derived_hints.setdefault(alias, "center")
+
+        return expanded, parent_map, derived_hints
+
+    lane_groups, group_parent_map, derived_side_hints = _split_lane_groups(raw_lane_groups, lane_info)
+
     division_lookup = _build_division_lookup(
         lane_div_df, line_geometry_lookup=line_geometry_lookup, offset_mapper=offset_mapper
     )
 
-    geometry_side_hint = _estimate_lane_side_from_geometry(
+    raw_geometry_side_hint = _estimate_lane_side_from_geometry(
         lanes_geometry_df,
         centerline,
         offset_mapper=offset_mapper,
         geo_origin=geo_origin,
     )
+
+    geometry_side_hint: Dict[str, str] = {}
+    for alias, parent in group_parent_map.items():
+        hint = derived_side_hints.get(alias)
+        parent_hint = raw_geometry_side_hint.get(parent)
+        if hint in {"left", "right"}:
+            if parent_hint in {"left", "right"} and parent_hint != hint:
+                # Prefer the derived hint (based on lane numbers) when it
+                # contradicts the coarse geometry estimate.
+                geometry_side_hint[alias] = hint
+            else:
+                geometry_side_hint[alias] = hint
+            continue
+
+        if parent_hint in {"left", "right"}:
+            geometry_side_hint[alias] = parent_hint
+
 
     def _segment_spans(info: Dict[str, Any]) -> List[Tuple[float, float]]:
         spans: List[Tuple[float, float]] = []
