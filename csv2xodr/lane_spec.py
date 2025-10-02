@@ -486,8 +486,33 @@ def build_lane_spec(
         geo_origin=geo_origin,
     )
 
+    def _segment_spans(info: Dict[str, Any]) -> List[Tuple[float, float]]:
+        spans: List[Tuple[float, float]] = []
+        for seg in info.get("segments", []):
+            try:
+                start = float(seg.get("start", 0.0))
+                end = float(seg.get("end", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if end <= start:
+                continue
+            spans.append((start, end))
+        spans.sort(key=lambda item: item[0])
+        return spans
+
+    def _mergeable(existing: List[Tuple[float, float]], new_spans: List[Tuple[float, float]], *, tolerance: float = 1e-3) -> bool:
+        if not existing:
+            return True
+        for s0, s1 in new_spans:
+            for e0, e1 in existing:
+                if s1 <= e0 + tolerance or s0 >= e1 - tolerance:
+                    continue
+                return False
+        return True
+
     lane_no_by_base: Dict[str, Optional[int]] = {}
     base_start: Dict[str, float] = {}
+    lane_spans: Dict[str, List[Tuple[float, float]]] = {}
 
     for base_id, uids in lane_groups.items():
         lane_numbers: List[int] = []
@@ -497,13 +522,11 @@ def build_lane_spec(
             lane_no = info.get("lane_no")
             if isinstance(lane_no, (int, float)):
                 lane_numbers.append(int(lane_no))
-            for segment in info.get("segments", []):
-                try:
-                    start_val = float(segment.get("start", 0.0))
-                except (TypeError, ValueError):
-                    continue
-                if first_start is None or start_val < first_start:
-                    first_start = start_val
+            spans = _segment_spans(info)
+            if spans:
+                lane_spans[uid] = spans
+                if first_start is None or spans[0][0] < first_start:
+                    first_start = spans[0][0]
         lane_no_by_base[base_id] = min(lane_numbers) if lane_numbers else None
         base_start[base_id] = first_start or 0.0
 
@@ -653,6 +676,43 @@ def build_lane_spec(
     lane_id_map: Dict[str, int] = {}
     lane_side_map: Dict[str, str] = {}
 
+    assigned_spans_left: Dict[int, List[Tuple[float, float]]] = {}
+    assigned_spans_right: Dict[int, List[Tuple[float, float]]] = {}
+
+    def _reuse_candidate(
+        uid: str,
+        *,
+        side: str,
+        assigned_spans: Dict[int, List[Tuple[float, float]]],
+    ) -> Optional[int]:
+        info = lane_info.get(uid) or {}
+        spans = lane_spans.get(uid, [])
+        if not spans:
+            return None
+
+        candidates: List[int] = []
+        for seg in info.get("segments", []):
+            for key in ("predecessors", "successors"):
+                for target in seg.get(key, []):
+                    candidate = lane_id_map.get(target)
+                    if candidate is None:
+                        continue
+                    if side == "left" and candidate <= 0:
+                        continue
+                    if side == "right" and candidate >= 0:
+                        continue
+                    if candidate not in candidates:
+                        candidates.append(candidate)
+
+        if not candidates:
+            return None
+
+        for candidate in sorted(candidates, key=lambda val: (abs(val), val)):
+            existing = assigned_spans.get(candidate, [])
+            if _mergeable(existing, spans):
+                return candidate
+        return None
+
     left_id_by_lane_no: Dict[Tuple[Optional[str], int], int] = {}
     current_id = 1
     for base in left_bases:
@@ -661,13 +721,18 @@ def build_lane_spec(
             info = lane_info[uid]
             lane_no = info["lane_no"]
             key = (info.get("base_id"), lane_no)
-            assigned = left_id_by_lane_no.get(key)
+            assigned = _reuse_candidate(uid, side="left", assigned_spans=assigned_spans_left)
+            if assigned is None:
+                assigned = left_id_by_lane_no.get(key)
             if assigned is None:
                 assigned = current_id
                 left_id_by_lane_no[key] = assigned
                 current_id += 1
             lane_id_map[uid] = assigned
             lane_side_map[uid] = "left"
+            spans = lane_spans.get(uid, [])
+            if spans:
+                assigned_spans_left.setdefault(assigned, []).extend(spans)
 
     right_id_by_lane_no: Dict[Tuple[Optional[str], int], int] = {}
     current_id = -1
@@ -677,13 +742,18 @@ def build_lane_spec(
             info = lane_info[uid]
             lane_no = info["lane_no"]
             key = (info.get("base_id"), lane_no)
-            assigned = right_id_by_lane_no.get(key)
+            assigned = _reuse_candidate(uid, side="right", assigned_spans=assigned_spans_right)
+            if assigned is None:
+                assigned = right_id_by_lane_no.get(key)
             if assigned is None:
                 assigned = current_id
                 right_id_by_lane_no[key] = assigned
                 current_id -= 1
             lane_id_map[uid] = assigned
             lane_side_map[uid] = "right"
+            spans = lane_spans.get(uid, [])
+            if spans:
+                assigned_spans_right.setdefault(assigned, []).extend(spans)
 
     lane_section_map: Dict[Tuple[str, int], Dict[str, Any]] = {}
     lane_section_indices: Dict[str, List[int]] = {uid: [] for uid in lane_id_map}
