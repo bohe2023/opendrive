@@ -608,18 +608,47 @@ def build_lane_spec(
         elif not right_bases and base_ids:
             right_bases = [base for base in base_ids if base not in left_bases]
 
+    left_base_set = set(left_bases)
+    right_base_set = set(right_bases)
+
     unassigned = [
-        base for base in base_ids if base not in left_bases and base not in right_bases
+        base for base in base_ids if base not in left_base_set and base not in right_base_set
     ]
     for base in unassigned:
-        if len(left_bases) <= len(right_bases):
+        neighbour_side: Optional[str] = None
+        for uid in lane_groups.get(base, []):
+            info = lane_info.get(uid) or {}
+            segments = info.get("segments", [])
+            for seg in segments:
+                left_neighbour = seg.get("left_neighbor")
+                right_neighbour = seg.get("right_neighbor")
+                if left_neighbour in left_base_set or right_neighbour in left_base_set:
+                    neighbour_side = "left"
+                    break
+                if left_neighbour in right_base_set or right_neighbour in right_base_set:
+                    neighbour_side = "right"
+                    break
+            if neighbour_side:
+                break
+
+        if neighbour_side == "left":
             left_bases.append(base)
+            left_base_set.add(base)
+        elif neighbour_side == "right":
+            right_bases.append(base)
+            right_base_set.add(base)
+        elif len(left_bases) <= len(right_bases):
+            left_bases.append(base)
+            left_base_set.add(base)
         else:
             right_bases.append(base)
+            right_base_set.add(base)
 
     if not left_bases and not right_bases and base_ids:
         left_bases = base_ids[:1]
         right_bases = [base for base in base_ids if base not in left_bases]
+        left_base_set = set(left_bases)
+        right_base_set = set(right_bases)
 
     lane_id_map: Dict[str, int] = {}
     lane_side_map: Dict[str, str] = {}
