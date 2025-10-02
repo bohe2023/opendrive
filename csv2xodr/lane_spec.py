@@ -595,9 +595,17 @@ def build_lane_spec(
                     parent_hint = None
         if hint in {"left", "right"}:
             if parent_hint in {"left", "right"} and parent_hint != hint:
-                # Prefer the derived hint (based on lane numbers) when it
-                # contradicts the coarse geometry estimate.
-                geometry_side_hint[alias] = hint
+                if alias == parent:
+                    # Treat the conflict as ambiguous: keep the group
+                    # unassigned for now so that later heuristics can decide
+                    # based on lane counts or topology instead of blindly
+                    # trusting either source.
+                    continue
+                else:
+                    # For split groups ("::pos"/"::neg") the derived hint
+                    # still carries meaningful information about how the
+                    # sub-group relates to the reference line.
+                    geometry_side_hint[alias] = hint
             else:
                 geometry_side_hint[alias] = hint
             continue
@@ -690,17 +698,18 @@ def build_lane_spec(
         and not negative_bases
         and positive_bases
     ):
-        ordered_candidates = [base for base in base_ids if base in positive_bases]
-        if ordered_candidates:
-            limit = min(len(ordered_candidates), max(lane_count, 1))
-            target_left = max(1, limit // 2)
-            left_candidates = ordered_candidates[:target_left]
-            right_candidates = ordered_candidates[target_left:limit]
-            if right_candidates:
-                for base in right_candidates:
-                    geometry_side_hint[base] = "right"
-                for base in left_candidates:
-                    geometry_side_hint[base] = "left"
+        # 没有任何右侧提示且全部车道编号为正，说明输入数据没有明确区分两侧。
+        # 此时利用 lane_count 和 lane_no 顺序进行一次平均划分，
+        # 让编号靠后的车道落在参考线右侧，避免所有车道都堆叠在左侧。
+        half = max(1, lane_count // 2)
+        for base in base_ids:
+            lane_number = lane_no_by_base.get(base)
+            if lane_number is None:
+                continue
+            if lane_number > half:
+                geometry_side_hint[base] = "right"
+            else:
+                geometry_side_hint.setdefault(base, "left")
 
     def _ordered_subset(candidates: Iterable[str]) -> List[str]:
         seen: List[str] = []
@@ -851,14 +860,14 @@ def build_lane_spec(
                 return candidate
         return None
 
-    left_id_by_lane_no: Dict[Tuple[Optional[str], int], int] = {}
+    left_id_by_lane_no: Dict[int, int] = {}
     current_id = 1
     for base in left_bases:
         ordered = reversed(sorted(lane_groups.get(base, []), key=lambda x: lane_info[x]["lane_no"]))
         for uid in ordered:
             info = lane_info[uid]
             lane_no = info["lane_no"]
-            key = (info.get("base_id"), lane_no)
+            key = int(lane_no)
             assigned = _reuse_candidate(uid, side="left", assigned_spans=assigned_spans_left)
             if assigned is None:
                 assigned = left_id_by_lane_no.get(key)
@@ -872,14 +881,14 @@ def build_lane_spec(
             if spans:
                 assigned_spans_left.setdefault(assigned, []).extend(spans)
 
-    right_id_by_lane_no: Dict[Tuple[Optional[str], int], int] = {}
+    right_id_by_lane_no: Dict[int, int] = {}
     current_id = -1
     for base in right_bases:
         ordered = reversed(sorted(lane_groups.get(base, []), key=lambda x: lane_info[x]["lane_no"]))
         for uid in ordered:
             info = lane_info[uid]
             lane_no = info["lane_no"]
-            key = (info.get("base_id"), lane_no)
+            key = int(lane_no)
             assigned = _reuse_candidate(uid, side="right", assigned_spans=assigned_spans_right)
             if assigned is None:
                 assigned = right_id_by_lane_no.get(key)
