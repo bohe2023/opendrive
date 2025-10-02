@@ -13,13 +13,13 @@
   },
   "output_counts": {
     "roads": 1,
-    "laneSections": 1,
-    "lanes_total": 13
+    "laneSections": 18,
+    "lanes_total": 109
   },
-  "road_length_m": 1370.8832848617749,
+  "road_length_m": 1370.8832848617744,
   "xodr_file": {
-    "path": "D:\\opendrive_git\\out\\JPN\\map.xodr",
-    "size_bytes": 51709,
-    "line_count": 968
+    "path": "/workspace/opendrive/out/JPN/map.xodr",
+    "size_bytes": 79864,
+    "line_count": 1720
   }
 }
