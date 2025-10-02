@@ -211,3 +211,65 @@ def test_strong_geometry_hint_overrides_lane_numbers():
 
     assert not specs[0]["left"], "strong right-side geometry should prevent left assignment"
     assert len(specs[0]["right"]) == 1
+
+
+def test_positive_lanes_stay_on_single_side():
+    sections = [{"s0": 0.0, "s1": 10.0}]
+
+    lane_topology = {
+        "lane_count": 3,
+        "groups": {
+            "A": ["A:1"],
+            "B": ["B:1"],
+            "C": ["C:1"],
+        },
+        "lanes": {
+            "A:1": {
+                "base_id": "A",
+                "lane_no": 1,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 10.0,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                    }
+                ],
+            },
+            "B:1": {
+                "base_id": "B",
+                "lane_no": 2,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 10.0,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                    }
+                ],
+            },
+            "C:1": {
+                "base_id": "C",
+                "lane_no": 3,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 10.0,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                    }
+                ],
+            },
+        },
+    }
+
+    specs = build_lane_spec(sections, lane_topology, defaults={}, lane_div_df=None)
+
+    assert specs[0]["right"] == [], "positive-only lanes should not be inferred as right-side lanes"
+    assert [lane["uid"] for lane in specs[0]["left"]] == ["A:1", "B:1", "C:1"]
