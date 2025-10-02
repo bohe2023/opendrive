@@ -811,26 +811,51 @@ def build_lane_spec(
                 [base for base in negative_bases if base in remaining_bases]
             )
         else:
-            if lane_count:
-                target_left = lane_count // 2
+            if not negative_bases and not hinted_right:
+                preferred_side: Optional[str] = None
+
+                for side in geometry_side_hint.values():
+                    if side in {"left", "right"}:
+                        preferred_side = side
+                        break
+
+                if preferred_side is None and isinstance(defaults, dict):
+                    raw_default = defaults.get("default_lane_side")
+                    if isinstance(raw_default, str):
+                        lowered = raw_default.strip().lower()
+                        if lowered in {"left", "right"}:
+                            preferred_side = "left" if lowered == "left" else "right"
+
+                if preferred_side is None:
+                    preferred_side = "left"
+
+                if preferred_side == "left":
+                    derived_left = list(remaining_bases)
+                    derived_right = []
+                else:
+                    derived_right = list(remaining_bases)
+                    derived_left = []
             else:
-                target_left = len(ordered_lane_numbers) // 2
-            left_lane_numbers = set(ordered_lane_numbers[:target_left])
-            if lane_count:
-                right_limit = min(lane_count, len(ordered_lane_numbers))
-            else:
-                right_limit = len(ordered_lane_numbers)
-            right_lane_numbers = set(ordered_lane_numbers[target_left:right_limit])
-            derived_left = [
-                base
-                for base in remaining_bases
-                if lane_no_by_base.get(base) in left_lane_numbers
-            ]
-            derived_right = [
-                base
-                for base in remaining_bases
-                if lane_no_by_base.get(base) in right_lane_numbers
-            ]
+                if lane_count:
+                    target_left = lane_count // 2
+                else:
+                    target_left = len(ordered_lane_numbers) // 2
+                left_lane_numbers = set(ordered_lane_numbers[:target_left])
+                if lane_count:
+                    right_limit = min(lane_count, len(ordered_lane_numbers))
+                else:
+                    right_limit = len(ordered_lane_numbers)
+                right_lane_numbers = set(ordered_lane_numbers[target_left:right_limit])
+                derived_left = [
+                    base
+                    for base in remaining_bases
+                    if lane_no_by_base.get(base) in left_lane_numbers
+                ]
+                derived_right = [
+                    base
+                    for base in remaining_bases
+                    if lane_no_by_base.get(base) in right_lane_numbers
+                ]
 
     left_bases = hinted_left + [
         base for base in derived_left if base not in hinted_left and base not in hinted_right
