@@ -1432,6 +1432,22 @@ def build_geometry_segments(
                 current_x, current_y, current_hdg = anchor_x, anchor_y, anchor_hdg
                 continuous_x, continuous_y, continuous_hdg = anchor_x, anchor_y, anchor_hdg
             else:
+                # When the curvature samples are slightly noisier than the
+                # analytical centreline, purely reusing the numerically
+                # propagated pose causes a residual lateral drift that can
+                # accumulate over successive segments.  Instead of waiting for
+                # the error to exceed the hard ``0.1 m`` threshold, gradually
+                # pull the propagated pose back towards the analytical anchor.
+                # This keeps neighbouring segments contiguous while avoiding
+                # the several-centimetre offsets that used to manifest as
+                # visible cracks in the rendered road surface.
+                if drift_pos > 1e-6 or drift_hdg > 1e-6:
+                    relax = max(0.05, min(0.25, length_total * 0.05))
+                    continuous_x += (anchor_x - continuous_x) * relax
+                    continuous_y += (anchor_y - continuous_y) * relax
+                    delta_hdg = _normalize_angle(anchor_hdg - continuous_hdg)
+                    continuous_hdg = _normalize_angle(continuous_hdg + delta_hdg * relax)
+
                 current_x, current_y, current_hdg = continuous_x, continuous_y, continuous_hdg
             curvature_dataset = _curvature_for_interval(start, end)
             target_x, target_y, target_hdg = _interpolate_centerline(centerline, end)
