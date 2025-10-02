@@ -826,26 +826,38 @@ def build_lane_spec(
                     derived_left = list(remaining_bases)
                     derived_right = []
             else:
-                if lane_count:
-                    target_left = lane_count // 2
+                if (
+                    not negative_bases
+                    and not hinted_right
+                    and not derived_right
+                ):
+                    derived_left = list(remaining_bases)
+                    derived_right = []
                 else:
-                    target_left = len(ordered_lane_numbers) // 2
-                left_lane_numbers = set(ordered_lane_numbers[:target_left])
-                if lane_count:
-                    right_limit = min(lane_count, len(ordered_lane_numbers))
-                else:
-                    right_limit = len(ordered_lane_numbers)
-                right_lane_numbers = set(ordered_lane_numbers[target_left:right_limit])
-                derived_left = [
-                    base
-                    for base in remaining_bases
-                    if lane_no_by_base.get(base) in left_lane_numbers
-                ]
-                derived_right = [
-                    base
-                    for base in remaining_bases
-                    if lane_no_by_base.get(base) in right_lane_numbers
-                ]
+                    if lane_count:
+                        target_left = lane_count // 2
+                    else:
+                        target_left = len(ordered_lane_numbers) // 2
+                    left_lane_numbers = set(ordered_lane_numbers[:target_left])
+                    if lane_count:
+                        right_limit = min(
+                            lane_count, len(ordered_lane_numbers)
+                        )
+                    else:
+                        right_limit = len(ordered_lane_numbers)
+                    right_lane_numbers = set(
+                        ordered_lane_numbers[target_left:right_limit]
+                    )
+                    derived_left = [
+                        base
+                        for base in remaining_bases
+                        if lane_no_by_base.get(base) in left_lane_numbers
+                    ]
+                    derived_right = [
+                        base
+                        for base in remaining_bases
+                        if lane_no_by_base.get(base) in right_lane_numbers
+                    ]
 
     if (
         remaining_bases
@@ -870,6 +882,9 @@ def build_lane_spec(
     force_all_default_side = bool(
         no_right_evidence and not hinted_right and not derived_right
     )
+    no_right_side_assignments = (
+        not negative_bases and not hinted_right and not derived_right
+    )
 
     if force_all_default_side:
         if default_lane_side_is_right:
@@ -887,6 +902,7 @@ def build_lane_spec(
             force_all_default_side
             or not has_right_evidence
             or only_positive_without_right_evidence
+            or no_right_side_assignments
         ):
             if default_lane_side_is_right:
                 left_bases = []
