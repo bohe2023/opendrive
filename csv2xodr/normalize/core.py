@@ -1589,6 +1589,7 @@ def build_geometry_segments(
         return []
 
     segments = _merge_geometry_segments(segments, max_segment_length=initial_len)
+    segments = _ensure_geometry_continuity(segments)
     _record_best(segments, deviation)
 
     min_len = max(0.25, initial_len / 16.0)
@@ -1604,6 +1605,7 @@ def build_geometry_segments(
             break
 
         segments = _merge_geometry_segments(candidate_segments, max_segment_length=initial_len)
+        segments = _ensure_geometry_continuity(segments)
         deviation = candidate_deviation
         _record_best(segments, deviation)
 
@@ -1680,6 +1682,49 @@ def _merge_geometry_segments(
 
     merged.append(current)
     return merged
+
+
+def _ensure_geometry_continuity(
+    segments: List[Dict[str, float]],
+    *,
+    s_precision: int = 12,
+) -> List[Dict[str, float]]:
+    """Adjust segment start poses so the polyline is numerically contiguous."""
+
+    if not segments:
+        return []
+
+    corrected: List[Dict[str, float]] = []
+
+    for index, seg in enumerate(segments):
+        entry = dict(seg)
+        if index == 0:
+            entry["s"] = float(entry.get("s", 0.0))
+            entry["x"] = float(entry.get("x", 0.0))
+            entry["y"] = float(entry.get("y", 0.0))
+            entry["hdg"] = float(entry.get("hdg", 0.0))
+            corrected.append(entry)
+            continue
+
+        prev = corrected[-1]
+        prev_s = float(prev.get("s", 0.0))
+        prev_len = float(prev.get("length", 0.0))
+        prev_curv = float(prev.get("curvature", 0.0))
+        end_x, end_y, end_hdg = _advance_pose(
+            float(prev.get("x", 0.0)),
+            float(prev.get("y", 0.0)),
+            float(prev.get("hdg", 0.0)),
+            prev_curv,
+            prev_len,
+        )
+
+        entry["s"] = round(prev_s + prev_len, s_precision)
+        entry["x"] = end_x
+        entry["y"] = end_y
+        entry["hdg"] = end_hdg
+        corrected.append(entry)
+
+    return corrected
 
 
 def build_shoulder_profile(
