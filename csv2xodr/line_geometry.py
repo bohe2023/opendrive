@@ -236,24 +236,70 @@ def build_line_geometry_lookup(
 
         x_vals, y_vals = latlon_to_local_xy(entry["lat"], entry["lon"], lat0, lon0)
 
-        points = list(zip(mapped_s, x_vals, y_vals, entry["z"]))
-        if not points:
+        if not mapped_s or len(mapped_s) != len(x_vals) or len(x_vals) != len(entry["z"]):
             continue
 
-        signature = _geometry_signature(points)
+        # The Japanese datasets reuse the same ``line_id`` across multiple
+        # carriageway segments.  Each time the offset restarts from zero the
+        # geometry would jump back to the beginning of the alignment, producing
+        # spaghetti-like lane lines in the viewer.  Split the sequence whenever
+        # the longitudinal coordinate decreases noticeably so every emitted
+        # polyline remains strictly monotonic along ``s``.
+        sequences: List[List[Tuple[float, float, float, float]]] = []
+        current: List[Tuple[float, float, float, float]] = []
+        last_s: Optional[float] = None
+        reset_threshold = 1e-4  # tolerate sub-millimetre jitter while catching real resets
+
+        for s_val, x_val, y_val, z_val in zip(mapped_s, x_vals, y_vals, entry["z"]):
+            try:
+                s_float = float(s_val)
+            except (TypeError, ValueError):
+                continue
+
+            if last_s is not None and s_float < last_s - reset_threshold:
+                if len(current) >= 2:
+                    sequences.append(current)
+                current = []
+                last_s = None
+
+            if current:
+                prev_s, prev_x, prev_y, prev_z = current[-1]
+                if (
+                    abs(s_float - prev_s) <= 1e-9
+                    and abs(x_val - prev_x) <= 1e-9
+                    and abs(y_val - prev_y) <= 1e-9
+                    and abs(z_val - prev_z) <= 1e-9
+                ):
+                    # Skip duplicate samples that would otherwise collapse into
+                    # zero-length segments after splitting.
+                    last_s = s_float
+                    continue
+
+            current.append((s_float, float(x_val), float(y_val), float(z_val)))
+            last_s = s_float
+
+        if len(current) >= 2:
+            sequences.append(current)
 
         geoms = lookup.setdefault(entry["line_id"], [])
-        if any(_geometry_signature(list(zip(g["s"], g["x"], g["y"], g["z"]))) == signature for g in geoms):
-            continue
 
-        geoms.append(
-            {
-                "s": mapped_s,
-                "x": x_vals,
-                "y": y_vals,
-                "z": entry["z"],
-            }
-        )
+        for seq in sequences:
+            points = list(seq)
+            signature = _geometry_signature(points)
+            if any(
+                _geometry_signature(list(zip(g["s"], g["x"], g["y"], g["z"]))) == signature
+                for g in geoms
+            ):
+                continue
+
+            geoms.append(
+                {
+                    "s": [p[0] for p in points],
+                    "x": [p[1] for p in points],
+                    "y": [p[2] for p in points],
+                    "z": [p[3] for p in points],
+                }
+            )
 
     return lookup
 
