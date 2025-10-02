@@ -844,12 +844,19 @@ def build_lane_spec(
         base for base in derived_right if base not in hinted_left and base not in hinted_right
     ]
 
+    force_all_left = bool(
+        not negative_bases and not hinted_right and not derived_right
+    )
+    if force_all_left:
+        left_bases = [base for base in base_ids]
+        right_bases = []
+
     if not hinted_left and not hinted_right:
         has_right_evidence = bool(
             negative_bases or hinted_right or derived_right or has_geometry_right_hint
         )
-        if not has_right_evidence or only_positive_without_right_evidence:
-            left_bases = list(left_bases or base_ids)
+        if force_all_left or not has_right_evidence or only_positive_without_right_evidence:
+            left_bases = [base for base in base_ids]
             right_bases = []
         else:
             if not left_bases and base_ids:
@@ -864,35 +871,36 @@ def build_lane_spec(
     unassigned = [
         base for base in base_ids if base not in left_base_set and base not in right_base_set
     ]
-    for base in unassigned:
-        neighbour_side: Optional[str] = None
-        for uid in lane_groups.get(base, []):
-            info = lane_info.get(uid) or {}
-            segments = info.get("segments", [])
-            for seg in segments:
-                left_neighbour = seg.get("left_neighbor")
-                right_neighbour = seg.get("right_neighbor")
-                if left_neighbour in left_base_set or right_neighbour in left_base_set:
-                    neighbour_side = "left"
+    if not force_all_left:
+        for base in unassigned:
+            neighbour_side: Optional[str] = None
+            for uid in lane_groups.get(base, []):
+                info = lane_info.get(uid) or {}
+                segments = info.get("segments", [])
+                for seg in segments:
+                    left_neighbour = seg.get("left_neighbor")
+                    right_neighbour = seg.get("right_neighbor")
+                    if left_neighbour in left_base_set or right_neighbour in left_base_set:
+                        neighbour_side = "left"
+                        break
+                    if left_neighbour in right_base_set or right_neighbour in right_base_set:
+                        neighbour_side = "right"
+                        break
+                if neighbour_side:
                     break
-                if left_neighbour in right_base_set or right_neighbour in right_base_set:
-                    neighbour_side = "right"
-                    break
-            if neighbour_side:
-                break
 
-        if neighbour_side == "left":
-            left_bases.append(base)
-            left_base_set.add(base)
-        elif neighbour_side == "right":
-            right_bases.append(base)
-            right_base_set.add(base)
-        elif len(left_bases) <= len(right_bases):
-            left_bases.append(base)
-            left_base_set.add(base)
-        else:
-            right_bases.append(base)
-            right_base_set.add(base)
+            if neighbour_side == "left":
+                left_bases.append(base)
+                left_base_set.add(base)
+            elif neighbour_side == "right":
+                right_bases.append(base)
+                right_base_set.add(base)
+            elif len(left_bases) <= len(right_bases):
+                left_bases.append(base)
+                left_base_set.add(base)
+            else:
+                right_bases.append(base)
+                right_base_set.add(base)
 
     if not left_bases and not right_bases and base_ids:
         left_bases = base_ids[:1]
