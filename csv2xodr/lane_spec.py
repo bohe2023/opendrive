@@ -747,37 +747,18 @@ def build_lane_spec(
         ordered_lane_numbers = ordered_lane_numbers[:lane_count]
 
     if (
-        lane_count
-        and not any(side == "right" for side in geometry_side_hint.values())
+        not any(side == "right" for side in geometry_side_hint.values())
         and not negative_bases
         and positive_bases
     ):
         # 没有任何右侧提示且全部车道编号为正，说明输入数据没有明确区分两侧。
-        # 过去的实现会强行按照 lane_count 平均拆分左右车道，导致生成的
-        # 右侧车道与真实拓扑不符。现在改为根据已有提示或配置默认值，将
-        # 所有基准车道保持在同一侧。
-        preferred_side: Optional[str] = None
-        for side in geometry_side_hint.values():
-            if side in {"left", "right"}:
-                preferred_side = side
-                break
-
-        if preferred_side is None:
-            raw_default = None
-            if isinstance(defaults, dict):
-                raw_default = defaults.get("default_lane_side")
-            if isinstance(raw_default, str):
-                lowered = raw_default.strip().lower()
-                if lowered in {"left", "right"}:
-                    preferred_side = "left" if lowered == "left" else "right"
-
-        if preferred_side is None:
-            preferred_side = "left"
-
+        # 之前的逻辑会尝试根据 lane_count 等参数重新划分左右两侧，反而会把
+        # 一部分车道强制分配到右侧。这里改为保持默认，让后续流程按照既有的
+        # 提示或车道编号推导结果继续处理。
         for base in base_ids:
             if lane_no_by_base.get(base) is None:
                 continue
-            geometry_side_hint.setdefault(base, preferred_side)
+            geometry_side_hint.setdefault(base, "left")
 
     def _ordered_subset(candidates: Iterable[str]) -> List[str]:
         seen: List[str] = []
