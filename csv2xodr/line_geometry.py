@@ -286,7 +286,14 @@ def build_line_geometry_lookup(
                 continue
 
             if entry_base_offset is not None and math.isfinite(entry_base_offset):
-                offset_m -= entry_base_offset
+                if (
+                    global_base_offset is not None
+                    and math.isfinite(global_base_offset)
+                    and entry_base_offset > global_base_offset + 1e-6
+                ):
+                    offset_m -= global_base_offset
+                else:
+                    offset_m -= entry_base_offset
             elif global_base_offset is not None and math.isfinite(global_base_offset):
                 offset_m -= global_base_offset
 

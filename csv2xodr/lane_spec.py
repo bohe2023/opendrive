@@ -673,6 +673,17 @@ def build_lane_spec(
     base_ids = sorted(lane_groups.keys(), key=_base_sort_key)
     lanes_per_base = {base: len(lane_groups[base]) for base in base_ids}
 
+    for base_id in base_ids:
+        lane_number = lane_no_by_base.get(base_id)
+        if lane_number is None or lane_number == 0:
+            continue
+        expected_side = "left" if lane_number > 0 else "right"
+        current = geometry_side_hint.get(base_id)
+        if current is None:
+            geometry_side_hint[base_id] = expected_side
+        elif current != expected_side:
+            geometry_side_hint[base_id] = expected_side
+
     def _bases_with_sign(sign: int) -> List[str]:
         selected: List[str] = []
         for base in base_ids:
