@@ -175,6 +175,10 @@ def build_lane_topology(lane_link_df: DataFrame,
     right_col = _find_column(cols, "右側車線")
     forward_cols = [c for c in cols if "前方レーンID" in c and "数" not in c]
     backward_cols = [c for c in cols if "後方レーンID" in c and "数" not in c]
+    lane_type_col = _find_column(cols, "Lane", "Type")
+    lane_add_remove_col = _find_column(cols, "Lane", "Add", "Remove")
+    accel_col = _find_column(cols, "Accelerating")
+    decel_col = _find_column(cols, "Decelerating")
 
     line_id_cols: List[Tuple[int, str]] = []
     line_pos_cols: Dict[int, str] = {}
@@ -243,6 +247,44 @@ def build_lane_topology(lane_link_df: DataFrame,
             if tid:
                 backward_targets.append(tid)
 
+        lane_kind = "driving"
+        skip_lane = False
+
+        if lane_type_col:
+            lane_type_val = str(row[lane_type_col]).strip()
+            if lane_type_val:
+                lowered = lane_type_val.lower()
+                if "shoulder" in lowered:
+                    lane_kind = "shoulder"
+                elif "bus" in lowered:
+                    lane_kind = "bus"
+
+        def _flagged(col: Optional[str]) -> bool:
+            if not col:
+                return False
+            try:
+                value = row[col]
+            except Exception:
+                return False
+            text = str(value).strip().lower()
+            if text in {"1", "true"}:
+                return True
+            try:
+                return float(text) != 0.0
+            except Exception:
+                return False
+
+        if _flagged(accel_col):
+            lane_kind = "entry"
+            skip_lane = True
+        elif _flagged(decel_col):
+            lane_kind = "exit"
+            skip_lane = True
+        elif lane_add_remove_col:
+            raw_add_remove = str(row[lane_add_remove_col]).strip()
+            if raw_add_remove and raw_add_remove not in {"0", ""}:
+                skip_lane = True
+
         line_positions: Dict[int, str] = {}
         for idx, col in line_id_cols:
             lid = _canonical_numeric(row[col], allow_negative=True)
@@ -260,6 +302,9 @@ def build_lane_topology(lane_link_df: DataFrame,
                 line_positions[pos] = lid
 
         uid = _compose_lane_uid(base_id, lane_no)
+        if skip_lane:
+            continue
+
         raw_records.append({
             "uid": uid,
             "base_id": base_id,
@@ -273,6 +318,7 @@ def build_lane_topology(lane_link_df: DataFrame,
             "predecessors": backward_targets,
             "line_positions": line_positions,
             "is_retrans": is_retrans,
+            "lane_kind": lane_kind,
         })
 
     if not raw_records:
@@ -336,10 +382,13 @@ def build_lane_topology(lane_link_df: DataFrame,
             continue
 
         uid = _compose_lane_uid(base_id, lane_no)
+        lane_type = cleaned[0].get("lane_kind", "driving") if cleaned else "driving"
+
         lanes[uid] = {
             "base_id": base_id,
             "lane_no": lane_no,
             "segments": cleaned,
+            "type": lane_type,
         }
         groups.setdefault(base_id, []).append(uid)
 
