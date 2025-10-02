@@ -746,11 +746,13 @@ def build_lane_spec(
     if lane_count and len(ordered_lane_numbers) > lane_count:
         ordered_lane_numbers = ordered_lane_numbers[:lane_count]
 
-    if (
-        not any(side == "right" for side in geometry_side_hint.values())
-        and not negative_bases
-        and positive_bases
-    ):
+    has_geometry_right_hint = any(side == "right" for side in geometry_side_hint.values())
+
+    only_positive_without_right_evidence = (
+        not has_geometry_right_hint and not negative_bases and bool(positive_bases)
+    )
+
+    if only_positive_without_right_evidence:
         # 没有任何右侧提示且全部车道编号为正，说明输入数据没有明确区分两侧。
         # 之前的逻辑会尝试根据 lane_count 等参数重新划分左右两侧，反而会把
         # 一部分车道强制分配到右侧。这里改为保持默认，让后续流程按照既有的
@@ -784,7 +786,10 @@ def build_lane_spec(
     derived_right: List[str] = []
 
     if remaining_bases:
-        if positive_bases and negative_bases:
+        if not negative_bases and not hinted_right:
+            derived_left = list(remaining_bases)
+            derived_right = []
+        elif positive_bases and negative_bases:
             derived_left = _ordered_subset(
                 [base for base in positive_bases if base in remaining_bases]
             )
@@ -823,6 +828,15 @@ def build_lane_spec(
                     if lane_no_by_base.get(base) in right_lane_numbers
                 ]
 
+    if (
+        remaining_bases
+        and not negative_bases
+        and not hinted_right
+        and not derived_right
+    ):
+        derived_left = list(remaining_bases)
+        derived_right = []
+
     left_bases = hinted_left + [
         base for base in derived_left if base not in hinted_left and base not in hinted_right
     ]
@@ -831,8 +845,10 @@ def build_lane_spec(
     ]
 
     if not hinted_left and not hinted_right:
-        has_right_evidence = bool(negative_bases or hinted_right or derived_right)
-        if not has_right_evidence:
+        has_right_evidence = bool(
+            negative_bases or hinted_right or derived_right or has_geometry_right_hint
+        )
+        if not has_right_evidence or only_positive_without_right_evidence:
             left_bases = list(left_bases or base_ids)
             right_bases = []
         else:
