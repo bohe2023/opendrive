@@ -212,6 +212,27 @@ def build_line_geometry_lookup(
 
     lookup: Dict[str, List[Dict[str, Any]]] = {}
 
+    # When the same ``line_id`` spans multiple recording sessions the
+    # longitudinal offset restarts from the session-specific origin.  Using the
+    # minimum per group would therefore collapse every segment back to ``s=0``.
+    # Track the earliest absolute offset observed for each ``line_id`` so that
+    # the rebasing step below preserves the global alignment along the centreline.
+    base_offset_by_line: Dict[str, float] = {}
+    for entry in grouped.values():
+        offsets_raw = entry.get("offset", []) or []
+        if not offsets_raw:
+            continue
+        try:
+            entry_min = min(float(value) for value in offsets_raw)
+        except (TypeError, ValueError):
+            continue
+        line_id = entry.get("line_id")
+        if line_id is None:
+            continue
+        current = base_offset_by_line.get(line_id)
+        if current is None or entry_min < current:
+            base_offset_by_line[line_id] = entry_min
+
     for entry in grouped.values():
         has_true = entry.get("has_true", False)
         has_false = entry.get("has_false", False)
@@ -220,9 +241,13 @@ def build_line_geometry_lookup(
             continue
 
         offsets_raw = entry.get("offset", [])
+        line_id = entry.get("line_id")
+        base_offset = base_offset_by_line.get(line_id) if line_id is not None else None
         if offsets_raw:
-            base_offset = min(offsets_raw)
-            offsets_m = [value - base_offset for value in offsets_raw]
+            if base_offset is None:
+                offsets_m = list(offsets_raw)
+            else:
+                offsets_m = [value - base_offset for value in offsets_raw]
         else:
             offsets_m = []
         if offset_mapper is not None:
