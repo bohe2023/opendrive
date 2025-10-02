@@ -106,6 +106,9 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
         dfs["lane_division"],
         line_geometry_lookup=line_geometry_lookup,
         offset_mapper=offset_mapper,
+        lanes_geometry_df=dfs.get("lanes_geometry"),
+        centerline=center,
+        geo_origin=(lat0, lon0),
     )
 
     curvature_profile = build_curvature_profile(
