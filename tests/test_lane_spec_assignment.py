@@ -125,3 +125,36 @@ def test_lane_count_split_requires_right_evidence():
 
     assert set(left_ids) == {1, 2}
     assert set(right_ids) == {-1, -2}
+
+
+def test_positive_lanes_without_right_evidence_fill_left_side():
+    rows = []
+    for lane_no in (1, 2, 3, 4, 5):
+        rows.append(
+            {
+                "Offset[cm]": "0",
+                "End Offset[cm]": "150",
+                "レーンID": f"G{lane_no}",
+                "レーン番号": str(lane_no),
+                "Lane Width[m]": "3.5",
+                "Lane Count": "12",
+            }
+        )
+
+    topo = build_lane_topology(DataFrame(rows))
+    sections = [{"s0": 0.0, "s1": 25.0}]
+
+    specs = build_lane_spec(
+        sections,
+        topo,
+        defaults={"default_lane_side": "right"},
+        lane_div_df=DataFrame([]),
+    )
+
+    for section in specs:
+        left_ids = [lane["id"] for lane in section["left"]]
+        right_ids = [lane["id"] for lane in section["right"]]
+
+        assert len(left_ids) == 5
+        assert not right_ids
+        assert all(lane_id > 0 for lane_id in left_ids)
