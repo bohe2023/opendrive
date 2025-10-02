@@ -1252,11 +1252,15 @@ def build_geometry_segments(
         heading_offset = 0.0
         max_observed_endpoint_deviation = 0.0
 
-        for idx in range(len(ordered_points) - 1):
+        min_split_length = max(0.25, effective_len * 0.25)
+
+        idx = 0
+        while idx < len(ordered_points) - 1:
             start = ordered_points[idx]
             end = ordered_points[idx + 1]
             length_total = end - start
             if length_total <= 1e-6:
+                idx += 1
                 continue
 
             # Re-anchor the start pose to the analytical centreline to avoid
@@ -1312,16 +1316,37 @@ def build_geometry_segments(
             next_x, next_y, next_hdg = _advance_pose(
                 current_x, current_y, current_hdg, curvature_guess, length_total
             )
-            endpoint_error = _combined_error(next_x, next_y, next_hdg, target_x, target_y, target_hdg, length_total)
+            endpoint_error = _combined_error(
+                next_x, next_y, next_hdg, target_x, target_y, target_hdg, length_total
+            )
+
+            def _midpoint_error(candidate_curvature: float) -> float:
+                if length_total <= 1e-6:
+                    return 0.0
+
+                mid_x, mid_y, _ = _advance_pose(
+                    current_x,
+                    current_y,
+                    current_hdg,
+                    candidate_curvature,
+                    length_total * 0.5,
+                )
+                target_mid_x, target_mid_y, _ = _interpolate_centerline(
+                    centerline, (start + end) * 0.5
+                )
+                return math.hypot(mid_x - target_mid_x, mid_y - target_mid_y)
+
+            midpoint_error = _midpoint_error(curvature_guess)
+            segment_error = max(endpoint_error, midpoint_error)
 
             if dataset_trusted:
-                if endpoint_error <= max_endpoint_deviation + 1e-9:
-                    endpoint_error = 0.0
+                if segment_error <= max_endpoint_deviation + 1e-9:
+                    endpoint_error = segment_error
                 else:
                     dataset_trusted = False
                     target_hdg = _normalize_angle(base_target_hdg + heading_offset)
 
-            if endpoint_error > max_endpoint_deviation + 1e-9:
+            if not dataset_trusted or segment_error > max_endpoint_deviation + 1e-9:
                 refined_curvature, next_x, next_y, next_hdg, endpoint_error = _refine_curvature(
                     current_x,
                     current_y,
@@ -1333,25 +1358,33 @@ def build_geometry_segments(
                     target_hdg,
                     preferred_curvature,
                 )
+                midpoint_error = _midpoint_error(refined_curvature)
+                segment_error = max(endpoint_error, midpoint_error)
             else:
                 refined_curvature = curvature_guess
+                endpoint_error = segment_error
 
             if preferred_sign and refined_curvature * preferred_sign < 0:
                 refined_curvature = float(preferred_curvature)
                 next_x, next_y, next_hdg = _advance_pose(
                     current_x, current_y, current_hdg, refined_curvature, length_total
                 )
-                endpoint_error = _combined_error(next_x, next_y, next_hdg, target_x, target_y, target_hdg, length_total)
+                endpoint_error = _combined_error(
+                    next_x, next_y, next_hdg, target_x, target_y, target_hdg, length_total
+                )
+                midpoint_error = _midpoint_error(refined_curvature)
+                segment_error = max(endpoint_error, midpoint_error)
 
             steps = max(1, int(math.ceil(length_total / effective_len)))
             step_length = length_total / steps
 
+            trial_segments: List[Dict[str, float]] = []
             propagated_x, propagated_y, propagated_hdg = current_x, current_y, current_hdg
 
             for step in range(steps):
                 seg_s = start + step * step_length
 
-                segments.append(
+                trial_segments.append(
                     {
                         "s": seg_s,
                         "x": propagated_x,
@@ -1370,6 +1403,21 @@ def build_geometry_segments(
                     step_length,
                 )
 
+            need_split = (
+                segment_error > max_endpoint_deviation + 1e-9
+                and length_total > min_split_length + 1e-9
+            )
+
+            if need_split:
+                midpoint = _clamp((start + end) * 0.5)
+                if midpoint <= start + 1e-9 or end - midpoint <= 1e-9:
+                    need_split = False
+                else:
+                    ordered_points.insert(idx + 1, midpoint)
+                    continue
+
+            segments.extend(trial_segments)
+
             continuous_x, continuous_y, continuous_hdg = propagated_x, propagated_y, propagated_hdg
             current_s = end
 
@@ -1380,8 +1428,10 @@ def build_geometry_segments(
 
             heading_offset = _normalize_angle(target_hdg - base_target_hdg)
 
-            if endpoint_error > max_observed_endpoint_deviation:
-                max_observed_endpoint_deviation = endpoint_error
+            if segment_error > max_observed_endpoint_deviation:
+                max_observed_endpoint_deviation = segment_error
+
+            idx += 1
 
         return segments, max_observed_endpoint_deviation
 
