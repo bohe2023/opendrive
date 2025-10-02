@@ -49,12 +49,17 @@ def test_build_slope_profiles_and_elevation():
 
 
 def test_geometry_segments_from_curvature():
-    center = DataFrame({
-        "s": [0.0, 1.0, 2.0],
-        "x": [0.0, 1.0, 2.0],
-        "y": [0.0, 0.0, 0.0],
-        "hdg": [0.0, 0.0, 0.0],
-    })
+    # The centreline follows a straight 1 m segment and then a 0.1 rad/m arc
+    # so the curvature profile is geometrically consistent with the anchor
+    # points.
+    center = DataFrame(
+        {
+            "s": [0.0, 1.0, 2.0],
+            "x": [0.0, 1.0, 1.9983341664682815],
+            "y": [0.0, 0.0, 0.049958347219741794],
+            "hdg": [0.0, 0.0, 0.1],
+        }
+    )
 
     curvature_df = DataFrame(
         {
