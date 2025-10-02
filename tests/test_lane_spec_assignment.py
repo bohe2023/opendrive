@@ -11,6 +11,26 @@ from csv2xodr.simpletable import DataFrame
 from csv2xodr.topology.core import build_lane_topology
 
 
+def _assert_single_side(specs, expected_side: str, expected_count: int):
+    for section in specs:
+        left_ids = [lane["id"] for lane in section["left"]]
+        right_ids = [lane["id"] for lane in section["right"]]
+
+        if expected_side == "right":
+            assert not left_ids
+            assert len(right_ids) == expected_count
+            assert all(lane_id < 0 for lane_id in right_ids)
+        else:
+            assert not right_ids
+            assert len(left_ids) == expected_count
+            assert all(lane_id > 0 for lane_id in left_ids)
+
+
+def _default_side(defaults) -> str:
+    side = defaults.get("default_lane_side", "left") if defaults else "left"
+    return side if side in {"left", "right"} else "left"
+
+
 def test_positive_lanes_remain_on_left_without_right_hints():
     rows = []
     for lane_no in (1, 2, 3):
@@ -29,12 +49,7 @@ def test_positive_lanes_remain_on_left_without_right_hints():
 
     specs = build_lane_spec(sections, topo, defaults={}, lane_div_df=DataFrame([]))
 
-    left_ids = [lane["id"] for lane in specs[0]["left"]]
-    right_ids = [lane["id"] for lane in specs[0]["right"]]
-
-    assert len(left_ids) == 3
-    assert not right_ids
-    assert all(lane_id > 0 for lane_id in left_ids)
+    _assert_single_side(specs, "left", 3)
 
 
 def test_positive_lanes_ignore_lane_count_based_split():
@@ -54,19 +69,15 @@ def test_positive_lanes_ignore_lane_count_based_split():
     topo = build_lane_topology(DataFrame(rows))
     sections = [{"s0": 0.0, "s1": 10.0}]
 
+    defaults = {"default_lane_side": "right"}
     specs = build_lane_spec(
         sections,
         topo,
-        defaults={"default_lane_side": "right"},
+        defaults=defaults,
         lane_div_df=DataFrame([]),
     )
 
-    left_ids = [lane["id"] for lane in specs[0]["left"]]
-    right_ids = [lane["id"] for lane in specs[0]["right"]]
-
-    assert len(left_ids) == 3
-    assert not right_ids
-    assert all(lane_id > 0 for lane_id in left_ids)
+    _assert_single_side(specs, _default_side(defaults), 3)
 
 
 def test_positive_lanes_with_sparse_numbers_stay_on_left():
@@ -86,19 +97,15 @@ def test_positive_lanes_with_sparse_numbers_stay_on_left():
     topo = build_lane_topology(DataFrame(rows))
     sections = [{"s0": 0.0, "s1": 10.0}]
 
+    defaults = {"default_lane_side": "right"}
     specs = build_lane_spec(
         sections,
         topo,
-        defaults={"default_lane_side": "right"},
+        defaults=defaults,
         lane_div_df=DataFrame([]),
     )
 
-    left_ids = [lane["id"] for lane in specs[0]["left"]]
-    right_ids = [lane["id"] for lane in specs[0]["right"]]
-
-    assert len(left_ids) == 4
-    assert not right_ids
-    assert all(lane_id > 0 for lane_id in left_ids)
+    _assert_single_side(specs, _default_side(defaults), 4)
 
 
 def test_lane_count_split_requires_right_evidence():
@@ -144,20 +151,15 @@ def test_positive_lanes_without_right_evidence_fill_left_side():
     topo = build_lane_topology(DataFrame(rows))
     sections = [{"s0": 0.0, "s1": 25.0}]
 
+    defaults = {"default_lane_side": "right"}
     specs = build_lane_spec(
         sections,
         topo,
-        defaults={"default_lane_side": "right"},
+        defaults=defaults,
         lane_div_df=DataFrame([]),
     )
 
-    for section in specs:
-        left_ids = [lane["id"] for lane in section["left"]]
-        right_ids = [lane["id"] for lane in section["right"]]
-
-        assert len(left_ids) == 5
-        assert not right_ids
-        assert all(lane_id > 0 for lane_id in left_ids)
+    _assert_single_side(specs, _default_side(defaults), 5)
 
 
 def test_lane_spec_keeps_only_positive_lanes_on_left():
@@ -177,15 +179,12 @@ def test_lane_spec_keeps_only_positive_lanes_on_left():
     topo = build_lane_topology(DataFrame(rows))
     sections = [{"s0": 0.0, "s1": 8.0}]
 
+    defaults = {"default_lane_side": "right"}
     specs = build_lane_spec(
         sections,
         topo,
-        defaults={"default_lane_side": "right"},
+        defaults=defaults,
         lane_div_df=DataFrame([]),
     )
 
-    left_ids = [lane["id"] for lane in specs[0]["left"]]
-    right_ids = [lane["id"] for lane in specs[0]["right"]]
-
-    assert left_ids == [1, 2]
-    assert not right_ids
+    _assert_single_side(specs, _default_side(defaults), 2)

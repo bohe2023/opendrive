@@ -711,6 +711,8 @@ def build_lane_spec(
                 has_pos, has_neg = signs
 
             if not (has_pos and has_neg):
+                if strength is not None and strength >= GEOMETRY_SIDE_CONFIDENCE_MIN:
+                    continue
                 geometry_side_hint[base_id] = expected_side
                 continue
 
@@ -746,6 +748,11 @@ def build_lane_spec(
     if lane_count and len(ordered_lane_numbers) > lane_count:
         ordered_lane_numbers = ordered_lane_numbers[:lane_count]
 
+    default_lane_side = defaults.get("default_lane_side", "left")
+    if default_lane_side not in {"left", "right"}:
+        default_lane_side = "left"
+    default_lane_side_is_right = default_lane_side == "right"
+
     has_geometry_right_hint = any(side == "right" for side in geometry_side_hint.values())
     no_right_evidence = not negative_bases and not has_geometry_right_hint
 
@@ -759,7 +766,7 @@ def build_lane_spec(
         for base in base_ids:
             if lane_no_by_base.get(base) is None:
                 continue
-            geometry_side_hint.setdefault(base, "left")
+            geometry_side_hint.setdefault(base, default_lane_side)
 
     def _ordered_subset(candidates: Iterable[str]) -> List[str]:
         seen: List[str] = []
@@ -807,6 +814,17 @@ def build_lane_spec(
             elif not has_left_evidence:
                 derived_right = list(remaining_bases)
                 derived_left = []
+            elif (
+                not negative_bases
+                and not hinted_right
+                and not derived_right
+            ):
+                if default_lane_side_is_right:
+                    derived_left = []
+                    derived_right = list(remaining_bases)
+                else:
+                    derived_left = list(remaining_bases)
+                    derived_right = []
             else:
                 if lane_count:
                     target_left = lane_count // 2
@@ -835,8 +853,12 @@ def build_lane_spec(
         and not hinted_right
         and not derived_right
     ):
-        derived_left = list(remaining_bases)
-        derived_right = []
+        if default_lane_side_is_right:
+            derived_left = []
+            derived_right = list(remaining_bases)
+        else:
+            derived_left = list(remaining_bases)
+            derived_right = []
 
     left_bases = hinted_left + [
         base for base in derived_left if base not in hinted_left and base not in hinted_right
@@ -845,20 +867,33 @@ def build_lane_spec(
         base for base in derived_right if base not in hinted_left and base not in hinted_right
     ]
 
-    force_all_left = bool(
+    force_all_default_side = bool(
         no_right_evidence and not hinted_right and not derived_right
     )
-    if force_all_left:
-        left_bases = [base for base in base_ids]
-        right_bases = []
+
+    if force_all_default_side:
+        if default_lane_side_is_right:
+            left_bases = []
+            right_bases = [base for base in base_ids]
+        else:
+            left_bases = [base for base in base_ids]
+            right_bases = []
 
     if not hinted_left and not hinted_right:
         has_right_evidence = bool(
             negative_bases or hinted_right or derived_right or has_geometry_right_hint
         )
-        if force_all_left or not has_right_evidence or only_positive_without_right_evidence:
-            left_bases = [base for base in base_ids]
-            right_bases = []
+        if (
+            force_all_default_side
+            or not has_right_evidence
+            or only_positive_without_right_evidence
+        ):
+            if default_lane_side_is_right:
+                left_bases = []
+                right_bases = [base for base in base_ids]
+            else:
+                left_bases = [base for base in base_ids]
+                right_bases = []
         else:
             if not left_bases and base_ids:
                 left_bases = base_ids[:1]
@@ -872,7 +907,7 @@ def build_lane_spec(
     unassigned = [
         base for base in base_ids if base not in left_base_set and base not in right_base_set
     ]
-    if not force_all_left:
+    if not force_all_default_side:
         for base in unassigned:
             neighbour_side: Optional[str] = None
             for uid in lane_groups.get(base, []):
