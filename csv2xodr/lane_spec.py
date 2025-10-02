@@ -563,10 +563,36 @@ def build_lane_spec(
         geo_origin=geo_origin,
     )
 
+    parent_lane_signs: Dict[str, Tuple[bool, bool]] = {}
+    for base_id, members in raw_lane_groups.items():
+        has_positive = False
+        has_negative = False
+        for uid in members:
+            lane_no = lane_info.get(uid, {}).get("lane_no")
+            if isinstance(lane_no, (int, float)):
+                if lane_no > 0:
+                    has_positive = True
+                elif lane_no < 0:
+                    has_negative = True
+            if has_positive and has_negative:
+                break
+        parent_lane_signs[base_id] = (has_positive, has_negative)
+
     geometry_side_hint: Dict[str, str] = {}
     for alias, parent in group_parent_map.items():
         hint = derived_side_hints.get(alias)
         parent_hint = raw_geometry_side_hint.get(parent)
+        if parent_hint in {"left", "right"}:
+            signs = parent_lane_signs.get(parent)
+            if signs is not None:
+                has_pos, has_neg = signs
+                if has_pos and has_neg:
+                    # 几何估计只适用于车道组位于参考线单侧的情况；
+                    # 当同一组同时包含正负 lane_no 时说明其跨越中心线，
+                    # 继续沿用几何提示会把所有车道推到同一侧，导致
+                    # 导出的道路在查看器中出现交错的白线。此时宁可
+                    # 完全依赖拓扑信息，也不要使用这样的提示。
+                    parent_hint = None
         if hint in {"left", "right"}:
             if parent_hint in {"left", "right"} and parent_hint != hint:
                 # Prefer the derived hint (based on lane numbers) when it
@@ -657,6 +683,24 @@ def build_lane_spec(
 
     if lane_count and len(ordered_lane_numbers) > lane_count:
         ordered_lane_numbers = ordered_lane_numbers[:lane_count]
+
+    if (
+        lane_count
+        and not any(side == "right" for side in geometry_side_hint.values())
+        and not negative_bases
+        and positive_bases
+    ):
+        ordered_candidates = [base for base in base_ids if base in positive_bases]
+        if ordered_candidates:
+            limit = min(len(ordered_candidates), max(lane_count, 1))
+            target_left = max(1, limit // 2)
+            left_candidates = ordered_candidates[:target_left]
+            right_candidates = ordered_candidates[target_left:limit]
+            if right_candidates:
+                for base in right_candidates:
+                    geometry_side_hint[base] = "right"
+                for base in left_candidates:
+                    geometry_side_hint[base] = "left"
 
     def _ordered_subset(candidates: Iterable[str]) -> List[str]:
         seen: List[str] = []
