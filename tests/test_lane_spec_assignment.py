@@ -69,6 +69,38 @@ def test_positive_lanes_ignore_lane_count_based_split():
     assert all(lane_id > 0 for lane_id in left_ids)
 
 
+def test_positive_lanes_with_sparse_numbers_stay_on_left():
+    rows = []
+    for lane_no in (1, 3, 5, 7):
+        rows.append(
+            {
+                "Offset[cm]": "0",
+                "End Offset[cm]": "100",
+                "レーンID": f"G{lane_no}",
+                "レーン番号": str(lane_no),
+                "Lane Width[m]": "3.5",
+                "Lane Count": "8",
+            }
+        )
+
+    topo = build_lane_topology(DataFrame(rows))
+    sections = [{"s0": 0.0, "s1": 10.0}]
+
+    specs = build_lane_spec(
+        sections,
+        topo,
+        defaults={"default_lane_side": "right"},
+        lane_div_df=DataFrame([]),
+    )
+
+    left_ids = [lane["id"] for lane in specs[0]["left"]]
+    right_ids = [lane["id"] for lane in specs[0]["right"]]
+
+    assert len(left_ids) == 4
+    assert not right_ids
+    assert all(lane_id > 0 for lane_id in left_ids)
+
+
 def test_lane_count_split_requires_right_evidence():
     rows = []
     for lane_no in (-2, -1, 1, 2):
