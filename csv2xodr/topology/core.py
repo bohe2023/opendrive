@@ -171,6 +171,7 @@ def build_lane_topology(lane_link_df: DataFrame,
     )
     width_col = _find_column(cols, "幅員")
     is_retrans_col = _find_column(cols, "Is", "Retransmission")
+    nw_type_col = _find_column(cols, "NW", "種別") or _find_column(cols, "NW", "type")
     left_col = _find_column(cols, "左側車線")
     right_col = _find_column(cols, "右側車線")
     forward_cols = [c for c in cols if "前方レーンID" in c and "数" not in c]
@@ -225,6 +226,20 @@ def build_lane_topology(lane_link_df: DataFrame,
                 lane_no = int(float(str(lane_no_val).strip()))
             except Exception:
                 lane_no = None
+        lane_nw_type = None
+        if nw_type_col:
+            try:
+                lane_nw_type = str(row[nw_type_col]).strip()
+            except Exception:
+                lane_nw_type = None
+            if lane_nw_type:
+                if lane_no is not None:
+                    if lane_nw_type == "2":
+                        lane_no = -abs(lane_no)
+                    elif lane_nw_type == "1":
+                        lane_no = abs(lane_no)
+        else:
+            lane_nw_type = None
         if base_id is None or lane_no is None:
             continue
 
@@ -309,6 +324,7 @@ def build_lane_topology(lane_link_df: DataFrame,
             "uid": uid,
             "base_id": base_id,
             "lane_no": lane_no,
+            "nw_type": lane_nw_type,
             "start": start,
             "end": end,
             "width": width,
