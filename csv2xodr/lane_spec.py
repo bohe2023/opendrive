@@ -747,10 +747,9 @@ def build_lane_spec(
         ordered_lane_numbers = ordered_lane_numbers[:lane_count]
 
     has_geometry_right_hint = any(side == "right" for side in geometry_side_hint.values())
+    no_right_evidence = not negative_bases and not has_geometry_right_hint
 
-    only_positive_without_right_evidence = (
-        not has_geometry_right_hint and not negative_bases and bool(positive_bases)
-    )
+    only_positive_without_right_evidence = no_right_evidence and bool(positive_bases)
 
     if only_positive_without_right_evidence:
         # 没有任何右侧提示且全部车道编号为正，说明输入数据没有明确区分两侧。
@@ -786,7 +785,7 @@ def build_lane_spec(
     derived_right: List[str] = []
 
     if remaining_bases:
-        if not negative_bases and not hinted_right:
+        if no_right_evidence and not hinted_right:
             derived_left = list(remaining_bases)
             derived_right = []
         elif positive_bases and negative_bases:
@@ -797,7 +796,9 @@ def build_lane_spec(
                 [base for base in negative_bases if base in remaining_bases]
             )
         else:
-            has_right_evidence = bool(negative_bases or hinted_right)
+            has_right_evidence = bool(
+                negative_bases or hinted_right or has_geometry_right_hint
+            )
             has_left_evidence = bool(positive_bases or hinted_left)
 
             if not has_right_evidence:
@@ -845,7 +846,7 @@ def build_lane_spec(
     ]
 
     force_all_left = bool(
-        not negative_bases and not hinted_right and not derived_right
+        no_right_evidence and not hinted_right and not derived_right
     )
     if force_all_left:
         left_bases = [base for base in base_ids]
