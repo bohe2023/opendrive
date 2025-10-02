@@ -2,6 +2,8 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -40,6 +42,46 @@ def _make_centerline():
         "y": [0.0, 0.0],
         "hdg": [0.0, 0.0],
     })
+
+
+def _simple_lane_topology(length: float):
+    return {
+        "lane_count": 2,
+        "groups": {
+            "L": ["L:1"],
+            "R": ["R:1"],
+        },
+        "lanes": {
+            "L:1": {
+                "base_id": "L",
+                "lane_no": 1,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": length,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                    }
+                ],
+            },
+            "R:1": {
+                "base_id": "R",
+                "lane_no": -1,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": length,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                    }
+                ],
+            },
+        },
+    }
 
 
 def test_lane_spec_flags_and_writer_links(tmp_path):
@@ -161,3 +203,59 @@ def test_lane_spec_uses_lane_count_when_only_positive_lane_numbers():
 
     assert left_ids == [1, 2]
     assert right_ids == [-1, -2]
+
+
+def test_write_xodr_ignores_zero_length_centerline_segments(tmp_path):
+    centerline = _SimpleCenterline({
+        "s": [0.0, 5.0, 5.0, 10.0],
+        "x": [0.0, 5.0, 5.0, 10.0],
+        "y": [0.0, 0.0, 0.0, 0.0],
+        "hdg": [0.0, 0.0, 0.0, 0.0],
+    })
+
+    sections = [{"s0": 0.0, "s1": 10.0}]
+    lane_specs = build_lane_spec(
+        sections,
+        _simple_lane_topology(10.0),
+        defaults={},
+        lane_div_df=None,
+    )
+
+    out_file = Path(tmp_path) / "zero_length_center.xodr"
+    write_xodr(centerline, sections, lane_specs, out_file)
+
+    root = ET.parse(out_file).getroot()
+    geometries = root.findall(".//planView/geometry")
+    lengths = [float(elem.attrib["length"]) for elem in geometries]
+
+    assert len(lengths) == 2
+    assert all(length > 0 for length in lengths)
+    assert pytest.approx(float(geometries[1].attrib["s"])) == 5.0
+
+
+def test_write_xodr_skips_zero_length_geometry_segments(tmp_path):
+    sections = [{"s0": 0.0, "s1": 10.0}]
+    lane_specs = build_lane_spec(
+        sections,
+        _simple_lane_topology(10.0),
+        defaults={},
+        lane_div_df=None,
+    )
+
+    segments = [
+        {"s": 0.0, "x": 0.0, "y": 0.0, "hdg": 0.0, "length": 5.0, "curvature": 0.0},
+        {"s": 5.0, "x": 5.0, "y": 0.0, "hdg": 0.0, "length": 0.0, "curvature": 0.0},
+        {"s": 5.0, "x": 5.0, "y": 0.0, "hdg": 0.0, "length": 5.0, "curvature": 0.01},
+    ]
+
+    out_file = Path(tmp_path) / "zero_length_geometry.xodr"
+    write_xodr(_make_centerline(), sections, lane_specs, out_file, geometry_segments=segments)
+
+    root = ET.parse(out_file).getroot()
+    geometries = root.findall(".//planView/geometry")
+
+    assert len(geometries) == 2
+    assert pytest.approx(float(geometries[1].attrib["s"])) == 5.0
+
+    second = geometries[1]
+    assert second.find("arc") is not None, "non-zero curvature segment should render as arc"
