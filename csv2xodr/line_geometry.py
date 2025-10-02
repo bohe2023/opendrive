@@ -77,12 +77,19 @@ def build_line_geometry_lookup(
     instance_col = _find_column(cols, "Instance") or _find_column(cols, "インスタンス")
     flag_col = _find_column(cols, "3D") or _find_column(cols, "属性")
     is_retrans_col = _find_column(cols, "Is", "Retransmission")
+    shape_count_col = (
+        _find_column(cols, "形状", "要素")
+        or _find_column(cols, "shape", "count")
+        or _find_column(cols, "shape", "points")
+    )
 
     if line_id_col is None or lat_col is None or lon_col is None:
         return {}
 
     grouped: Dict[Tuple[str, Any, Any, Any, Any], Dict[str, Any]] = {}
     global_base_offset_m: Optional[float] = None
+
+    segment_progress: Dict[Tuple[Any, Any, Any, Any, Any, float, Optional[float]], Dict[str, float]] = {}
 
     for idx in range(len(line_geom_df)):
         row = line_geom_df.iloc[idx]
@@ -100,14 +107,65 @@ def build_line_geometry_lookup(
         if z_val is None:
             z_val = 0.0
 
-        off_val = None
+        off_cm_raw = None
         if offset_col is not None:
-            off_val = _to_float(row[offset_col])
-        if off_val is None and end_offset_col is not None:
-            off_val = _to_float(row[end_offset_col])
+            off_cm_raw = _to_float(row[offset_col])
+        if off_cm_raw is None and end_offset_col is not None:
+            off_cm_raw = _to_float(row[end_offset_col])
 
-        if off_val is None:
+        if off_cm_raw is None:
             continue
+
+        end_cm_val = _to_float(row[end_offset_col]) if end_offset_col is not None else None
+
+        segment_key = (
+            line_id,
+            row[logtime_col] if logtime_col else None,
+            row[instance_col] if instance_col else None,
+            row[flag_col] if flag_col else None,
+            row[type_col] if type_col else None,
+            float(off_cm_raw),
+            float(end_cm_val) if end_cm_val is not None else None,
+        )
+
+        tracker = segment_progress.get(segment_key)
+        if tracker is None:
+            count_val: Optional[int] = None
+            if shape_count_col is not None:
+                try:
+                    raw_value = row[shape_count_col]
+                except Exception:  # pragma: no cover - defensive
+                    raw_value = None
+                raw_count = _to_float(raw_value)
+                if raw_count is not None and raw_count > 0:
+                    try:
+                        count_val = int(round(raw_count))
+                    except Exception:  # pragma: no cover - defensive
+                        count_val = None
+            step_val: Optional[float] = None
+            if count_val is not None and count_val > 1 and end_cm_val is not None:
+                step_val = (float(end_cm_val) - float(off_cm_raw)) / float(count_val - 1)
+            tracker = {
+                "index": 0,
+                "count": count_val,
+                "step": step_val,
+                "start": float(off_cm_raw),
+            }
+            segment_progress[segment_key] = tracker
+
+        index = int(tracker.get("index", 0))
+        tracker["index"] = index + 1
+        count_val = tracker.get("count")
+        step_val = tracker.get("step")
+        start_cm = tracker.get("start", float(off_cm_raw))
+
+        if count_val is not None and tracker["index"] >= count_val:
+            segment_progress.pop(segment_key, None)
+
+        if step_val is not None and count_val is not None and count_val > 1:
+            off_val = start_cm + step_val * index
+        else:
+            off_val = float(off_cm_raw)
 
         group_key = (
             line_id,
