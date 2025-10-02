@@ -87,8 +87,6 @@ def build_line_geometry_lookup(
         return {}
 
     grouped: Dict[Tuple[str, Any, Any, Any, Any], Dict[str, Any]] = {}
-    global_base_offset_m: Optional[float] = None
-
     segment_progress: Dict[Tuple[Any, Any, Any, Any, Any, float, Optional[float]], Dict[str, float]] = {}
 
     for idx in range(len(line_geom_df)):
@@ -203,8 +201,6 @@ def build_line_geometry_lookup(
             entry["has_false"] = True
 
         off_m = off_val / 100.0
-        if global_base_offset_m is None or off_m < global_base_offset_m:
-            global_base_offset_m = off_m
 
         entry["lat"].append(lat_val)
         entry["lon"].append(lon_val)
@@ -225,7 +221,7 @@ def build_line_geometry_lookup(
 
         offsets_raw = entry.get("offset", [])
         if offsets_raw:
-            base_offset = global_base_offset_m if global_base_offset_m is not None else min(offsets_raw)
+            base_offset = min(offsets_raw)
             offsets_m = [value - base_offset for value in offsets_raw]
         else:
             offsets_m = []
