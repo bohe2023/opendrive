@@ -416,6 +416,41 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
                     offsets_norm = [v * scale for v in offsets_norm]
             offsets_column = offsets_norm
 
+    if s:
+        has_duplicates = False
+        if len(s) > 1:
+            prev = float(s[0])
+            for idx in range(1, len(s)):
+                curr = float(s[idx])
+                if abs(curr - prev) <= 1e-9:
+                    has_duplicates = True
+                    break
+                prev = curr
+
+        if has_duplicates:
+            cleaned: List[Tuple[float, float, float, float, Optional[float]]] = []
+            for idx in range(len(s)):
+                s_val = float(s[idx])
+                x_val = float(x[idx])
+                y_val = float(y[idx])
+                hdg_val = float(hdg[idx])
+                offset_val = (
+                    float(offsets_column[idx]) if offsets_column is not None else None
+                )
+
+                if cleaned and abs(s_val - cleaned[-1][0]) <= 1e-9:
+                    cleaned[-1] = (s_val, x_val, y_val, hdg_val, offset_val)
+                else:
+                    cleaned.append((s_val, x_val, y_val, hdg_val, offset_val))
+
+            if cleaned:
+                s = [item[0] for item in cleaned]
+                x = [item[1] for item in cleaned]
+                y = [item[2] for item in cleaned]
+                hdg = [item[3] for item in cleaned]
+                if offsets_column is not None:
+                    offsets_column = [item[4] for item in cleaned]
+
     data = {"s": s, "x": x, "y": y, "hdg": hdg}
     if offsets_column is not None:
         data["s_offset"] = offsets_column
@@ -1517,10 +1552,7 @@ def build_geometry_segments(
 
             segments.extend(trial_segments)
 
-            # 计算得到的终点姿态与中心线终点之间可能仍存在毫米级误差；
-            # 为了防止该误差在后续区段中累积，将连续姿态直接重置为解析
-            # 中心线的终点姿态。
-            continuous_x, continuous_y, continuous_hdg = target_x, target_y, target_hdg
+            continuous_x, continuous_y, continuous_hdg = propagated_x, propagated_y, propagated_hdg
             current_s = end
 
             # Record the analytical centreline pose for diagnostic purposes while
@@ -1615,6 +1647,16 @@ def _merge_geometry_segments(
         end_x, end_y, end_hdg = _advance_pose(
             current["x"], current["y"], current["hdg"], current_curv, current["length"]
         )
+
+        delta_s = abs(next_seg["s"] - expected_s)
+        delta_pos = math.hypot(next_seg["x"] - end_x, next_seg["y"] - end_y)
+        delta_hdg = abs(_normalize_angle(next_seg["hdg"] - end_hdg))
+
+        if delta_s <= 1e-8 and delta_pos <= position_tol and delta_hdg <= heading_tol:
+            next_seg["s"] = expected_s
+            next_seg["x"] = end_x
+            next_seg["y"] = end_y
+            next_seg["hdg"] = end_hdg
 
         contiguous = (
             abs(next_seg["s"] - expected_s) <= 1e-8

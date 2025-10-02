@@ -108,3 +108,20 @@ def test_build_centerline_averages_duplicate_offsets():
 
     assert center["x"].to_list() == pytest.approx(xs.tolist(), rel=1e-6)
     assert center["y"].to_list() == pytest.approx(ys.tolist(), rel=1e-6)
+
+
+def test_build_centerline_discards_repeated_samples():
+    df = pd.DataFrame(
+        {
+            "Path Id": ["A"] * 5,
+            "Offset[cm]": [0, 0, 100, 200, 200],
+            "緯度[deg]": [35.0, 35.0, 35.0005, 35.001, 35.001],
+            "経度[deg]": [139.0, 139.0, 139.0005, 139.001, 139.001],
+        }
+    )
+
+    center, _ = build_centerline(df, None)
+
+    # Duplicate offsets should be collapsed so that the resulting ``s`` values
+    # remain strictly increasing, preventing zero-length geometry segments.
+    assert center["s"].to_list() == pytest.approx([0.0, 1.0, 2.0], rel=1e-6)
