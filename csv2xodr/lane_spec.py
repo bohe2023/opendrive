@@ -699,12 +699,24 @@ def build_lane_spec(
             geometry_side_hint[base_id] = expected_side
         elif current != expected_side:
             strength = geometry_hint_strength.get(base_id, 0.0)
-            if strength < GEOMETRY_SIDE_CONFIDENCE_MIN:
-                parent = group_parent_map.get(base_id)
-                if parent is not None:
-                    strength = geometry_hint_strength.get(parent, strength)
+            parent = group_parent_map.get(base_id)
+            if strength < GEOMETRY_SIDE_CONFIDENCE_MIN and parent is not None:
+                strength = geometry_hint_strength.get(parent, strength)
+
+            signs = parent_lane_signs.get(base_id)
+            if signs is None and parent is not None:
+                signs = parent_lane_signs.get(parent)
+            has_pos = has_neg = False
+            if signs is not None:
+                has_pos, has_neg = signs
+
+            if not (has_pos and has_neg):
+                geometry_side_hint[base_id] = expected_side
+                continue
+
             if strength is not None and strength >= GEOMETRY_SIDE_CONFIDENCE_MIN:
                 continue
+
             geometry_side_hint[base_id] = expected_side
 
     def _bases_with_sign(sign: int) -> List[str]:
