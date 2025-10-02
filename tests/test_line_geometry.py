@@ -158,3 +158,63 @@ def test_build_line_geometry_lookup_keeps_mixed_retransmissions():
     assert "10" in lookup, "mixed retransmission flags should retain the group"
     assert "20" not in lookup, "pure retransmission groups should still be skipped"
     assert lookup["10"][0]["s"][0] == pytest.approx(0.0)
+
+
+def test_build_line_geometry_lookup_splits_when_offset_resets():
+    df = DataFrame(
+        [
+            {
+                "ライン型地物ID": "500",
+                "Offset[cm]": "0",
+                "緯度[deg]": "35.0",
+                "経度[deg]": "139.0",
+                "高さ[m]": "0.0",
+                "ログ時刻": "a",
+                "Type": "1",
+                "Is Retransmission": "false",
+            },
+            {
+                "ライン型地物ID": "500",
+                "Offset[cm]": "100",
+                "緯度[deg]": "35.00001",
+                "経度[deg]": "139.00001",
+                "高さ[m]": "0.0",
+                "ログ時刻": "a",
+                "Type": "1",
+                "Is Retransmission": "false",
+            },
+            {
+                "ライン型地物ID": "500",
+                "Offset[cm]": "0",
+                "緯度[deg]": "35.1",
+                "経度[deg]": "139.1",
+                "高さ[m]": "0.0",
+                "ログ時刻": "a",
+                "Type": "1",
+                "Is Retransmission": "false",
+            },
+            {
+                "ライン型地物ID": "500",
+                "Offset[cm]": "100",
+                "緯度[deg]": "35.10001",
+                "経度[deg]": "139.10001",
+                "高さ[m]": "0.0",
+                "ログ時刻": "a",
+                "Type": "1",
+                "Is Retransmission": "false",
+            },
+        ]
+    )
+
+    lookup = build_line_geometry_lookup(
+        df, offset_mapper=lambda value: value, lat0=35.0, lon0=139.0
+    )
+
+    assert "500" in lookup
+    geoms = lookup["500"]
+    assert len(geoms) == 2, "offset resets should start a new polyline"
+
+    first, second = geoms
+    assert first["s"] == pytest.approx([0.0, 1.0])
+    assert second["s"] == pytest.approx([0.0, 1.0])
+    assert first["y"][0] != pytest.approx(second["y"][0])
