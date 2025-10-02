@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import math
 import sys
 
 import pytest
@@ -112,3 +113,101 @@ def test_build_division_lookup_prefers_true_retransmission_segments():
     assert len(segments) == 1
     assert segments[0]["type"] == "broken", "segment should reflect the true retransmission row"
     assert "_is_retrans" not in segments[0]
+
+
+def test_strong_geometry_hint_overrides_lane_numbers():
+    sections = [{"s0": 0.0, "s1": 10.0}]
+
+    lane_topology = {
+        "lane_count": 0,
+        "groups": {"G": ["G:1"]},
+        "lanes": {
+            "G:1": {
+                "lane_no": 1,
+                "segments": [
+                    {
+                        "uid": "G:1",
+                        "base_id": "G",
+                        "lane_no": 1,
+                        "start": 0.0,
+                        "end": 10.0,
+                        "width": 3.5,
+                        "left_neighbor": None,
+                        "right_neighbor": None,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {1: "L1", 2: "L1"},
+                        "is_retrans": False,
+                        "lane_kind": "driving",
+                    }
+                ],
+            }
+        },
+    }
+
+    lane_div = DataFrame(
+        [
+            {
+                "区画線ID": "L1",
+                "Offset[cm]": "0",
+                "End Offset[cm]": "1000",
+                "始点側線幅[cm]": "12",
+                "終点側線幅[cm]": "12",
+                "区画線種別": "1",
+                "Is Retransmission": "false",
+            }
+        ]
+    )
+
+    line_geometry_lookup = {
+        "L1": [
+            {
+                "s": [0.0, 10.0],
+                "x": [0.0, 10.0],
+                "y": [-1.0, -1.0],
+                "z": [0.0, 0.0],
+            }
+        ]
+    }
+
+    meters_to_degrees = 180.0 / (math.pi * 6378137.0)
+    lanes_geometry = DataFrame(
+        [
+            {
+                "Lane ID": "G",
+                "Latitude": -3.0 * meters_to_degrees,
+                "Longitude": 0.0,
+                "Offset[cm]": 0.0,
+            },
+            {
+                "Lane ID": "G",
+                "Latitude": -3.0 * meters_to_degrees,
+                "Longitude": 10.0 * meters_to_degrees,
+                "Offset[cm]": 1000.0,
+            },
+        ]
+    )
+
+    centerline = DataFrame(
+        {
+            "s": [0.0, 10.0],
+            "x": [0.0, 10.0],
+            "y": [0.0, 0.0],
+            "hdg": [0.0, 0.0],
+        }
+    )
+
+    specs = build_lane_spec(
+        sections,
+        lane_topology,
+        defaults={"lane_width_m": 3.5},
+        lane_div_df=lane_div,
+        line_geometry_lookup=line_geometry_lookup,
+        offset_mapper=lambda value: float(value),
+        lanes_geometry_df=lanes_geometry,
+        centerline=centerline,
+        geo_origin=(0.0, 0.0),
+    )
+
+    assert not specs[0]["left"], "strong right-side geometry should prevent left assignment"
+    assert len(specs[0]["right"]) == 1

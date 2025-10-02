@@ -10,6 +10,9 @@ from csv2xodr.topology.core import _canonical_numeric
 from csv2xodr.normalize.core import latlon_to_local_xy
 
 
+GEOMETRY_SIDE_CONFIDENCE_MIN = 0.5
+
+
 def _clip_geometry_segment(geom: Dict[str, List[float]], s0: float, s1: float) -> Optional[Dict[str, List[float]]]:
     s_vals = geom.get("s") or []
     if not s_vals:
@@ -150,14 +153,14 @@ def _estimate_lane_side_from_geometry(
     *,
     offset_mapper=None,
     geo_origin: Optional[Tuple[float, float]] = None,
-) -> Dict[str, str]:
+) -> Tuple[Dict[str, str], Dict[str, float]]:
     if (
         lanes_geom_df is None
         or len(lanes_geom_df) == 0
         or centerline is None
         or len(centerline) == 0
     ):
-        return {}
+        return {}, {}
 
     cols = list(lanes_geom_df.columns)
 
@@ -174,14 +177,14 @@ def _estimate_lane_side_from_geometry(
     offset_col = find_col("Offset")
 
     if lane_id_col is None or lat_col is None or lon_col is None or offset_col is None:
-        return {}
+        return {}, {}
 
     try:
         lat_vals = [float(v) for v in lanes_geom_df[lat_col].astype(float).to_list()]
         lon_vals = [float(v) for v in lanes_geom_df[lon_col].astype(float).to_list()]
         offsets_cm = [float(v) for v in lanes_geom_df[offset_col].astype(float).to_list()]
     except Exception:
-        return {}
+        return {}, {}
 
     # ``Offset`` values in the raw CSV are absolute centimetre positions measured from
     # a global reference.  The centreline normalisation logic rebases them so that the
@@ -206,7 +209,7 @@ def _estimate_lane_side_from_geometry(
     ]
 
     if not lane_ids or len(lane_ids) != len(offsets_m):
-        return {}
+        return {}, {}
 
     if geo_origin is not None:
         lat0, lon0 = geo_origin
@@ -242,6 +245,7 @@ def _estimate_lane_side_from_geometry(
         side_samples.setdefault(lane_id, []).append(signed)
 
     side_map: Dict[str, str] = {}
+    strength_map: Dict[str, float] = {}
     for lane_id, values in side_samples.items():
         if not values:
             continue
@@ -249,8 +253,9 @@ def _estimate_lane_side_from_geometry(
         if abs(avg) <= 0.05:
             continue
         side_map[lane_id] = "left" if avg > 0.0 else "right"
+        strength_map[lane_id] = sum(abs(v) for v in values) / len(values)
 
-    return side_map
+    return side_map, strength_map
 
 
 def _build_division_lookup(
@@ -556,7 +561,7 @@ def build_lane_spec(
         lane_div_df, line_geometry_lookup=line_geometry_lookup, offset_mapper=offset_mapper
     )
 
-    raw_geometry_side_hint = _estimate_lane_side_from_geometry(
+    raw_geometry_side_hint, raw_geometry_strength = _estimate_lane_side_from_geometry(
         lanes_geometry_df,
         centerline,
         offset_mapper=offset_mapper,
@@ -579,9 +584,11 @@ def build_lane_spec(
         parent_lane_signs[base_id] = (has_positive, has_negative)
 
     geometry_side_hint: Dict[str, str] = {}
+    geometry_hint_strength: Dict[str, float] = {}
     for alias, parent in group_parent_map.items():
         hint = derived_side_hints.get(alias)
         parent_hint = raw_geometry_side_hint.get(parent)
+        parent_strength = raw_geometry_strength.get(parent, 0.0)
         if parent_hint in {"left", "right"}:
             signs = parent_lane_signs.get(parent)
             if signs is not None:
@@ -593,6 +600,7 @@ def build_lane_spec(
                     # 导出的道路在查看器中出现交错的白线。此时宁可
                     # 完全依赖拓扑信息，也不要使用这样的提示。
                     parent_hint = None
+                    parent_strength = 0.0
         if hint in {"left", "right"}:
             if parent_hint in {"left", "right"} and parent_hint != hint:
                 if alias == parent:
@@ -600,15 +608,21 @@ def build_lane_spec(
                     # 单侧编号（全部为正或全部为负）。如果是这样，则更信任
                     # 编号推断，以免把整组车道硬塞到错误的一侧，造成输出
                     # 出现交错的白线。
-                    signs = parent_lane_signs.get(parent)
-                    if signs is not None:
-                        has_pos, has_neg = signs
-                    else:
-                        has_pos = has_neg = False
-                    if has_pos and has_neg:
+                    strength = raw_geometry_strength.get(parent, 0.0)
+                    if strength >= GEOMETRY_SIDE_CONFIDENCE_MIN:
                         geometry_side_hint[alias] = parent_hint
+                        geometry_hint_strength[alias] = strength
                     else:
-                        geometry_side_hint[alias] = hint
+                        signs = parent_lane_signs.get(parent)
+                        if signs is not None:
+                            has_pos, has_neg = signs
+                        else:
+                            has_pos = has_neg = False
+                        if has_pos and has_neg:
+                            geometry_side_hint[alias] = parent_hint
+                            geometry_hint_strength[alias] = strength
+                        else:
+                            geometry_side_hint[alias] = hint
                 else:
                     # For split groups ("::pos"/"::neg") the derived hint
                     # still carries meaningful information about how the
@@ -620,6 +634,8 @@ def build_lane_spec(
 
         if parent_hint in {"left", "right"}:
             geometry_side_hint[alias] = parent_hint
+            if parent_strength >= GEOMETRY_SIDE_CONFIDENCE_MIN:
+                geometry_hint_strength[alias] = parent_strength
 
 
     def _segment_spans(info: Dict[str, Any]) -> List[Tuple[float, float]]:
@@ -682,6 +698,13 @@ def build_lane_spec(
         if current is None:
             geometry_side_hint[base_id] = expected_side
         elif current != expected_side:
+            strength = geometry_hint_strength.get(base_id, 0.0)
+            if strength < GEOMETRY_SIDE_CONFIDENCE_MIN:
+                parent = group_parent_map.get(base_id)
+                if parent is not None:
+                    strength = geometry_hint_strength.get(parent, strength)
+            if strength is not None and strength >= GEOMETRY_SIDE_CONFIDENCE_MIN:
+                continue
             geometry_side_hint[base_id] = expected_side
 
     def _bases_with_sign(sign: int) -> List[str]:
