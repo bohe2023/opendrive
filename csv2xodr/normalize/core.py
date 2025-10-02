@@ -1644,8 +1644,25 @@ def _merge_geometry_segments(
     if not segments:
         return []
 
+    cleaned: List[Dict[str, float]] = []
+    for seg in segments:
+        try:
+            length = float(seg.get("length", 0.0))
+        except (TypeError, ValueError):
+            length = 0.0
+        if not math.isfinite(length) or length <= 1e-9:
+            # 形状インデックス曲率在部分路段之间可能会插入零长度的
+            # 补间段，用于标记数据缺口。在输出为 OpenDRIVE 几何之前
+            # 需要将其过滤掉，否则查看器会把这类节点当成新的起点，
+            # 继而导致整段道路出现平移错位。
+            continue
+        cleaned.append(dict(seg))
+
+    if not cleaned:
+        return []
+
     merged: List[Dict[str, float]] = []
-    current = dict(segments[0])
+    current = cleaned[0]
     merge_threshold = None
     if max_segment_length is not None and math.isfinite(max_segment_length):
         try:
@@ -1653,7 +1670,7 @@ def _merge_geometry_segments(
         except (TypeError, ValueError):
             merge_threshold = None
 
-    for seg in segments[1:]:
+    for seg in cleaned[1:]:
         next_seg = dict(seg)
         current_curv = float(current.get("curvature", 0.0))
         seg_curv = float(next_seg.get("curvature", 0.0))
