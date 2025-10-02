@@ -596,10 +596,19 @@ def build_lane_spec(
         if hint in {"left", "right"}:
             if parent_hint in {"left", "right"} and parent_hint != hint:
                 if alias == parent:
-                    # 当几何信息与车道编号推断出现矛盾时，更信任几何提示，
-                    # 否则像 JPN 数据集这样的场景会把所有车道都塞到参考线
-                    # 同一侧，导致导出的 OpenDRIVE 出现车道交错的问题。
-                    geometry_side_hint[alias] = parent_hint
+                    # 当几何信息与车道编号推断相矛盾时，检查该组是否只包含
+                    # 单侧编号（全部为正或全部为负）。如果是这样，则更信任
+                    # 编号推断，以免把整组车道硬塞到错误的一侧，造成输出
+                    # 出现交错的白线。
+                    signs = parent_lane_signs.get(parent)
+                    if signs is not None:
+                        has_pos, has_neg = signs
+                    else:
+                        has_pos = has_neg = False
+                    if has_pos and has_neg:
+                        geometry_side_hint[alias] = parent_hint
+                    else:
+                        geometry_side_hint[alias] = hint
                 else:
                     # For split groups ("::pos"/"::neg") the derived hint
                     # still carries meaningful information about how the
