@@ -79,6 +79,54 @@ def _clip_geometry_segment(geom: Dict[str, List[float]], s0: float, s1: float) -
     }
 
 
+def _ensure_two_geometry_samples(
+    segment: Optional[Dict[str, List[float]]],
+    source_geom: Dict[str, List[float]],
+    range_start: float,
+    range_end: float,
+) -> Optional[Dict[str, List[float]]]:
+    """Pad *segment* so that at least two samples remain."""
+
+    if not segment:
+        return None
+
+    s_vals = segment.get("s") or []
+    if len(s_vals) >= 2:
+        return segment
+
+    source_s = source_geom.get("s") or []
+    if len(source_s) < 2:
+        return segment
+
+    target = s_vals[0]
+    best_idx = min(range(len(source_s)), key=lambda idx: abs(source_s[idx] - target))
+
+    neighbour_idx: Optional[int] = None
+    for offset in (1, -1, 2, -2):
+        idx = best_idx + offset
+        if 0 <= idx < len(source_s):
+            if abs(source_s[idx] - source_s[best_idx]) > 1e-6:
+                neighbour_idx = idx
+                break
+
+    if neighbour_idx is None:
+        return segment
+
+    new_start = min(source_s[best_idx], source_s[neighbour_idx], range_start)
+    new_end = max(source_s[best_idx], source_s[neighbour_idx], range_end)
+    if new_end <= new_start:
+        new_end = max(source_s[best_idx], source_s[neighbour_idx])
+        new_start = min(source_s[best_idx], source_s[neighbour_idx])
+        if new_end <= new_start:
+            return segment
+
+    expanded = _clip_geometry_segment(source_geom, new_start, new_end)
+    if expanded and len(expanded.get("s") or []) >= 2:
+        return expanded
+
+    return segment
+
+
 def _lookup_line_segment(entry: Dict[str, Any], s0: float, s1: float) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, List[float]]]]:
     segments = entry.get("segments", []) if entry else []
     selected = None
@@ -89,31 +137,54 @@ def _lookup_line_segment(entry: Dict[str, Any], s0: float, s1: float) -> Tuple[O
             continue
         selected = seg
         break
-    if selected is None and segments:
-        selected = segments[0]
 
-    geom_segment = None
+    fallback = selected
+    if fallback is None and segments:
+        fallback = segments[0]
+
+    geom_segment: Optional[Dict[str, List[float]]] = None
+    fallback_candidate: Optional[Tuple[Dict[str, List[float]], Dict[str, List[float]], float, float]] = None
+
     geom_entries = entry.get("geometry", []) if entry else []
     if geom_entries:
-        clip_start = s0
-        clip_end = s1
-        if selected is not None:
-            clip_start = max(clip_start, selected["s0"])
-            clip_end = min(clip_end, selected["s1"])
-        if clip_end > clip_start:
+        def _attempt_clip(range_start: float, range_end: float) -> bool:
+            nonlocal geom_segment, fallback_candidate
+            if range_end <= range_start + 1e-6:
+                return False
             for geom in geom_entries:
                 geom_s = geom.get("s") or []
                 if not geom_s:
                     continue
                 g0 = min(geom_s)
                 g1 = max(geom_s)
-                if g1 <= clip_start or g0 >= clip_end:
+                start = max(range_start, g0)
+                end = min(range_end, g1)
+                if end <= start + 1e-6:
                     continue
-                geom_segment = _clip_geometry_segment(geom, clip_start, clip_end)
-                if geom_segment is not None:
-                    break
+                clipped = _clip_geometry_segment(geom, start, end)
+                if not clipped:
+                    continue
+                if len(clipped.get("s") or []) >= 2:
+                    geom_segment = clipped
+                    return True
+                if fallback_candidate is None:
+                    fallback_candidate = (clipped, geom, start, end)
+            return False
 
-    return selected, geom_segment
+        overlap_attempted = False
+        if selected is not None:
+            overlap_attempted = _attempt_clip(
+                max(s0, selected["s0"]),
+                min(s1, selected["s1"]),
+            )
+        if not overlap_attempted or geom_segment is None:
+            _attempt_clip(s0, s1)
+
+    if geom_segment is None and fallback_candidate is not None:
+        clipped, geom, start, end = fallback_candidate
+        geom_segment = _ensure_two_geometry_samples(clipped, geom, start, end)
+
+    return fallback, geom_segment
 
 
 def _interpolate_centerline_pose(centerline: DataFrame, target_s: float) -> Tuple[float, float, float]:
