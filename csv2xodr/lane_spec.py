@@ -838,45 +838,44 @@ def build_lane_spec(
                     derived_left = list(remaining_bases)
                     derived_right = []
             else:
-                if _single_side_positive_only():
-                    derived_left = list(remaining_bases)
-                    derived_right = []
-                else:
-                    no_right_side_candidates = (
-                        not negative_bases
-                        and not hinted_right
-                        and not derived_right
+                # 根据已有的车道编号符号优先推断左右侧，剩余的按照默认侧放置。
+                derived_left = _ordered_subset(
+                    [
+                        base
+                        for base in positive_bases
+                        if base in remaining_bases
+                    ]
+                )
+                derived_right = _ordered_subset(
+                    [
+                        base
+                        for base in negative_bases
+                        if base in remaining_bases
+                    ]
+                )
+
+                unresolved = [
+                    base
+                    for base in remaining_bases
+                    if base not in derived_left and base not in derived_right
+                ]
+
+                if unresolved:
+                    preferred_side = (
+                        "right" if default_lane_side_is_right else "left"
                     )
-                    if no_right_side_candidates:
-                        derived_left = list(remaining_bases)
-                        derived_right = []
+                    if preferred_side == "left" or not has_right_evidence:
+                        derived_left.extend(unresolved)
                     else:
-                        if lane_count and not _single_side_positive_only():
-                            target_left = lane_count // 2
-                        else:
-                            target_left = len(ordered_lane_numbers) // 2
-                        left_lane_numbers = set(
-                            ordered_lane_numbers[:target_left]
-                        )
-                        if lane_count and not _single_side_positive_only():
-                            right_limit = min(
-                                lane_count, len(ordered_lane_numbers)
-                            )
-                        else:
-                            right_limit = len(ordered_lane_numbers)
-                        right_lane_numbers = set(
-                            ordered_lane_numbers[target_left:right_limit]
-                        )
-                        derived_left = [
-                            base
-                            for base in remaining_bases
-                            if lane_no_by_base.get(base) in left_lane_numbers
-                        ]
-                        derived_right = [
-                            base
-                            for base in remaining_bases
-                            if lane_no_by_base.get(base) in right_lane_numbers
-                        ]
+                        derived_right.extend(unresolved)
+
+    if (
+        not negative_bases
+        and not hinted_right
+        and not derived_right
+        and not force_single_side_left
+    ):
+        force_single_side_left = True
 
     if remaining_bases and _single_side_positive_only() and not force_single_side_left:
         if default_lane_side_is_right:
@@ -978,8 +977,12 @@ def build_lane_spec(
                 right_base_set.add(base)
 
     if not left_bases and not right_bases and base_ids:
-        left_bases = base_ids[:1]
-        right_bases = [base for base in base_ids if base not in left_bases]
+        if not negative_bases and not hinted_right and not derived_right:
+            left_bases = [base for base in base_ids]
+            right_bases = []
+        else:
+            left_bases = base_ids[:1]
+            right_bases = [base for base in base_ids if base not in left_bases]
         left_base_set = set(left_bases)
         right_base_set = set(right_bases)
 
