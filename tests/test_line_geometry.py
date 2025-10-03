@@ -183,6 +183,16 @@ def test_build_line_geometry_lookup_filters_height_outliers():
                 "Type": "1",
                 "Is Retransmission": "false",
             },
+            {
+                "ライン型地物ID": "50",
+                "Offset[cm]": "200",
+                "緯度[deg]": "35.00002",
+                "経度[deg]": "139.00002",
+                "高さ[m]": "55.5",
+                "ログ時刻": "base",
+                "Type": "1",
+                "Is Retransmission": "false",
+            },
         ]
     )
 
@@ -192,8 +202,10 @@ def test_build_line_geometry_lookup_filters_height_outliers():
 
     assert "50" in lookup
     geom = lookup["50"][0]
-    assert geom["z"][0] == pytest.approx(55.0)
-    assert geom["z"][1] == pytest.approx(55.0), "outlier heights should be clamped"
+    assert geom["s"] == pytest.approx([0.0, 1.0, 2.0])
+    assert geom["z"] == pytest.approx(
+        [55.0, 55.0, 55.5]
+    ), "outlier heights should be clamped while keeping continuity"
 
 
 def test_build_line_geometry_lookup_splits_when_offset_resets():
