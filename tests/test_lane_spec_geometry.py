@@ -1,4 +1,6 @@
+import csv
 from pathlib import Path
+from typing import List
 
 import math
 import sys
@@ -13,6 +15,8 @@ if str(ROOT) not in sys.path:
 from csv2xodr.lane_spec import build_lane_spec, _build_division_lookup
 from csv2xodr.simpletable import DataFrame
 from csv2xodr.writer.xodr_writer import write_xodr
+from csv2xodr.line_geometry import build_line_geometry_lookup
+from csv2xodr.topology.core import _canonical_numeric
 
 
 def _make_lane_topology(line_id: str):
@@ -35,6 +39,18 @@ def _make_lane_topology(line_id: str):
             }
         },
     }
+
+
+def _load_rows(path: Path, *, column: str, value: str, limit: int) -> List[dict]:
+    rows: List[dict] = []
+    with path.open(encoding="cp932") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            if row[column] == value:
+                rows.append(row)
+            if len(rows) >= limit:
+                break
+    return rows
 
 
 def test_lane_spec_attaches_geometry_and_clips():
@@ -87,6 +103,82 @@ def test_lane_spec_attaches_geometry_and_clips():
     assert geom_second["s"][0] == pytest.approx(4.0)
     assert geom_second["s"][-1] == pytest.approx(10.0)
     assert geom_second["x"][0] == pytest.approx(4.0)
+
+
+def test_jpn_lane_mark_geometry_survives_without_segments(tmp_path):
+    line_id_raw = "1.7488013864825147e+18"
+    canonical_id = _canonical_numeric(line_id_raw, allow_negative=True)
+
+    lane_div_path = ROOT / "input_csv" / "JPN" / "PROFILETYPE_MPU_ZGM_LANE_DIVISION_LINE.csv"
+    line_geom_path = ROOT / "input_csv" / "JPN" / "PROFILETYPE_MPU_LINE_GEOMETRY.csv"
+
+    lane_rows = _load_rows(lane_div_path, column="対象の区画線ID", value=line_id_raw, limit=2)
+    assert lane_rows, "expected lane division samples for target line"
+    zero_offset_rows = _load_rows(lane_div_path, column="Offset[cm]", value="0", limit=1)
+    assert zero_offset_rows, "expected zero-offset lane division slice"
+    lane_div_df = DataFrame(lane_rows + zero_offset_rows)
+
+    geom_rows = _load_rows(line_geom_path, column="ライン型地物ID", value=line_id_raw, limit=30)
+    assert geom_rows, "expected representative geometry samples"
+
+    lat0 = float(geom_rows[0]["緯度[deg]"])
+    lon0 = float(geom_rows[0]["経度[deg]"])
+    line_geom_df = DataFrame(geom_rows)
+    line_geometry_lookup = build_line_geometry_lookup(line_geom_df, lat0=lat0, lon0=lon0)
+
+    assert canonical_id in line_geometry_lookup
+    geoms = line_geometry_lookup[canonical_id]
+    geom_extent = max(max(seq["s"]) for seq in geoms)
+
+    sections = [{"s0": 0.0, "s1": geom_extent}]
+    lane_topology = {
+        "lane_count": 1,
+        "groups": {"A": ["A:1"]},
+        "lanes": {
+            "A:1": {
+                "lane_no": 1,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": geom_extent,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {2: canonical_id},
+                    }
+                ],
+            }
+        },
+    }
+
+    lane_specs = build_lane_spec(
+        sections,
+        lane_topology,
+        defaults={},
+        lane_div_df=lane_div_df,
+        line_geometry_lookup=line_geometry_lookup,
+    )
+
+    lane = lane_specs[0]["left"][0]
+    mark_geom = lane["roadMark"].get("geometry")
+    assert mark_geom is not None and len(mark_geom.get("s", [])) >= 2
+    assert mark_geom["s"][0] == pytest.approx(sections[0]["s0"])
+    assert mark_geom["s"][-1] == pytest.approx(sections[0]["s1"])
+
+    centerline = DataFrame(
+        {
+            "s": [0.0, geom_extent],
+            "x": [0.0, geom_extent],
+            "y": [0.0, 0.0],
+            "hdg": [0.0, 0.0],
+        }
+    )
+
+    out_file = Path(tmp_path) / "jpn_lane_mark.xodr"
+    write_xodr(centerline, sections, lane_specs, out_file)
+
+    root = ET.parse(out_file).getroot()
+    assert root.find(".//roadMark/explicit") is not None
 
 
 def test_build_division_lookup_prefers_true_retransmission_segments():
