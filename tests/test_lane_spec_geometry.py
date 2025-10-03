@@ -326,6 +326,11 @@ def test_write_xodr_emits_explicit_lane_mark_geometry(tmp_path):
     write_xodr(centerline, sections, lane_specs, out_file)
 
     root = ET.parse(out_file).getroot()
+    header = root.find("header")
+    assert header is not None
+    assert header.get("revMinor") == "6"
+    assert header.get("version") == "1.06"
+
     road_marks = root.findall(".//roadMark")
 
     assert len(road_marks) == 2
