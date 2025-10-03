@@ -368,6 +368,7 @@ def test_lane_spec_balances_positive_and_negative_lane_numbers():
 
 
 def test_lane_spec_uses_lane_count_when_only_positive_lane_numbers():
+    """Lane count should not force right-side lanes without right evidence."""
     sections = [{"s0": 0.0, "s1": 10.0}]
 
     lane_topology = {
@@ -411,10 +412,91 @@ def test_lane_spec_uses_lane_count_when_only_positive_lane_numbers():
     specs = build_lane_spec(sections, lane_topology, defaults={}, lane_div_df=None)
 
     assert len(specs) == 1
-    left_ids = [lane["id"] for lane in specs[0]["left"]]
+    section = specs[0]
+    left_ids = [lane["id"] for lane in section["left"]]
 
     assert left_ids == [1, 2]
-    assert specs[0]["right"] == []
+    assert section["right"] == []
+
+
+def test_lane_spec_splits_positive_and_negative_lane_numbers_with_lane_count():
+    """When both sides have evidence, lanes are split across left/right lists."""
+
+    sections = [{"s0": 0.0, "s1": 10.0}]
+
+    lane_topology = {
+        "lane_count": 4,
+        "groups": {
+            "A": ["A:1"],
+            "B": ["B:2"],
+            "C": ["C:-1"],
+            "D": ["D:-2"],
+        },
+        "lanes": {
+            "A:1": {
+                "base_id": "A",
+                "lane_no": 1,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 10.0,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                    }
+                ],
+            },
+            "B:2": {
+                "base_id": "B",
+                "lane_no": 2,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 10.0,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                    }
+                ],
+            },
+            "C:-1": {
+                "base_id": "C",
+                "lane_no": -1,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 10.0,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                    }
+                ],
+            },
+            "D:-2": {
+                "base_id": "D",
+                "lane_no": -2,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 10.0,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                    }
+                ],
+            },
+        },
+    }
+
+    specs = build_lane_spec(sections, lane_topology, defaults={}, lane_div_df=None)
+
+    assert len(specs) == 1
+    assert [lane["id"] for lane in specs[0]["left"]] == [1, 2]
+    assert [lane["id"] for lane in specs[0]["right"]] == [-1, -2]
 
 
 def test_lane_spec_handles_jpn_positive_only_topology():
