@@ -754,13 +754,13 @@ def build_lane_spec(
     default_lane_side_is_right = default_lane_side == "right"
 
     has_geometry_right_hint = any(side == "right" for side in geometry_side_hint.values())
-    no_right_evidence = not negative_bases and not has_geometry_right_hint
-
-    only_positive_without_right_evidence = no_right_evidence and bool(positive_bases)
+    only_positive_without_initial_right_evidence = (
+        not negative_bases and not has_geometry_right_hint and bool(positive_bases)
+    )
 
     force_single_side_left = False
 
-    if only_positive_without_right_evidence:
+    if only_positive_without_initial_right_evidence:
         # 没有任何右侧提示且全部车道编号为正，说明输入数据没有明确区分两侧。
         # 之前的逻辑会尝试根据 lane_count 等参数重新划分左右两侧，反而会把
         # 一部分车道强制分配到右侧。这里改为保持默认，让后续流程按照既有的
@@ -808,7 +808,7 @@ def build_lane_spec(
             derived_left = list(remaining_bases)
             derived_right = []
             force_single_side_left = True
-        elif no_right_evidence and not hinted_right:
+        elif not negative_bases and not has_geometry_right_hint and not hinted_right:
             derived_left = list(remaining_bases)
             derived_right = []
         elif positive_bases and negative_bases:
@@ -869,13 +869,17 @@ def build_lane_spec(
                     else:
                         derived_right.extend(unresolved)
 
-    if (
+    final_no_right_evidence = (
         not negative_bases
         and not hinted_right
         and not derived_right
-        and not force_single_side_left
-    ):
+        and not has_geometry_right_hint
+    )
+
+    if final_no_right_evidence:
         force_single_side_left = True
+
+    only_positive_without_right_evidence = bool(positive_bases) and final_no_right_evidence
 
     if remaining_bases and _single_side_positive_only() and not force_single_side_left:
         if default_lane_side_is_right:
@@ -900,12 +904,8 @@ def build_lane_spec(
         right_bases = []
         skip_unassigned_assignment = True
     else:
-        force_all_default_side = bool(
-            no_right_evidence and not hinted_right and not derived_right
-        )
-        no_right_side_assignments = (
-            not negative_bases and not hinted_right and not derived_right
-        )
+        force_all_default_side = final_no_right_evidence
+        no_right_side_assignments = final_no_right_evidence
 
         if force_all_default_side:
             if default_lane_side_is_right:
@@ -918,7 +918,10 @@ def build_lane_spec(
 
         if not hinted_left and not hinted_right and not force_all_default_side:
             has_right_evidence = bool(
-                negative_bases or hinted_right or derived_right or has_geometry_right_hint
+                negative_bases
+                or hinted_right
+                or derived_right
+                or has_geometry_right_hint
             )
             if (
                 not has_right_evidence
