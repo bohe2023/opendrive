@@ -36,6 +36,7 @@ def write_xodr(
         "version": "1.00",
         "date": "2025-09-16",
     })
+    explicit_geometry_written = False
     if geo_ref:
         SubElement(header, "geoReference").text = geo_ref
 
@@ -181,6 +182,7 @@ def write_xodr(
         section_s0 = float(sec["s0"])
 
         def _write_lane(parent, lane_data):
+            nonlocal explicit_geometry_written
             lane_id = lane_data["id"]
             lane_type = lane_data.get("type", "driving")
             ln = SubElement(
@@ -224,6 +226,11 @@ def write_xodr(
                         and len(s_vals) == len(z_vals)
                         and len(s_vals) >= 2
                     ):
+                        if not explicit_geometry_written:
+                            explicit_geometry_written = True
+                            header.set("revMinor", "6")
+                            header.set("version", "1.06")
+
                         explicit_el = SubElement(rm_el, "explicit")
 
                         for idx in range(len(s_vals) - 1):
