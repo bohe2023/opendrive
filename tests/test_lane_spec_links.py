@@ -367,7 +367,7 @@ def test_lane_spec_balances_positive_and_negative_lane_numbers():
     assert [lane["id"] for lane in specs[0]["right"]] == [-1, -2]
 
 
-def test_lane_spec_does_not_split_positive_lanes_with_lane_count():
+def test_lane_spec_uses_lane_count_when_only_positive_lane_numbers():
     sections = [{"s0": 0.0, "s1": 10.0}]
 
     lane_topology = {
