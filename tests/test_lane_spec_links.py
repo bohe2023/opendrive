@@ -196,7 +196,10 @@ def test_lane_spec_keeps_positive_lanes_on_default_side_without_right_evidence()
         },
     }
 
-    specs = build_lane_spec(sections, lane_topology, defaults={}, lane_div_df=None)
+    defaults = {"default_lane_side": "right"}
+    specs = build_lane_spec(
+        sections, lane_topology, defaults=defaults, lane_div_df=None
+    )
 
     assert len(specs) == 1
     section = specs[0]

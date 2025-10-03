@@ -869,10 +869,12 @@ def build_lane_spec(
                     else:
                         derived_right.extend(unresolved)
 
+    # `derived_right` 仅代表算法在缺乏直接信息时的暂时推断。如果没有来自
+    # 编号或几何的右侧证据，就不应该因为之前的推断而放弃“全部保持在同一侧”
+    # 的兜底策略，否则会把单侧车道硬性拆成左右两组。
     final_no_right_evidence = (
         not negative_bases
         and not hinted_right
-        and not derived_right
         and not has_geometry_right_hint
     )
 
