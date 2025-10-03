@@ -104,12 +104,34 @@ def build_line_geometry_lookup(
         if lat_val is None or lon_val is None:
             continue
 
+        group_key = (
+            line_id,
+            row[logtime_col] if logtime_col else None,
+            row[instance_col] if instance_col else None,
+            row[flag_col] if flag_col else None,
+            row[type_col] if type_col else None,
+        )
+
+        entry = grouped.setdefault(
+            group_key,
+            {
+                "line_id": line_id,
+                "lat": [],
+                "lon": [],
+                "z": [],
+                "offset": [],
+                "has_true": False,
+                "has_false": False,
+                "has_flag": False,
+            },
+        )
+
         z_val = _to_float(row[z_col]) if z_col else None
         if z_val is not None:
             if not math.isfinite(z_val) or abs(z_val) >= 1e4:
                 z_val = None
         if z_val is None:
-            existing = entry.get("z", []) or []
+            existing = entry.get("z")
             if existing:
                 z_val = existing[-1]
             else:
@@ -174,28 +196,6 @@ def build_line_geometry_lookup(
             off_val = start_cm + step_val * index
         else:
             off_val = float(off_cm_raw)
-
-        group_key = (
-            line_id,
-            row[logtime_col] if logtime_col else None,
-            row[instance_col] if instance_col else None,
-            row[flag_col] if flag_col else None,
-            row[type_col] if type_col else None,
-        )
-
-        entry = grouped.setdefault(
-            group_key,
-            {
-                "line_id": line_id,
-                "lat": [],
-                "lon": [],
-                "z": [],
-                "offset": [],
-                "has_true": False,
-                "has_false": False,
-                "has_flag": False,
-            },
-        )
 
         retrans_flag = None
         if is_retrans_col is not None:
