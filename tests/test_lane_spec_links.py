@@ -160,7 +160,8 @@ def test_lane_spec_flags_and_writer_links(tmp_path):
     assert last_right_link.find("successor") is None
 
 
-def test_lane_spec_uses_lane_count_when_only_positive_lane_numbers():
+def test_lane_spec_keeps_positive_lanes_on_default_side_without_right_evidence():
+    """All positive lane numbers without right-side hints remain on the default side."""
     sections = [{"s0": 0.0, "s1": 10.0}]
 
     lane_topology = {
