@@ -26,11 +26,6 @@ def _assert_single_side(specs, expected_side: str, expected_count: int):
             assert all(lane_id > 0 for lane_id in left_ids)
 
 
-def _default_side(defaults) -> str:
-    side = defaults.get("default_lane_side", "left") if defaults else "left"
-    return side if side in {"left", "right"} else "left"
-
-
 def test_positive_lanes_remain_on_left_without_right_hints():
     rows = []
     for lane_no in (1, 2, 3):
@@ -77,7 +72,7 @@ def test_positive_lanes_ignore_lane_count_based_split():
         lane_div_df=DataFrame([]),
     )
 
-    _assert_single_side(specs, _default_side(defaults), 3)
+    _assert_single_side(specs, "left", 3)
 
 
 def test_positive_lanes_with_sparse_numbers_stay_on_left():
@@ -105,7 +100,7 @@ def test_positive_lanes_with_sparse_numbers_stay_on_left():
         lane_div_df=DataFrame([]),
     )
 
-    _assert_single_side(specs, _default_side(defaults), 4)
+    _assert_single_side(specs, "left", 4)
 
 
 def test_lane_count_split_requires_right_evidence():
@@ -159,7 +154,7 @@ def test_positive_lanes_without_right_evidence_fill_left_side():
         lane_div_df=DataFrame([]),
     )
 
-    _assert_single_side(specs, _default_side(defaults), 5)
+    _assert_single_side(specs, "left", 5)
 
 
 def test_lane_spec_keeps_only_positive_lanes_on_left():
@@ -187,4 +182,4 @@ def test_lane_spec_keeps_only_positive_lanes_on_left():
         lane_div_df=DataFrame([]),
     )
 
-    _assert_single_side(specs, _default_side(defaults), 2)
+    _assert_single_side(specs, "left", 2)

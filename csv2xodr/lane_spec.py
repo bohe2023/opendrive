@@ -758,6 +758,8 @@ def build_lane_spec(
 
     only_positive_without_right_evidence = no_right_evidence and bool(positive_bases)
 
+    force_single_side_left = False
+
     if only_positive_without_right_evidence:
         # 没有任何右侧提示且全部车道编号为正，说明输入数据没有明确区分两侧。
         # 之前的逻辑会尝试根据 lane_count 等参数重新划分左右两侧，反而会把
@@ -766,7 +768,8 @@ def build_lane_spec(
         for base in base_ids:
             if lane_no_by_base.get(base) is None:
                 continue
-            geometry_side_hint.setdefault(base, default_lane_side)
+            geometry_side_hint.setdefault(base, "left")
+        force_single_side_left = True
 
     def _ordered_subset(candidates: Iterable[str]) -> List[str]:
         seen: List[str] = []
@@ -795,7 +798,17 @@ def build_lane_spec(
         return not negative_bases and not hinted_right and not derived_right
 
     if remaining_bases:
-        if no_right_evidence and not hinted_right:
+        single_side_without_right_hint = (
+            not negative_bases
+            and not hinted_right
+            and not has_geometry_right_hint
+        )
+
+        if single_side_without_right_hint:
+            derived_left = list(remaining_bases)
+            derived_right = []
+            force_single_side_left = True
+        elif no_right_evidence and not hinted_right:
             derived_left = list(remaining_bases)
             derived_right = []
         elif positive_bases and negative_bases:
@@ -854,7 +867,7 @@ def build_lane_spec(
                         if lane_no_by_base.get(base) in right_lane_numbers
                     ]
 
-    if remaining_bases and _single_side_positive_only():
+    if remaining_bases and _single_side_positive_only() and not force_single_side_left:
         if default_lane_side_is_right:
             derived_left = []
             derived_right = list(remaining_bases)
@@ -869,43 +882,44 @@ def build_lane_spec(
         base for base in derived_right if base not in hinted_left and base not in hinted_right
     ]
 
-    force_all_default_side = bool(
-        no_right_evidence and not hinted_right and not derived_right
-    )
-    no_right_side_assignments = (
-        not negative_bases and not hinted_right and not derived_right
-    )
+    force_all_default_side = False
 
-    if force_all_default_side:
-        if default_lane_side_is_right:
-            left_bases = []
-            right_bases = [base for base in base_ids]
-        else:
-            left_bases = [base for base in base_ids]
-            right_bases = []
-
-    if not hinted_left and not hinted_right:
-        has_right_evidence = bool(
-            negative_bases or hinted_right or derived_right or has_geometry_right_hint
+    if force_single_side_left:
+        left_bases = [base for base in base_ids]
+        right_bases = []
+    else:
+        force_all_default_side = bool(
+            no_right_evidence and not hinted_right and not derived_right
         )
-        if (
-            force_all_default_side
-            or not has_right_evidence
-            or only_positive_without_right_evidence
-            or no_right_side_assignments
-        ):
+        no_right_side_assignments = (
+            not negative_bases and not hinted_right and not derived_right
+        )
+
+        if force_all_default_side:
             if default_lane_side_is_right:
                 left_bases = []
                 right_bases = [base for base in base_ids]
             else:
                 left_bases = [base for base in base_ids]
                 right_bases = []
-        else:
-            if not left_bases and base_ids:
-                left_bases = base_ids[:1]
-                right_bases = [base for base in base_ids if base not in left_bases]
-            elif not right_bases and base_ids:
-                right_bases = [base for base in base_ids if base not in left_bases]
+
+        if not hinted_left and not hinted_right and not force_all_default_side:
+            has_right_evidence = bool(
+                negative_bases or hinted_right or derived_right or has_geometry_right_hint
+            )
+            if (
+                not has_right_evidence
+                or only_positive_without_right_evidence
+                or no_right_side_assignments
+            ):
+                left_bases = [base for base in base_ids]
+                right_bases = []
+            else:
+                if not left_bases and base_ids:
+                    left_bases = base_ids[:1]
+                    right_bases = [base for base in base_ids if base not in left_bases]
+                elif not right_bases and base_ids:
+                    right_bases = [base for base in base_ids if base not in left_bases]
 
     left_base_set = set(left_bases)
     right_base_set = set(right_bases)
