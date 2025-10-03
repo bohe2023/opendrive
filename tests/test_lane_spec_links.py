@@ -254,6 +254,71 @@ def test_lane_spec_does_not_split_positive_lanes_with_lane_count():
     assert specs[0]["right"] == []
 
 
+def test_lane_spec_handles_jpn_positive_only_topology():
+    sections = [{"s0": 0.0, "s1": 30.0}]
+
+    lane_topology = {
+        "lane_count": 6,
+        "groups": {
+            "5.13001000000048e+18": ["lane::1"],
+            "5.13001000000049e+18": ["lane::2"],
+            "5.13001000000050e+18": ["lane::3"],
+        },
+        "lanes": {
+            "lane::1": {
+                "base_id": "5.13001000000048e+18",
+                "lane_no": 1,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 30.0,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                    }
+                ],
+            },
+            "lane::2": {
+                "base_id": "5.13001000000049e+18",
+                "lane_no": 2,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 30.0,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                    }
+                ],
+            },
+            "lane::3": {
+                "base_id": "5.13001000000050e+18",
+                "lane_no": 3,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 30.0,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                    }
+                ],
+            },
+        },
+    }
+
+    specs = build_lane_spec(sections, lane_topology, defaults={}, lane_div_df=None)
+
+    assert len(specs) == 1
+    left_ids = [lane["id"] for lane in specs[0]["left"]]
+
+    assert left_ids == [1, 2, 3]
+    assert specs[0]["right"] == []
+
+
 def test_write_xodr_ignores_zero_length_centerline_segments(tmp_path):
     centerline = _SimpleCenterline({
         "s": [0.0, 5.0, 5.0, 10.0],
