@@ -1620,14 +1620,11 @@ def build_geometry_segments(
     except (TypeError, ValueError):
         max_endpoint_deviation = 0.5
 
-    # 长距离路段若允许 2cm 以上的端点误差，会在 OpenDRIVE 查看器中留
-    # 下肉眼可见的缝隙；而几米长的短路段则需要保留更宽松的阈值，否
-    # 则在数据略有噪声时无法生成几何。根据参考线总长度自适应收紧
+    # 长距离路段若允许较大的端点误差，会在 OpenDRIVE 查看器中留下
+    # 肉眼可见的缝隙；而几米长的短路段则需要保留更宽松的阈值，否
+    # 则在数据略有噪声时无法生成几何。根据参考线总长度自适应调节
     # 阈值，可以兼顾长距离道路的连续性与单元测试所覆盖的短样例。
-    if total_length >= 50.0:
-        tightened = 0.01
-    else:
-        tightened = 0.02
+    tightened = max(0.02, min(0.05, total_length * 0.001))
     if max_endpoint_deviation > tightened:
         max_endpoint_deviation = tightened
 
