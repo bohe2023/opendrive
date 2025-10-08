@@ -127,3 +127,18 @@ def test_process_file_updates_csv(tmp_path: Path):
     assert added == 1
     assert [int(row[SHAPE_INDEX_COLUMN]) for row in updated] == [0, 1, 2]
     assert updated[0]["方位角[deg]"] == "11.0"
+
+
+def test_interpolation_supports_exptime_alias():
+    rows = [
+        _make_row(lane_id="A", index=0),
+        _make_row(lane_id="A", index=2),
+    ]
+
+    for row in rows:
+        row["ExpTime"] = row.pop("logTime")
+
+    result = interpolate_shape_indices(rows)
+
+    assert [int(row[SHAPE_INDEX_COLUMN]) for row in result] == [0, 1, 2]
+    assert all("logTime" not in row for row in result)

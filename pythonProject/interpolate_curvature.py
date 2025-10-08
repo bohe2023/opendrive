@@ -25,6 +25,17 @@ GROUP_KEY_COLUMNS: Sequence[str] = (
     LANE_COUNT_COLUMN,
 )
 
+# Some data exports use different header labels for the same semantic value.  For
+# example, the production CSVs sometimes expose the timestamp column as
+# ``ExpTime`` instead of ``logTime``.  Interpolation must treat those aliases as
+# equivalent so that rows are grouped correctly and no spurious copies are
+# produced.  The keys in ``GROUP_KEY_ALIASES`` refer to the canonical column
+# names listed in ``GROUP_KEY_COLUMNS`` while the values enumerate fallback
+# column names to try if the canonical name is missing.
+GROUP_KEY_ALIASES: Mapping[str, Sequence[str]] = {
+    "logTime": ("logTime", "ExpTime"),
+}
+
 
 def _parse_int(value: str) -> int:
     """Best-effort conversion of ``value`` to ``int``."""
@@ -44,6 +55,20 @@ def _clone_with_index(row: Mapping[str, str], index: int) -> MutableMapping[str,
     return clone
 
 
+def _resolve_group_column(row: Mapping[str, str], column: str) -> str:
+    """Return the value used to build the interpolation group key for ``row``."""
+
+    candidates = GROUP_KEY_ALIASES.get(column, (column,))
+    for name in candidates:
+        value = row.get(name)
+        if value not in (None, ""):
+            return value
+
+    # Fall back to an empty string when none of the aliases are present so that
+    # rows lacking the column still form deterministic groups.
+    return row.get(candidates[0], "") or ""
+
+
 def _group_rows(rows: Iterable[MutableMapping[str, str]]) -> Iterable[List[MutableMapping[str, str]]]:
     """Yield consecutive groups of rows sharing the same lane descriptor."""
 
@@ -51,7 +76,9 @@ def _group_rows(rows: Iterable[MutableMapping[str, str]]) -> Iterable[List[Mutab
     current_group: List[MutableMapping[str, str]] = []
 
     for row in rows:
-        key = [row.get(column, "") for column in GROUP_KEY_COLUMNS]
+        key = [
+            _resolve_group_column(row, column) for column in GROUP_KEY_COLUMNS
+        ]
         if current_key is None:
             current_key = key
         if key != current_key:
