@@ -117,16 +117,19 @@ def _parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _default_files(root: Path) -> List[Path]:
+def default_files(root: Optional[Path] = None) -> List[Path]:
+    """Return the default lane geometry CSV files that should be processed."""
+
+    base = root or Path(__file__).resolve().parents[1]
     return [
-        root / "input_csv" / "JPN" / "LanesGeometryProfile.csv",
-        root / "input_csv" / "US" / "LanesGeometryProfile_US.csv",
+        base / "input_csv" / "JPN" / "LanesGeometryProfile.csv",
+        base / "input_csv" / "US" / "LanesGeometryProfile_US.csv",
     ]
 
 
 def main() -> None:
     args = _parse_arguments()
-    files = args.files or _default_files(Path(__file__).resolve().parents[1])
+    files = args.files or default_files(Path(__file__).resolve().parents[1])
 
     for path in files:
         if not path.exists():
