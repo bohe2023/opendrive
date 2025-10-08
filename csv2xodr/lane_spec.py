@@ -13,7 +13,7 @@ from csv2xodr.normalize.core import latlon_to_local_xy
 GEOMETRY_SIDE_CONFIDENCE_MIN = 0.5
 
 
-def _clip_geometry_segment(geom: Dict[str, List[float]], s0: float, s1: float) -> Optional[Dict[str, List[float]]]:
+def _clip_geometry_segment(geom: Dict[str, Any], s0: float, s1: float) -> Optional[Dict[str, List[float]]]:
     s_vals = geom.get("s") or []
     if not s_vals:
         return None
@@ -21,9 +21,12 @@ def _clip_geometry_segment(geom: Dict[str, List[float]], s0: float, s1: float) -
     x_vals = geom.get("x") or []
     y_vals = geom.get("y") or []
     z_vals = geom.get("z") or []
+    curv_vals = geom.get("curvature") or []
 
     if len(s_vals) != len(x_vals) or len(s_vals) != len(y_vals) or len(s_vals) != len(z_vals):
         return None
+
+    has_curvature = len(curv_vals) == len(s_vals)
 
     def _interpolate(a: float, b: float, ta: float, tb: float, target: float) -> float:
         if tb == ta:
@@ -32,10 +35,13 @@ def _clip_geometry_segment(geom: Dict[str, List[float]], s0: float, s1: float) -
         return a + t * (b - a)
 
     clipped: List[Tuple[float, float, float, float]] = []
+    clipped_curv: List[Optional[float]] = []
 
-    def _append(point: Tuple[float, float, float, float]) -> None:
+    def _append(point: Tuple[float, float, float, float], curvature: Optional[float]) -> None:
         if not clipped or abs(clipped[-1][0] - point[0]) > 1e-6:
             clipped.append(point)
+            if has_curvature:
+                clipped_curv.append(curvature)
 
     for idx in range(len(s_vals) - 1):
         sa = s_vals[idx]
@@ -43,6 +49,8 @@ def _clip_geometry_segment(geom: Dict[str, List[float]], s0: float, s1: float) -
         xa, xb = x_vals[idx], x_vals[idx + 1]
         ya, yb = y_vals[idx], y_vals[idx + 1]
         za, zb = z_vals[idx], z_vals[idx + 1]
+        ca = curv_vals[idx] if has_curvature else None
+        cb = curv_vals[idx + 1] if has_curvature else None
 
         if sb <= s0 or sa >= s1:
             continue
@@ -51,32 +59,49 @@ def _clip_geometry_segment(geom: Dict[str, List[float]], s0: float, s1: float) -
             x_new = _interpolate(xa, xb, sa, sb, s0)
             y_new = _interpolate(ya, yb, sa, sb, s0)
             z_new = _interpolate(za, zb, sa, sb, s0)
-            _append((s0, x_new, y_new, z_new))
+            if has_curvature and ca is not None and cb is not None and sb != sa:
+                t = (s0 - sa) / (sb - sa)
+                c_new = ca + t * (cb - ca)
+            else:
+                c_new = ca if has_curvature else None
+            _append((s0, x_new, y_new, z_new), c_new)
 
         if s0 <= sa <= s1:
-            _append((sa, xa, ya, za))
+            _append((sa, xa, ya, za), ca if has_curvature else None)
 
         if sa < s1 <= sb:
             x_new = _interpolate(xa, xb, sa, sb, s1)
             y_new = _interpolate(ya, yb, sa, sb, s1)
             z_new = _interpolate(za, zb, sa, sb, s1)
-            _append((s1, x_new, y_new, z_new))
+            if has_curvature and ca is not None and cb is not None and sb != sa:
+                t = (s1 - sa) / (sb - sa)
+                c_new = ca + t * (cb - ca)
+            else:
+                c_new = cb if has_curvature else None
+            _append((s1, x_new, y_new, z_new), c_new)
         elif s0 <= sb <= s1:
-            _append((sb, xb, yb, zb))
+            _append((sb, xb, yb, zb), cb if has_curvature else None)
 
     if not clipped:
         if len(s_vals) == 1 and s0 <= s_vals[0] <= s1:
             clipped.append((s_vals[0], x_vals[0], y_vals[0], z_vals[0]))
+            if has_curvature:
+                clipped_curv.append(curv_vals[0])
 
     if not clipped:
         return None
 
-    return {
+    result = {
         "s": [p[0] for p in clipped],
         "x": [p[1] for p in clipped],
         "y": [p[2] for p in clipped],
         "z": [p[3] for p in clipped],
     }
+
+    if has_curvature and len(clipped_curv) == len(clipped):
+        result["curvature"] = clipped_curv
+
+    return result
 
 
 def _lookup_line_segment(entry: Dict[str, Any], s0: float, s1: float) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, List[float]]]]:

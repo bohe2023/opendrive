@@ -72,7 +72,7 @@ def test_geometry_segments_from_curvature():
         }
     )
 
-    curvature_segments = build_curvature_profile(curvature_df)
+    curvature_segments, _ = build_curvature_profile(curvature_df)
     geometry = build_geometry_segments(center, curvature_segments)
 
     assert len(geometry) == 2
@@ -98,7 +98,7 @@ def test_geometry_segments_respect_threshold():
         }
     )
 
-    curvature_segments = build_curvature_profile(curvature_df)
+    curvature_segments, _ = build_curvature_profile(curvature_df)
 
     strict_geometry = build_geometry_segments(
         center,
@@ -146,7 +146,7 @@ def test_geometry_segments_remain_continuous():
         }
     )
 
-    curvature_segments = build_curvature_profile(curvature_df)
+    curvature_segments, _ = build_curvature_profile(curvature_df)
     geometry = build_geometry_segments(
         center,
         curvature_segments,
@@ -244,14 +244,25 @@ def test_geometry_segments_are_densified_for_long_spans():
 
 
 def test_curvature_profile_uses_shape_index_segments():
+    meters_to_degrees = 180.0 / (math.pi * 6378137.0)
+    coord_by_index = {
+        0: 0.0,
+        1: 1.0,
+        2: 3.0,
+        3: 6.0,
+        4: 10.0,
+    }
+
     curvature_df = DataFrame(
         {
             "Path Id": ["1"] * 7,
             "Lane Number": ["1"] * 7,
             "Offset[cm]": [0, 0, 0, 0, 0, 0, 0],
-            "End Offset[cm]": [200, 200, 200, 200, 200, 200, 200],
+            "End Offset[cm]": [1000, 1000, 1000, 1000, 1000, 1000, 1000],
             "形状インデックス": [0, 1, 2, 2, 3, 3, 4],
             "曲率値[rad/m]": [0.6, -0.6, 0.6, -0.2, -0.6, -0.6, 0.6],
+            "緯度[deg]": [0.0] * 7,
+            "経度[deg]": [coord_by_index[idx] * meters_to_degrees for idx in [0, 1, 2, 2, 3, 3, 4]],
             "Is Retransmission": [
                 "False",
                 "False",
@@ -264,14 +275,19 @@ def test_curvature_profile_uses_shape_index_segments():
         }
     )
 
-    curvature_segments = build_curvature_profile(
-        curvature_df, offset_mapper=lambda value: value
+    curvature_segments, samples = build_curvature_profile(
+        curvature_df,
+        offset_mapper=lambda value: value,
+        geo_origin=(0.0, 0.0),
     )
 
     assert len(curvature_segments) == 4
+    assert samples
+    assert len(samples) >= 5
 
     spans = [seg["s1"] - seg["s0"] for seg in curvature_segments]
-    assert all(math.isclose(span, 0.5, abs_tol=1e-9) for span in spans)
+    expected_spans = [1.0, 2.0, 3.0, 4.0]
+    assert all(math.isclose(span, exp, abs_tol=1e-9) for span, exp in zip(spans, expected_spans))
 
     curvatures = [seg["curvature"] for seg in curvature_segments]
     assert all(math.isclose(curv, expected) for curv, expected in zip(curvatures, [0.6, -0.6, 0.2, -0.6]))
@@ -313,7 +329,7 @@ def test_curvature_profile_averages_duplicate_shape_indices():
         }
     )
 
-    curvature_segments = build_curvature_profile(curvature_df)
+    curvature_segments, _ = build_curvature_profile(curvature_df)
 
     assert len(curvature_segments) == 2
 
