@@ -44,6 +44,16 @@ def _geometry_signature(points: List[Tuple[float, float, float, float]]) -> Tupl
     )
 
 
+def _normalise_key(value: Any) -> Optional[str]:
+    canonical = _canonical_numeric(value, allow_negative=True)
+    if canonical is not None:
+        return canonical
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def build_line_geometry_lookup(
     line_geom_df: Optional[DataFrame],
     *,
@@ -84,6 +94,8 @@ def build_line_geometry_lookup(
         or _find_column(cols, "shape", "count")
         or _find_column(cols, "shape", "points")
     )
+    path_col = _find_column(cols, "Path", "Id")
+    lane_col = _find_column(cols, "Lane", "Number") or _find_column(cols, "Lane", "No")
 
     if line_id_col is None or lat_col is None or lon_col is None:
         return {}
@@ -94,17 +106,71 @@ def build_line_geometry_lookup(
     ] = {}
 
     prepared_samples: List[Tuple[float, float, float]] = []
+    curvature_by_index: Dict[
+        Tuple[Optional[str], Optional[str]], Dict[int, List[Tuple[Optional[float], float]]]
+    ] = {}
+    curvature_by_offset: Dict[
+        Tuple[Optional[str], Optional[str]], Dict[float, List[float]]
+    ] = {}
     if curvature_samples:
         for sample in curvature_samples:
+            path_key = _normalise_key(sample.get("path"))
+            lane_key = _normalise_key(sample.get("lane"))
+
+            curv_val: Optional[float]
             try:
-                x_val = float(sample.get("x"))
-                y_val = float(sample.get("y"))
                 curv_val = float(sample.get("curvature"))
             except (TypeError, ValueError):
+                curv_val = None
+
+            idx_val: Optional[float]
+            try:
+                idx_val = float(sample.get("shape_index"))
+            except (TypeError, ValueError):
+                idx_val = None
+
+            offset_val: Optional[float]
+            try:
+                offset_val = float(sample.get("offset"))
+            except (TypeError, ValueError):
+                offset_val = None
+
+            x_raw = sample.get("x")
+            y_raw = sample.get("y")
+            try:
+                x_val = float(x_raw) if x_raw is not None else None
+            except (TypeError, ValueError):
+                x_val = None
+            try:
+                y_val = float(y_raw) if y_raw is not None else None
+            except (TypeError, ValueError):
+                y_val = None
+
+            if (
+                curv_val is not None
+                and math.isfinite(curv_val)
+                and x_val is not None
+                and y_val is not None
+            ):
+                prepared_samples.append((x_val, y_val, curv_val))
+
+            if (
+                path_key is None
+                or lane_key is None
+                or idx_val is None
+                or curv_val is None
+                or not math.isfinite(curv_val)
+            ):
                 continue
-            if not (math.isfinite(x_val) and math.isfinite(y_val) and math.isfinite(curv_val)):
-                continue
-            prepared_samples.append((x_val, y_val, curv_val))
+
+            idx_key = int(round(idx_val))
+            bucket = curvature_by_index.setdefault((path_key, lane_key), {})
+            bucket.setdefault(idx_key, []).append((offset_val, curv_val))
+
+            if offset_val is not None and math.isfinite(offset_val):
+                offset_key = round(float(offset_val), 6)
+                offset_bucket = curvature_by_offset.setdefault((path_key, lane_key), {})
+                offset_bucket.setdefault(offset_key, []).append(curv_val)
 
     cell_size = 1.5
     sample_grid: Dict[Tuple[int, int], List[Tuple[float, float, float]]] = {}
@@ -173,11 +239,20 @@ def build_line_geometry_lookup(
                 "lon": [],
                 "z": [],
                 "offset": [],
+                "shape_index": [],
                 "has_true": False,
                 "has_false": False,
                 "has_flag": False,
+                "path_token": None,
+                "lane_token": None,
             },
         )
+
+        if path_col is not None and entry.get("path_token") is None:
+            entry["path_token"] = _normalise_key(row[path_col])
+
+        if lane_col is not None and entry.get("lane_token") is None:
+            entry["lane_token"] = _normalise_key(row[lane_col])
 
         z_val = _to_float(row[z_col]) if z_col else None
         if z_val is not None:
@@ -269,6 +344,7 @@ def build_line_geometry_lookup(
         entry["lon"].append(lon_val)
         entry["z"].append(z_val)
         entry["offset"].append(off_m)
+        entry["shape_index"].append(float(index))
 
     if not grouped:
         return {}
@@ -298,6 +374,7 @@ def build_line_geometry_lookup(
         lon_vals = entry.get("lon", []) or []
         z_vals = entry.get("z", []) or []
         offsets_raw = entry.get("offset", []) or []
+        shape_indices = entry.get("shape_index", []) or []
 
         if not lat_vals or not lon_vals or not z_vals or not offsets_raw:
             continue
@@ -310,14 +387,20 @@ def build_line_geometry_lookup(
         if len(x_vals) != len(z_vals) or len(x_vals) != len(offsets_raw):
             continue
 
+        if len(shape_indices) != len(offsets_raw):
+            if len(shape_indices) < len(offsets_raw):
+                shape_indices = shape_indices + [None] * (len(offsets_raw) - len(shape_indices))
+            else:
+                shape_indices = shape_indices[: len(offsets_raw)]
+
         # The Japanese datasets reuse the same ``line_id`` across multiple
         # carriageway segments.  Each time the offset restarts from zero the
         # geometry would jump back to the beginning of the alignment, producing
         # spaghetti-like lane lines in the viewer.  Split the sequence whenever
         # the longitudinal coordinate decreases noticeably so every emitted
         # polyline remains strictly monotonic along ``s``.
-        sequences: List[List[Tuple[float, float, float, float]]] = []
-        current: List[Tuple[float, float, float, float]] = []
+        sequences: List[List[Tuple[float, float, float, float, Optional[float], Optional[float]]]] = []
+        current: List[Tuple[float, float, float, float, Optional[float], Optional[float]]] = []
         last_s: Optional[float] = None
         reset_threshold = 1e-4  # tolerate sub-millimetre jitter while catching real resets
 
@@ -332,11 +415,15 @@ def build_line_geometry_lookup(
             if entry_base_offset is None or value < entry_base_offset:
                 entry_base_offset = value
 
-        for raw_offset, x_val, y_val, z_val in zip(offsets_raw, x_vals, y_vals, z_vals):
+        for idx_point, (raw_offset, x_val, y_val, z_val) in enumerate(
+            zip(offsets_raw, x_vals, y_vals, z_vals)
+        ):
             try:
                 offset_m = float(raw_offset)
             except (TypeError, ValueError):
                 continue
+
+            absolute_offset = offset_m
 
             if entry_base_offset is not None and math.isfinite(entry_base_offset):
                 if (
@@ -375,7 +462,7 @@ def build_line_geometry_lookup(
                 last_s = None
 
             if current:
-                prev_s, prev_x, prev_y, prev_z = current[-1]
+                prev_s, prev_x, prev_y, prev_z, _, _ = current[-1]
                 if (
                     abs(s_float - prev_s) <= 1e-9
                     and abs(x_float - prev_x) <= 1e-9
@@ -387,7 +474,10 @@ def build_line_geometry_lookup(
                     last_s = s_float
                     continue
 
-            current.append((s_float, x_float, y_float, z_float))
+            shape_idx_val = None
+            if idx_point < len(shape_indices):
+                shape_idx_val = shape_indices[idx_point]
+            current.append((s_float, x_float, y_float, z_float, shape_idx_val, absolute_offset))
             last_s = s_float
 
         if len(current) >= 2:
@@ -397,7 +487,7 @@ def build_line_geometry_lookup(
 
         for seq in sequences:
             points = list(seq)
-            signature = _geometry_signature(points)
+            signature = _geometry_signature([(p[0], p[1], p[2], p[3]) for p in points])
             if any(
                 _geometry_signature(list(zip(g["s"], g["x"], g["y"], g["z"]))) == signature
                 for g in geoms
@@ -405,9 +495,68 @@ def build_line_geometry_lookup(
                 continue
 
             curvature_vals: List[Optional[float]] = []
+            path_token = entry.get("path_token")
+            lane_token = entry.get("lane_token")
+            direct_lookup: Optional[Dict[int, List[Tuple[Optional[float], float]]]] = None
+            offset_lookup: Optional[Dict[float, List[float]]] = None
+            if path_token is not None and lane_token is not None:
+                key = (path_token, lane_token)
+                direct_lookup = curvature_by_index.get(key)
+                offset_lookup = curvature_by_offset.get(key)
+
+            if direct_lookup or offset_lookup:
+                for idx_point, (_, _, _, _, shape_idx, absolute_offset) in enumerate(points):
+                    best_curv: Optional[float] = None
+                    if direct_lookup and shape_idx is not None:
+                        idx_key = int(round(shape_idx))
+                        candidates = direct_lookup.get(idx_key, [])
+                        if candidates:
+                            if absolute_offset is not None and math.isfinite(absolute_offset):
+                                finite = [
+                                    item
+                                    for item in candidates
+                                    if item[0] is not None and math.isfinite(item[0])
+                                ]
+                                if finite:
+                                    best_offset, best_curv_val = min(
+                                        finite,
+                                        key=lambda item: abs(item[0] - absolute_offset),
+                                    )
+                                    if abs(best_offset - absolute_offset) <= 0.5:
+                                        best_curv = best_curv_val
+                                else:
+                                    best_curv = candidates[0][1]
+                            else:
+                                best_curv = candidates[0][1]
+                    if (
+                        best_curv is None
+                        and offset_lookup
+                        and absolute_offset is not None
+                        and math.isfinite(absolute_offset)
+                    ):
+                        offset_key = round(float(absolute_offset), 6)
+                        candidates_off = offset_lookup.get(offset_key)
+                        if not candidates_off and offset_lookup:
+                            try:
+                                best_key = min(
+                                    offset_lookup.keys(),
+                                    key=lambda key_val: abs(key_val - offset_key),
+                                )
+                                candidates_off = offset_lookup.get(best_key)
+                            except ValueError:
+                                candidates_off = None
+                        if candidates_off:
+                            best_curv = sum(candidates_off) / len(candidates_off)
+                    curvature_vals.append(best_curv)
+            else:
+                curvature_vals = [None] * len(points)
+
             if prepared_samples:
-                for _, x_coord, y_coord, _ in points:
-                    curvature_vals.append(_nearest_curvature(x_coord, y_coord))
+                for idx_point, value in enumerate(curvature_vals):
+                    if value is not None and math.isfinite(value):
+                        continue
+                    _, x_coord, y_coord, _, _, _ = points[idx_point]
+                    curvature_vals[idx_point] = _nearest_curvature(x_coord, y_coord)
 
             geom_entry: Dict[str, Any] = {
                 "s": [p[0] for p in points],

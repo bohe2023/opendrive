@@ -97,7 +97,7 @@ def write_xodr(
         "revMajor": "1",
         "revMinor": "4",
         "name": "csv2xodr",
-        "version": "1.00",
+        "version": "1.4",
         "date": "2025-09-16",
     })
     explicit_geometry_written = False
