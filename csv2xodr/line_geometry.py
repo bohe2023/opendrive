@@ -574,7 +574,10 @@ def build_line_geometry_lookup(
             ) in enumerate(points):
                 best_curv: Optional[float] = None
 
-                if locator is not None:
+                if prepared_samples:
+                    best_curv = _nearest_curvature(x_coord, y_coord)
+
+                if best_curv is None and locator is not None:
                     best_curv = locator(x_coord, y_coord)
 
                 if best_curv is None and direct_lookup and shape_idx is not None:
@@ -620,13 +623,6 @@ def build_line_geometry_lookup(
                         best_curv = sum(candidates_off) / len(candidates_off)
 
                 curvature_vals[idx_point] = best_curv
-
-            if prepared_samples:
-                for idx_point, value in enumerate(curvature_vals):
-                    if value is not None and math.isfinite(value):
-                        continue
-                    _, x_coord, y_coord, _, _, _ = points[idx_point]
-                    curvature_vals[idx_point] = _nearest_curvature(x_coord, y_coord)
 
             geom_entry: Dict[str, Any] = {
                 "s": [p[0] for p in points],
