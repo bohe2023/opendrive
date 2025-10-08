@@ -50,6 +50,7 @@ def build_line_geometry_lookup(
     offset_mapper=None,
     lat0: float,
     lon0: float,
+    curvature_samples: Optional[Iterable[Dict[str, Any]]] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Return a lookup of canonical line IDs to polylines in local XY."""
 
@@ -91,6 +92,58 @@ def build_line_geometry_lookup(
     segment_progress: Dict[
         Tuple[Any, Any, Any, Any, Any, float, Optional[float]], Dict[str, float]
     ] = {}
+
+    prepared_samples: List[Tuple[float, float, float]] = []
+    if curvature_samples:
+        for sample in curvature_samples:
+            try:
+                x_val = float(sample.get("x"))
+                y_val = float(sample.get("y"))
+                curv_val = float(sample.get("curvature"))
+            except (TypeError, ValueError):
+                continue
+            if not (math.isfinite(x_val) and math.isfinite(y_val) and math.isfinite(curv_val)):
+                continue
+            prepared_samples.append((x_val, y_val, curv_val))
+
+    cell_size = 1.5
+    sample_grid: Dict[Tuple[int, int], List[Tuple[float, float, float]]] = {}
+    if prepared_samples:
+        for x_val, y_val, curv_val in prepared_samples:
+            cell_x = int(math.floor(x_val / cell_size))
+            cell_y = int(math.floor(y_val / cell_size))
+            sample_grid.setdefault((cell_x, cell_y), []).append((x_val, y_val, curv_val))
+
+    max_radius_sq = (cell_size * 1.5) ** 2
+
+    def _nearest_curvature(x_val: float, y_val: float) -> Optional[float]:
+        if not prepared_samples:
+            return None
+
+        cell_x = int(math.floor(x_val / cell_size))
+        cell_y = int(math.floor(y_val / cell_size))
+        best_curv: Optional[float] = None
+        best_dist_sq = max_radius_sq
+
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                bucket = sample_grid.get((cell_x + dx, cell_y + dy))
+                if not bucket:
+                    continue
+                for sx, sy, curv in bucket:
+                    dist_sq = (sx - x_val) ** 2 + (sy - y_val) ** 2
+                    if dist_sq < best_dist_sq:
+                        best_dist_sq = dist_sq
+                        best_curv = curv
+
+        if best_curv is None:
+            for sx, sy, curv in prepared_samples:
+                dist_sq = (sx - x_val) ** 2 + (sy - y_val) ** 2
+                if dist_sq < best_dist_sq:
+                    best_dist_sq = dist_sq
+                    best_curv = curv
+
+        return best_curv
 
     for idx in range(len(line_geom_df)):
         row = line_geom_df.iloc[idx]
@@ -351,14 +404,23 @@ def build_line_geometry_lookup(
             ):
                 continue
 
-            geoms.append(
-                {
-                    "s": [p[0] for p in points],
-                    "x": [p[1] for p in points],
-                    "y": [p[2] for p in points],
-                    "z": [p[3] for p in points],
-                }
-            )
+            curvature_vals: List[Optional[float]] = []
+            if prepared_samples:
+                for _, x_coord, y_coord, _ in points:
+                    curvature_vals.append(_nearest_curvature(x_coord, y_coord))
+
+            geom_entry: Dict[str, Any] = {
+                "s": [p[0] for p in points],
+                "x": [p[1] for p in points],
+                "y": [p[2] for p in points],
+                "z": [p[3] for p in points],
+            }
+
+            if curvature_vals and len(curvature_vals) == len(points):
+                if any(val is not None for val in curvature_vals):
+                    geom_entry["curvature"] = curvature_vals
+
+            geoms.append(geom_entry)
 
     return lookup
 

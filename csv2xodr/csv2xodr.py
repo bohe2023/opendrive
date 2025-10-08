@@ -96,8 +96,19 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
     lane_topo = build_lane_topology(dfs["lane_link"], offset_mapper=offset_mapper)
 
     # per-section spec (width/roadMark/topology flags)
+    curvature_profile, curvature_samples = build_curvature_profile(
+        dfs.get("curvature"),
+        offset_mapper=offset_mapper,
+        centerline=center,
+        geo_origin=(lat0, lon0),
+    )
+
     line_geometry_lookup = build_line_geometry_lookup(
-        dfs["line_geometry"], offset_mapper=offset_mapper, lat0=lat0, lon0=lon0
+        dfs["line_geometry"],
+        offset_mapper=offset_mapper,
+        lat0=lat0,
+        lon0=lon0,
+        curvature_samples=curvature_samples,
     )
     lane_specs = build_lane_spec(
         sections,
@@ -109,10 +120,6 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
         lanes_geometry_df=dfs.get("lanes_geometry"),
         centerline=center,
         geo_origin=(lat0, lon0),
-    )
-
-    curvature_profile = build_curvature_profile(
-        dfs.get("curvature"), offset_mapper=offset_mapper, centerline=center
     )
 
     geometry_cfg_raw = cfg.get("geometry") or {}

@@ -1,6 +1,7 @@
 from xml.etree.ElementTree import Element, SubElement, tostring
 import math
 import xml.dom.minidom as minidom
+from typing import Optional
 
 
 def _format_float(value: float, precision: int = 9) -> str:
@@ -13,6 +14,69 @@ def _format_float(value: float, precision: int = 9) -> str:
 def _pretty(elem: Element) -> bytes:
     rough = tostring(elem, encoding="utf-8")
     return minidom.parseString(rough).toprettyxml(indent="  ", encoding="utf-8")
+
+
+def _solve_heading_for_arc(
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    length: float,
+    curvature: float,
+) -> Optional[float]:
+    if not math.isfinite(curvature) or abs(curvature) <= 1e-12:
+        return None
+    if not (math.isfinite(x0) and math.isfinite(y0) and math.isfinite(x1) and math.isfinite(y1)):
+        return None
+    if not math.isfinite(length) or length <= 1e-9:
+        return None
+
+    dx_target = x1 - x0
+    dy_target = y1 - y0
+    if not (math.isfinite(dx_target) and math.isfinite(dy_target)):
+        return None
+
+    hdg = math.atan2(dy_target, dx_target)
+    max_iter = 16
+    for _ in range(max_iter):
+        end_hdg = hdg + curvature * length
+        sin_start = math.sin(hdg)
+        cos_start = math.cos(hdg)
+        sin_end = math.sin(end_hdg)
+        cos_end = math.cos(end_hdg)
+
+        dx = (sin_end - sin_start) / curvature
+        dy = (-cos_end + cos_start) / curvature
+        err_x = dx_target - dx
+        err_y = dy_target - dy
+        err = math.hypot(err_x, err_y)
+        if err <= 1e-6:
+            return hdg
+
+        ddx = (cos_end - cos_start) / curvature
+        ddy = (sin_end - sin_start) / curvature
+        denom = ddx * ddx + ddy * ddy
+        if denom <= 1e-18 or not math.isfinite(denom):
+            break
+
+        delta = (err_x * ddx + err_y * ddy) / denom
+        if not math.isfinite(delta):
+            break
+
+        if abs(delta) > math.pi:
+            delta = math.copysign(math.pi, delta)
+
+        hdg += delta
+        if abs(delta) <= 1e-9:
+            break
+
+    end_hdg = hdg + curvature * length
+    dx = (math.sin(end_hdg) - math.sin(hdg)) / curvature
+    dy = (-math.cos(end_hdg) + math.cos(hdg)) / curvature
+    err = math.hypot(dx_target - dx, dy_target - dy)
+    if err <= 1e-4:
+        return hdg
+    return None
 
 def write_xodr(
     centerline,
@@ -220,6 +284,9 @@ def write_xodr(
                     x_vals = geometry.get("x") or []
                     y_vals = geometry.get("y") or []
                     z_vals = geometry.get("z") or []
+                    curvature_vals = geometry.get("curvature") or []
+                    has_curvature = len(curvature_vals) == len(s_vals)
+
                     if (
                         len(s_vals) == len(x_vals)
                         and len(s_vals) == len(y_vals)
@@ -236,6 +303,7 @@ def write_xodr(
                         for idx in range(len(s_vals) - 1):
                             try:
                                 s0 = float(s_vals[idx])
+                                s1 = float(s_vals[idx + 1])
                                 x0 = float(x_vals[idx])
                                 x1 = float(x_vals[idx + 1])
                                 y0 = float(y_vals[idx])
@@ -244,8 +312,44 @@ def write_xodr(
                             except (TypeError, ValueError):
                                 continue
 
-                            length = math.hypot(x1 - x0, y1 - y0)
-                            if not math.isfinite(length) or length <= 1e-6:
+                            segment_length = s1 - s0
+                            if not math.isfinite(segment_length) or segment_length <= 1e-9:
+                                continue
+
+                            curvature_val: Optional[float] = None
+                            if has_curvature:
+                                try:
+                                    raw_curv = curvature_vals[idx]
+                                    curvature_val = float(raw_curv) if raw_curv is not None else None
+                                except (TypeError, ValueError):
+                                    curvature_val = None
+
+                            arc_heading = None
+                            if curvature_val is not None and abs(curvature_val) > 1e-12:
+                                arc_heading = _solve_heading_for_arc(
+                                    x0, y0, x1, y1, segment_length, curvature_val
+                                )
+
+                            if arc_heading is not None:
+                                geom_attrs = {
+                                    "sOffset": _format_float(s0 - section_s0, precision=12),
+                                    "x": _format_float(x0, precision=12),
+                                    "y": _format_float(y0, precision=12),
+                                    "z": _format_float(z0, precision=12),
+                                    "hdg": _format_float(arc_heading, precision=15),
+                                    "length": _format_float(segment_length, precision=12),
+                                }
+
+                                geom_el = SubElement(explicit_el, "geometry", geom_attrs)
+                                SubElement(
+                                    geom_el,
+                                    "arc",
+                                    {"curvature": _format_float(curvature_val, precision=12)},
+                                )
+                                continue
+
+                            chord_length = math.hypot(x1 - x0, y1 - y0)
+                            if not math.isfinite(chord_length) or chord_length <= 1e-6:
                                 continue
 
                             hdg = math.atan2(y1 - y0, x1 - x0)
@@ -256,12 +360,12 @@ def write_xodr(
                                 "y": _format_float(y0, precision=12),
                                 "z": _format_float(z0, precision=12),
                                 "hdg": _format_float(hdg, precision=15),
-                                "length": _format_float(length, precision=12),
+                                "length": _format_float(chord_length, precision=12),
                             }
 
                             geom_el = SubElement(explicit_el, "geometry", geom_attrs)
 
-                            # Use a simple line primitive for consecutive polyline points.
+                            # Use a simple line primitive when curvature data is unavailable.
                             SubElement(geom_el, "line")
 
             predecessors = lane_data.get("predecessors") or []

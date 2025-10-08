@@ -674,9 +674,10 @@ def build_curvature_profile(
     *,
     offset_mapper: Optional[Callable[[float], float]] = None,
     centerline: Optional[DataFrame] = None,
-) -> List[Dict[str, float]]:
+    geo_origin: Optional[Tuple[float, float]] = None,
+) -> Tuple[List[Dict[str, float]], List[Dict[str, Any]]]:
     if df_curvature is None or len(df_curvature) == 0:
-        return []
+        return [], []
 
     start_col = _find_column(df_curvature, "offset", exclude=("end",))
     end_col = _find_column(df_curvature, "end", "offset")
@@ -700,9 +701,19 @@ def build_curvature_profile(
         or _find_column(df_curvature, "shape", "index")
         or _find_column(df_curvature, "index")
     )
+    lat_col = (
+        _find_column(df_curvature, "緯度")
+        or _find_column(df_curvature, "latitude")
+        or _find_column(df_curvature, "lat")
+    )
+    lon_col = (
+        _find_column(df_curvature, "経度")
+        or _find_column(df_curvature, "longitude")
+        or _find_column(df_curvature, "lon")
+    )
 
     if start_col is None or end_col is None or curvature_col is None:
-        return []
+        return [], []
 
     def _legacy_profile() -> List[Dict[str, float]]:
         best_path = _select_best_path(df_curvature, path_col)
@@ -777,7 +788,8 @@ def build_curvature_profile(
         return profile
 
     if shape_col is None or lane_col is None:
-        return _legacy_profile()
+        legacy = _legacy_profile()
+        return legacy, []
 
     best_path = _select_best_path(df_curvature, path_col)
 
@@ -794,6 +806,7 @@ def build_curvature_profile(
     groups: Dict[Tuple[Optional[Any], Optional[Any], float, float], Dict[str, Any]] = {}
     lane_segments: Dict[Tuple[Optional[Any], Optional[Any]], List[Dict[str, float]]] = {}
     lane_stats: Dict[Tuple[Optional[Any], Optional[Any]], Dict[str, float]] = {}
+    lane_samples: Dict[Tuple[Optional[Any], Optional[Any]], List[Dict[str, Any]]] = {}
 
     for idx in range(len(df_curvature)):
         row = df_curvature.iloc[idx]
@@ -819,6 +832,8 @@ def build_curvature_profile(
         end_cm = _to_float(row[end_col])
         curvature_val = _to_float(row[curvature_col])
         shape_val = _to_float(row[shape_col])
+        lat_val = _to_float(row[lat_col]) if lat_col is not None else None
+        lon_val = _to_float(row[lon_col]) if lon_col is not None else None
 
         if (
             start_cm is None
@@ -847,19 +862,30 @@ def build_curvature_profile(
         except (TypeError, ValueError):
             continue
 
-        # Aggregate duplicate samples for the same shape index instead of
-        # picking whichever record happens to appear first.  Some datasets
-        # retransmit curvature rows without flipping the retransmission flag,
-        # in which case the repeated entries may carry slightly different
-        # values.  Averaging them keeps the per-point curvature consistent and
-        # avoids injecting sharp heading jumps when neighbouring intervals are
-        # stitched together.
-        bucket_entry = bucket["shapes"].setdefault(shape_idx, {"sum": 0.0, "count": 0})
-        bucket_entry["sum"] += curvature_val_f
-        bucket_entry["count"] += 1
+        entry = bucket["shapes"].setdefault(
+            shape_idx,
+            {
+                "sum": 0.0,
+                "count": 0,
+                "lat_sum": 0.0,
+                "lon_sum": 0.0,
+                "geo_count": 0,
+            },
+        )
+        entry["sum"] += curvature_val_f
+        entry["count"] += 1
+        if (
+            lat_val is not None
+            and lon_val is not None
+            and math.isfinite(lat_val)
+            and math.isfinite(lon_val)
+        ):
+            entry["lat_sum"] += float(lat_val)
+            entry["lon_sum"] += float(lon_val)
+            entry["geo_count"] += 1
 
     if not groups:
-        return []
+        return [], []
 
     profile: List[Dict[str, float]] = []
 
@@ -883,7 +909,7 @@ def build_curvature_profile(
             continue
 
         shapes = bucket.get("shapes", {})
-        averaged_shapes: List[Tuple[float, float]] = []
+        averaged_shapes: List[Tuple[float, float, Optional[float], Optional[float]]] = []
         for idx_val, stats in shapes.items():
             total = float(stats.get("sum", 0.0))
             count = float(stats.get("count", 0.0))
@@ -892,7 +918,14 @@ def build_curvature_profile(
             averaged = total / count
             if not math.isfinite(averaged):
                 continue
-            averaged_shapes.append((float(idx_val), averaged))
+            geo_count = float(stats.get("geo_count", 0.0))
+            if geo_count > 0:
+                lat_avg = float(stats.get("lat_sum", 0.0) / geo_count)
+                lon_avg = float(stats.get("lon_sum", 0.0) / geo_count)
+            else:
+                lat_avg = None
+                lon_avg = None
+            averaged_shapes.append((float(idx_val), averaged, lat_avg, lon_avg))
 
         if len(averaged_shapes) < 2:
             continue
@@ -905,27 +938,115 @@ def build_curvature_profile(
             continue
 
         bucket_segments: List[Dict[str, float]] = []
+        offsets: List[float] = []
+        mapped_s: List[float] = []
+
+        lat_vals: List[float] = []
+        lon_vals: List[float] = []
+        has_latlon = True
+        for _, _, lat_avg, lon_avg in ordered:
+            if lat_avg is None or lon_avg is None:
+                has_latlon = False
+                break
+            lat_vals.append(float(lat_avg))
+            lon_vals.append(float(lon_avg))
+
+        xy_vals: Optional[Tuple[List[float], List[float]]] = None
+        if has_latlon and len(lat_vals) >= 2:
+            try:
+                if geo_origin is not None:
+                    lat0_use, lon0_use = float(geo_origin[0]), float(geo_origin[1])
+                else:
+                    lat0_use, lon0_use = lat_vals[0], lon_vals[0]
+                xy_vals = latlon_to_local_xy(lat_vals, lon_vals, lat0_use, lon0_use)
+            except Exception:  # pragma: no cover - defensive
+                xy_vals = None
+                has_latlon = False
+        else:
+            has_latlon = False
+
+        cumulative: List[float] = []
+        if has_latlon and xy_vals is not None:
+            xs, ys = xy_vals
+            cumulative.append(0.0)
+            for i in range(len(xs) - 1):
+                dist = math.hypot(xs[i + 1] - xs[i], ys[i + 1] - ys[i])
+                cumulative.append(cumulative[-1] + dist)
+        else:
+            cumulative = []
+
+        dataset_span_total = end_m - start_m
+        if dataset_span_total <= 0:
+            continue
+
+        if cumulative and len(cumulative) == len(ordered):
+            geom_length = cumulative[-1]
+            if geom_length > 0:
+                scale_factor = dataset_span_total / geom_length
+            else:
+                scale_factor = 1.0
+            for dist in cumulative:
+                offset_val = start_m + dist * scale_factor
+                offsets.append(offset_val)
+                mapped = float(offset_mapper(offset_val)) if offset_mapper is not None else float(offset_val)
+                mapped_s.append(mapped)
+        else:
+            for idx_val, _, _, _ in ordered:
+                frac = (idx_val - idx_min) / span_idx
+                offset_val = start_m + dataset_span_total * frac
+                offsets.append(offset_val)
+                mapped = float(offset_mapper(offset_val)) if offset_mapper is not None else float(offset_val)
+                mapped_s.append(mapped)
+
+        if len(offsets) != len(ordered) or len(mapped_s) != len(ordered):
+            continue
+
+        xs_for_samples: Optional[List[float]] = None
+        ys_for_samples: Optional[List[float]] = None
+        if xy_vals is not None and len(xy_vals[0]) == len(ordered):
+            xs_for_samples = list(xy_vals[0])
+            ys_for_samples = list(xy_vals[1])
+
+        lane_token = (path_key, lane_key)
+        sample_bucket = lane_samples.setdefault(lane_token, [])
+
+        for i, (idx_val, curv_val, _, _) in enumerate(ordered):
+            if i >= len(offsets):
+                break
+            offset_val = offsets[i]
+            mapped_val = mapped_s[i]
+            sample_entry: Dict[str, Any] = {
+                "s": float(mapped_val),
+                "offset": float(offset_val),
+                "curvature": float(curv_val),
+                "path": path_key,
+                "lane": lane_key,
+                "shape_index": float(idx_val),
+            }
+            if xs_for_samples is not None and ys_for_samples is not None and i < len(xs_for_samples):
+                sample_entry["x"] = float(xs_for_samples[i])
+                sample_entry["y"] = float(ys_for_samples[i])
+            sample_bucket.append(sample_entry)
 
         for i in range(len(ordered) - 1):
-            idx0, curv0 = ordered[i]
-            idx1, curv1 = ordered[i + 1]
+            idx0, curv0, _, _ = ordered[i]
+            idx1, _, _, _ = ordered[i + 1]
             if idx1 <= idx0:
                 continue
 
-            frac0 = (idx0 - idx_min) / span_idx
-            frac1 = (idx1 - idx_min) / span_idx
-            offset0 = start_m + (end_m - start_m) * frac0
-            offset1 = start_m + (end_m - start_m) * frac1
+            offset0 = offsets[i]
+            offset1 = offsets[i + 1]
+            s0 = mapped_s[i]
+            s1 = mapped_s[i + 1]
 
-            if offset1 <= offset0:
+            if not (
+                math.isfinite(offset0)
+                and math.isfinite(offset1)
+                and math.isfinite(s0)
+                and math.isfinite(s1)
+            ):
                 continue
-
-            s0 = float(offset_mapper(offset0)) if offset_mapper is not None else float(offset0)
-            s1 = float(offset_mapper(offset1)) if offset_mapper is not None else float(offset1)
-
-            if not (math.isfinite(s0) and math.isfinite(s1)):
-                continue
-            if s1 <= s0:
+            if offset1 <= offset0 or s1 <= s0:
                 continue
 
             dataset_span = offset1 - offset0
@@ -984,7 +1105,7 @@ def build_curvature_profile(
             stats["samples"] += 1.0
 
     if not lane_segments:
-        return []
+        return [], []
 
     def _lane_priority(
         lane_key: Optional[Any],
@@ -1013,6 +1134,8 @@ def build_curvature_profile(
     for (path_key, lane_key), segments in lane_segments.items():
         segments_by_path.setdefault(path_key, []).append((lane_key, segments))
 
+    selected_samples: List[Dict[str, Any]] = []
+
     for path_key, lane_entries in segments_by_path.items():
         if not lane_entries:
             continue
@@ -1028,8 +1151,17 @@ def build_curvature_profile(
         ordered_segments = sorted(best_segments, key=lambda seg: seg["s0"])
         profile.extend(ordered_segments)
 
+        lane_token = (path_key, best_lane_key)
+        sample_values = lane_samples.get(lane_token)
+        if sample_values:
+            sample_values = sorted(
+                sample_values,
+                key=lambda item: (float(item.get("s", 0.0)), float(item.get("offset", 0.0))),
+            )
+            selected_samples.extend(sample_values)
+
     profile.sort(key=lambda item: item["s0"])
-    return profile
+    return profile, selected_samples
 
 
 def build_slope_profile(
@@ -1131,8 +1263,6 @@ def build_slope_profile(
             superelevation.append({"s0": s0, "s1": s1, "angle": avg_cross})
 
     return {"longitudinal": longitudinal, "superelevation": superelevation}
-
-
 def build_elevation_profile_from_slopes(
     segments: List[Dict[str, float]],
     *,
