@@ -1205,9 +1205,27 @@ def build_lane_spec(
 
             pos_key = 2 if side == "left" else 1
             alt_key = 1 if side == "left" else 2
-            line_id = segment.get("line_positions", {}).get(pos_key)
-            if not line_id:
-                line_id = segment.get("line_positions", {}).get(alt_key)
+
+            line_positions = segment.get("line_positions", {}) or {}
+
+            def _iter_ids(*keys):
+                for key in keys:
+                    value = line_positions.get(key)
+                    if isinstance(value, (list, tuple)):
+                        for item in value:
+                            if item:
+                                yield item
+                    elif value:
+                        yield value
+
+            line_id = None
+            candidates = list(_iter_ids(pos_key, alt_key))
+            for candidate in candidates:
+                if division_lookup.get(candidate):
+                    line_id = candidate
+                    break
+            if line_id is None and candidates:
+                line_id = candidates[0]
 
             mark = None
             if line_id:
