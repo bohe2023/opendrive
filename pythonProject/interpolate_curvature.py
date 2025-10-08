@@ -157,10 +157,13 @@ def process_file(path: Path, *, encoding: str = DEFAULT_ENCODING) -> int:
     return added_rows
 
 
-def _default_files(root: Path) -> List[Path]:
+def default_files(root: Path | None = None) -> List[Path]:
+    """Return the default curvature CSV files that should be processed."""
+
+    base = root or Path(__file__).resolve().parents[1]
     return [
-        root / "input_csv" / "JPN" / "PROFILETYPE_MPU_ZGM_CURVATURE.csv",
-        root / "input_csv" / "US" / "PROFILETYPE_MPU_US_CURVATURE.csv",
+        base / "input_csv" / "JPN" / "PROFILETYPE_MPU_ZGM_CURVATURE.csv",
+        base / "input_csv" / "US" / "PROFILETYPE_MPU_US_CURVATURE.csv",
     ]
 
 
@@ -182,7 +185,7 @@ def _parse_arguments() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_arguments()
-    files = args.files or _default_files(Path(__file__).resolve().parents[1])
+    files = args.files or default_files(Path(__file__).resolve().parents[1])
 
     for path in files:
         if not path.exists():
