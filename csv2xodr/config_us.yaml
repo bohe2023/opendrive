@@ -9,6 +9,7 @@ files:
   lane_link: PROFILETYPE_MPU_US_LANE_LINK_INFO.csv
   lane_division: PROFILETYPE_MPU_US_LANE_LINE.csv
   lane_width: PROFILETYPE_MPU_US_LANE_WIDTH.csv
+  curvature: PROFILETYPE_MPU_US_CURVATURE.csv
   slope: PROFILETYPE_MPU_US_SLOPE.csv
   sign: PROFILETYPE_MPU_US_SIGN.csv
 

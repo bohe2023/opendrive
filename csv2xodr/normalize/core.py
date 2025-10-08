@@ -1794,7 +1794,7 @@ def build_geometry_segments(
         _record_best(segments, deviation)
 
     if deviation > max_endpoint_deviation:
-        if best_deviation <= max_endpoint_deviation:
+        if best_segments:
             return best_segments
         return []
 
