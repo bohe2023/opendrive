@@ -64,9 +64,8 @@ def test_interpolate_group_uses_following_rows_when_initial_index_missing():
     result = interpolate_group(rows)
     indices = [int(row[SHAPE_INDEX_COLUMN]) for row in result]
 
-    assert indices == [0, 0, 1, 1]
+    assert indices == [0, 1, 1]
     assert result[0]["方位角[deg]"] == "20.0"
-    assert result[1]["方位角[deg]"] == "21.0"
 
 
 def test_interpolate_shape_indices_resets_between_lanes():

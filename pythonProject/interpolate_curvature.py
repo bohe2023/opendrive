@@ -78,20 +78,29 @@ def interpolate_group(rows: Sequence[MutableMapping[str, str]]) -> List[MutableM
     existing_indices = sorted(index_map)
     max_index = existing_indices[-1]
     interpolated: List[MutableMapping[str, str]] = []
-    last_templates: List[MutableMapping[str, str]] | None = None
+    last_template: MutableMapping[str, str] | None = None
 
     for index in range(0, max_index + 1):
         if index in index_map:
             templates = [_clone_with_index(row, index) for row in index_map[index]]
+            # Remember a single template row so that we can clone at most one
+            # record when interpolating missing indices.  Some datasets contain
+            # duplicate rows for the same shape index (for example, lane
+            # specific measurements).  Missing indices should only result in a
+            # single new row rather than duplicating every entry from the last
+            # known index.
+            last_template = dict(templates[0])
         else:
-            if last_templates is not None:
-                templates = [_clone_with_index(row, index) for row in last_templates]
+            if last_template is not None:
+                template = last_template
             else:
                 # Missing indices at the start should fall back to the next available data.
                 next_index = next(existing for existing in existing_indices if existing > index)
-                templates = [_clone_with_index(row, index) for row in index_map[next_index]]
+                template = dict(index_map[next_index][0])
+            new_row = _clone_with_index(template, index)
+            templates = [new_row]
+            last_template = dict(new_row)
         interpolated.extend(templates)
-        last_templates = [dict(row) for row in templates]
 
     return interpolated
 
