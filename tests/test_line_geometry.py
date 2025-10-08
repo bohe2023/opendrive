@@ -315,7 +315,7 @@ def test_line_geometry_lookup_assigns_curvature_from_samples():
     assert geom["curvature"][1] == pytest.approx(-0.5)
 
 
-def test_line_geometry_lookup_prefers_shape_index_curvature():
+def test_line_geometry_lookup_prefers_lane_local_curvature_samples():
     meters_to_degrees = 180.0 / (math.pi * 6378137.0)
     df = DataFrame(
         [
@@ -349,8 +349,24 @@ def test_line_geometry_lookup_prefers_shape_index_curvature():
     )
 
     curvature_samples = [
-        {"path": "500", "lane": "3", "shape_index": 0, "offset": 0.0, "curvature": 0.01},
-        {"path": "500", "lane": "3", "shape_index": 1, "offset": 1.0, "curvature": -0.02},
+        {
+            "path": "500",
+            "lane": "3",
+            "shape_index": 100,
+            "offset": 10.0,
+            "curvature": 0.01,
+            "x": 0.0,
+            "y": 0.0,
+        },
+        {
+            "path": "500",
+            "lane": "3",
+            "shape_index": 200,
+            "offset": 20.0,
+            "curvature": -0.02,
+            "x": 1.0,
+            "y": 0.0,
+        },
     ]
 
     lookup = build_line_geometry_lookup(
