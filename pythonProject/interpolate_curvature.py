@@ -68,39 +68,33 @@ def _group_rows(rows: Iterable[MutableMapping[str, str]]) -> Iterable[List[Mutab
 def interpolate_group(rows: Sequence[MutableMapping[str, str]]) -> List[MutableMapping[str, str]]:
     """Fill missing shape indices within ``rows`` belonging to the same lane."""
 
-    index_map: Dict[int, List[MutableMapping[str, str]]] = defaultdict(list)
-    for row in rows:
-        index_map[_parse_int(row[SHAPE_INDEX_COLUMN])].append(row)
-
-    if not index_map:
-        return [dict(row) for row in rows]
-
-    existing_indices = sorted(index_map)
-    max_index = existing_indices[-1]
     interpolated: List[MutableMapping[str, str]] = []
     last_template: MutableMapping[str, str] | None = None
+    expected_index = 0
 
-    for index in range(0, max_index + 1):
-        if index in index_map:
-            templates = [_clone_with_index(row, index) for row in index_map[index]]
-            # Remember a single template row so that we can clone at most one
-            # record when interpolating missing indices.  Some datasets contain
-            # duplicate rows for the same shape index (for example, lane
-            # specific measurements).  Missing indices should only result in a
-            # single new row rather than duplicating every entry from the last
-            # known index.
-            last_template = dict(templates[0])
-        else:
-            if last_template is not None:
-                template = last_template
-            else:
-                # Missing indices at the start should fall back to the next available data.
-                next_index = next(existing for existing in existing_indices if existing > index)
-                template = dict(index_map[next_index][0])
-            new_row = _clone_with_index(template, index)
-            templates = [new_row]
-            last_template = dict(new_row)
-        interpolated.extend(templates)
+    for row in rows:
+        current_index = _parse_int(row[SHAPE_INDEX_COLUMN])
+
+        if interpolated and current_index < expected_index:
+            # Index reset (e.g. next measurement block).  Start a fresh sequence
+            # without attempting to back-fill values from the previous block.
+            cloned = dict(row)
+            interpolated.append(cloned)
+            last_template = dict(cloned)
+            expected_index = current_index + 1
+            continue
+
+        while current_index > expected_index:
+            template = last_template if last_template is not None else dict(row)
+            clone = _clone_with_index(template, expected_index)
+            interpolated.append(clone)
+            last_template = dict(clone)
+            expected_index += 1
+
+        cloned = dict(row)
+        interpolated.append(cloned)
+        last_template = dict(cloned)
+        expected_index = current_index + 1
 
     return interpolated
 

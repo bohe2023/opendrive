@@ -68,6 +68,24 @@ def test_interpolate_group_uses_following_rows_when_initial_index_missing():
     assert result[0]["方位角[deg]"] == "20.0"
 
 
+def test_interpolate_group_preserves_original_order_when_indices_reset():
+    rows = [
+        _make_row(lane_id="C", index=0, heading="11.0"),
+        _make_row(lane_id="C", index=1, heading="12.0"),
+        _make_row(lane_id="C", index=2, heading="13.0"),
+        _make_row(lane_id="C", index=0, heading="21.0"),
+        _make_row(lane_id="C", index=1, heading="22.0"),
+    ]
+
+    result = interpolate_group(rows)
+
+    indices = [int(row[SHAPE_INDEX_COLUMN]) for row in result]
+    headings = [row["方位角[deg]"] for row in result]
+
+    assert indices == [0, 1, 2, 0, 1]
+    assert headings == ["11.0", "12.0", "13.0", "21.0", "22.0"]
+
+
 def test_interpolate_shape_indices_resets_between_lanes():
     lane_a = [
         _make_row(lane_id="A", index=0, heading="15.0"),
