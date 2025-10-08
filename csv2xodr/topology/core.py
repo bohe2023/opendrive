@@ -354,6 +354,9 @@ def build_lane_topology(lane_link_df: DataFrame,
             mapped_start = offset_mapper(mapped_start)
             mapped_end = offset_mapper(mapped_end)
 
+        if mapped_end - mapped_start <= 1e-6:
+            continue
+
         updated = dict(record)
         updated["start"] = mapped_start
         updated["end"] = mapped_end
