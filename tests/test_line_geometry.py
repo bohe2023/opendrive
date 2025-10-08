@@ -1,7 +1,6 @@
-from pathlib import Path
-
 import math
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -314,3 +313,53 @@ def test_line_geometry_lookup_assigns_curvature_from_samples():
     assert "curvature" in geom
     assert geom["curvature"][0] == pytest.approx(0.25)
     assert geom["curvature"][1] == pytest.approx(-0.5)
+
+
+def test_line_geometry_lookup_prefers_shape_index_curvature():
+    meters_to_degrees = 180.0 / (math.pi * 6378137.0)
+    df = DataFrame(
+        [
+            {
+                "ライン型地物ID": "shape",  # line id
+                "Path Id": "500",  # path identifier
+                "Lane Number": "3",  # lane identifier
+                "Offset[cm]": "0",
+                "End Offset[cm]": "100",
+                "緯度[deg]": "0.0",
+                "経度[deg]": "0.0",
+                "高さ[m]": "0.0",
+                "ログ時刻": "t0",
+                "Type": "1",
+                "Is Retransmission": "false",
+            },
+            {
+                "ライン型地物ID": "shape",
+                "Path Id": "500",
+                "Lane Number": "3",
+                "Offset[cm]": "100",
+                "End Offset[cm]": "200",
+                "緯度[deg]": "0.0",
+                "経度[deg]": f"{1.0 * meters_to_degrees}",
+                "高さ[m]": "0.0",
+                "ログ時刻": "t0",
+                "Type": "1",
+                "Is Retransmission": "false",
+            },
+        ]
+    )
+
+    curvature_samples = [
+        {"path": "500", "lane": "3", "shape_index": 0, "offset": 0.0, "curvature": 0.01},
+        {"path": "500", "lane": "3", "shape_index": 1, "offset": 1.0, "curvature": -0.02},
+    ]
+
+    lookup = build_line_geometry_lookup(
+        df,
+        offset_mapper=lambda value: value,
+        lat0=0.0,
+        lon0=0.0,
+        curvature_samples=curvature_samples,
+    )
+
+    geom = lookup["shape"][0]
+    assert geom["curvature"] == pytest.approx([0.01, -0.02])
