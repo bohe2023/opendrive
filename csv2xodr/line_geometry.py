@@ -137,6 +137,7 @@ def build_line_geometry_lookup(
                         best_curv = curv
 
         if best_curv is None:
+            best_dist_sq = float("inf")
             for sx, sy, curv in prepared_samples:
                 dist_sq = (sx - x_val) ** 2 + (sy - y_val) ** 2
                 if dist_sq < best_dist_sq:
