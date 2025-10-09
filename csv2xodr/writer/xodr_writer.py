@@ -36,6 +36,7 @@ def write_xodr(
         "version": "1.00",
         "date": "2025-09-16",
     })
+    explicit_geometry_written = False
     if geo_ref:
         SubElement(header, "geoReference").text = geo_ref
 
@@ -178,7 +179,10 @@ def write_xodr(
         left_el = SubElement(ls, "left") if has_left else None
         right_el = SubElement(ls, "right") if has_right else None
 
+        section_s0 = float(sec["s0"])
+
         def _write_lane(parent, lane_data):
+            nonlocal explicit_geometry_written
             lane_id = lane_data["id"]
             lane_type = lane_data.get("type", "driving")
             ln = SubElement(
@@ -205,7 +209,60 @@ def write_xodr(
                     "color": str(road_mark.get("color", "standard")),
                     "laneChange": str(road_mark.get("laneChange", "both")),
                 }
-                SubElement(ln, "roadMark", rm_attrs)
+                rm_el = SubElement(ln, "roadMark", rm_attrs)
+
+                geometry = None
+                if isinstance(road_mark, dict):
+                    geometry = road_mark.get("geometry")
+
+                if geometry:
+                    s_vals = geometry.get("s") or []
+                    x_vals = geometry.get("x") or []
+                    y_vals = geometry.get("y") or []
+                    z_vals = geometry.get("z") or []
+                    if (
+                        len(s_vals) == len(x_vals)
+                        and len(s_vals) == len(y_vals)
+                        and len(s_vals) == len(z_vals)
+                        and len(s_vals) >= 2
+                    ):
+                        if not explicit_geometry_written:
+                            explicit_geometry_written = True
+                            header.set("revMinor", "6")
+                            header.set("version", "1.06")
+
+                        explicit_el = SubElement(rm_el, "explicit")
+
+                        for idx in range(len(s_vals) - 1):
+                            try:
+                                s0 = float(s_vals[idx])
+                                x0 = float(x_vals[idx])
+                                x1 = float(x_vals[idx + 1])
+                                y0 = float(y_vals[idx])
+                                y1 = float(y_vals[idx + 1])
+                                z0 = float(z_vals[idx])
+                            except (TypeError, ValueError):
+                                continue
+
+                            length = math.hypot(x1 - x0, y1 - y0)
+                            if not math.isfinite(length) or length <= 1e-6:
+                                continue
+
+                            hdg = math.atan2(y1 - y0, x1 - x0)
+
+                            geom_attrs = {
+                                "sOffset": _format_float(s0 - section_s0, precision=12),
+                                "x": _format_float(x0, precision=12),
+                                "y": _format_float(y0, precision=12),
+                                "z": _format_float(z0, precision=12),
+                                "hdg": _format_float(hdg, precision=15),
+                                "length": _format_float(length, precision=12),
+                            }
+
+                            geom_el = SubElement(explicit_el, "geometry", geom_attrs)
+
+                            # Use a simple line primitive for consecutive polyline points.
+                            SubElement(geom_el, "line")
 
             predecessors = lane_data.get("predecessors") or []
             successors = lane_data.get("successors") or []

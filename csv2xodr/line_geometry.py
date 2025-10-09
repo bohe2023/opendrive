@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from csv2xodr.normalize.core import latlon_to_local_xy
@@ -87,9 +88,9 @@ def build_line_geometry_lookup(
         return {}
 
     grouped: Dict[Tuple[str, Any, Any, Any, Any], Dict[str, Any]] = {}
-    global_base_offset_m: Optional[float] = None
-
-    segment_progress: Dict[Tuple[Any, Any, Any, Any, Any, float, Optional[float]], Dict[str, float]] = {}
+    segment_progress: Dict[
+        Tuple[Any, Any, Any, Any, Any, float, Optional[float]], Dict[str, float]
+    ] = {}
 
     for idx in range(len(line_geom_df)):
         row = line_geom_df.iloc[idx]
@@ -103,9 +104,38 @@ def build_line_geometry_lookup(
         if lat_val is None or lon_val is None:
             continue
 
-        z_val = _to_float(row[z_col]) if z_col else 0.0
+        group_key = (
+            line_id,
+            row[logtime_col] if logtime_col else None,
+            row[instance_col] if instance_col else None,
+            row[flag_col] if flag_col else None,
+            row[type_col] if type_col else None,
+        )
+
+        entry = grouped.setdefault(
+            group_key,
+            {
+                "line_id": line_id,
+                "lat": [],
+                "lon": [],
+                "z": [],
+                "offset": [],
+                "has_true": False,
+                "has_false": False,
+                "has_flag": False,
+            },
+        )
+
+        z_val = _to_float(row[z_col]) if z_col else None
+        if z_val is not None:
+            if not math.isfinite(z_val) or abs(z_val) >= 1e4:
+                z_val = None
         if z_val is None:
-            z_val = 0.0
+            existing = entry.get("z")
+            if existing:
+                z_val = existing[-1]
+            else:
+                z_val = 0.0
 
         off_cm_raw = None
         if offset_col is not None:
@@ -167,28 +197,6 @@ def build_line_geometry_lookup(
         else:
             off_val = float(off_cm_raw)
 
-        group_key = (
-            line_id,
-            row[logtime_col] if logtime_col else None,
-            row[instance_col] if instance_col else None,
-            row[flag_col] if flag_col else None,
-            row[type_col] if type_col else None,
-        )
-
-        entry = grouped.setdefault(
-            group_key,
-            {
-                "line_id": line_id,
-                "lat": [],
-                "lon": [],
-                "z": [],
-                "offset": [],
-                "has_true": False,
-                "has_false": False,
-                "has_flag": False,
-            },
-        )
-
         retrans_flag = None
         if is_retrans_col is not None:
             entry["has_flag"] = True
@@ -203,8 +211,6 @@ def build_line_geometry_lookup(
             entry["has_false"] = True
 
         off_m = off_val / 100.0
-        if global_base_offset_m is None or off_m < global_base_offset_m:
-            global_base_offset_m = off_m
 
         entry["lat"].append(lat_val)
         entry["lon"].append(lon_val)
@@ -216,6 +222,18 @@ def build_line_geometry_lookup(
 
     lookup: Dict[str, List[Dict[str, Any]]] = {}
 
+    global_base_offset: Optional[float] = None
+    for entry in grouped.values():
+        for raw in entry.get("offset", []) or []:
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(value):
+                continue
+            if global_base_offset is None or value < global_base_offset:
+                global_base_offset = value
+
     for entry in grouped.values():
         has_true = entry.get("has_true", False)
         has_false = entry.get("has_false", False)
@@ -223,20 +241,20 @@ def build_line_geometry_lookup(
         if has_flag and has_true and not has_false:
             continue
 
-        offsets_raw = entry.get("offset", [])
-        if offsets_raw:
-            base_offset = global_base_offset_m if global_base_offset_m is not None else min(offsets_raw)
-            offsets_m = [value - base_offset for value in offsets_raw]
-        else:
-            offsets_m = []
-        if offset_mapper is not None:
-            mapped_s = [offset_mapper(value) for value in offsets_m]
-        else:
-            mapped_s = offsets_m
+        lat_vals = entry.get("lat", []) or []
+        lon_vals = entry.get("lon", []) or []
+        z_vals = entry.get("z", []) or []
+        offsets_raw = entry.get("offset", []) or []
 
-        x_vals, y_vals = latlon_to_local_xy(entry["lat"], entry["lon"], lat0, lon0)
+        if not lat_vals or not lon_vals or not z_vals or not offsets_raw:
+            continue
 
-        if not mapped_s or len(mapped_s) != len(x_vals) or len(x_vals) != len(entry["z"]):
+        try:
+            x_vals, y_vals = latlon_to_local_xy(lat_vals, lon_vals, lat0, lon0)
+        except Exception:  # pragma: no cover - defensive
+            continue
+
+        if len(x_vals) != len(z_vals) or len(x_vals) != len(offsets_raw):
             continue
 
         # The Japanese datasets reuse the same ``line_id`` across multiple
@@ -250,9 +268,50 @@ def build_line_geometry_lookup(
         last_s: Optional[float] = None
         reset_threshold = 1e-4  # tolerate sub-millimetre jitter while catching real resets
 
-        for s_val, x_val, y_val, z_val in zip(mapped_s, x_vals, y_vals, entry["z"]):
+        entry_base_offset: Optional[float] = None
+        for raw in offsets_raw:
             try:
-                s_float = float(s_val)
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(value):
+                continue
+            if entry_base_offset is None or value < entry_base_offset:
+                entry_base_offset = value
+
+        for raw_offset, x_val, y_val, z_val in zip(offsets_raw, x_vals, y_vals, z_vals):
+            try:
+                offset_m = float(raw_offset)
+            except (TypeError, ValueError):
+                continue
+
+            if entry_base_offset is not None and math.isfinite(entry_base_offset):
+                if (
+                    global_base_offset is not None
+                    and math.isfinite(global_base_offset)
+                    and entry_base_offset > global_base_offset + 1e-6
+                ):
+                    offset_m -= global_base_offset
+                else:
+                    offset_m -= entry_base_offset
+            elif global_base_offset is not None and math.isfinite(global_base_offset):
+                offset_m -= global_base_offset
+
+            if offset_mapper is not None:
+                try:
+                    s_float = float(offset_mapper(offset_m))
+                except Exception:  # pragma: no cover - defensive
+                    continue
+            else:
+                s_float = float(offset_m)
+
+            if not math.isfinite(s_float):
+                continue
+
+            try:
+                x_float = float(x_val)
+                y_float = float(y_val)
+                z_float = float(z_val)
             except (TypeError, ValueError):
                 continue
 
@@ -266,16 +325,16 @@ def build_line_geometry_lookup(
                 prev_s, prev_x, prev_y, prev_z = current[-1]
                 if (
                     abs(s_float - prev_s) <= 1e-9
-                    and abs(x_val - prev_x) <= 1e-9
-                    and abs(y_val - prev_y) <= 1e-9
-                    and abs(z_val - prev_z) <= 1e-9
+                    and abs(x_float - prev_x) <= 1e-9
+                    and abs(y_float - prev_y) <= 1e-9
+                    and abs(z_float - prev_z) <= 1e-9
                 ):
                     # Skip duplicate samples that would otherwise collapse into
                     # zero-length segments after splitting.
                     last_s = s_float
                     continue
 
-            current.append((s_float, float(x_val), float(y_val), float(z_val)))
+            current.append((s_float, x_float, y_float, z_float))
             last_s = s_float
 
         if len(current) >= 2:

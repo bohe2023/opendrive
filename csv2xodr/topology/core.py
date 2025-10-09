@@ -1,3 +1,4 @@
+import math
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -65,26 +66,43 @@ def _offset_series(df: DataFrame):
     if df is None or len(df) == 0:
         return None, None
 
-    # Offsets are provided in centimetres measured along the reference line.  The
-    # converter maps them back to the centreline ``s`` coordinate via
-    # ``offset_mapper`` which already compensates for non-zero origins.  Do not
-    # subtract the local minimum here – doing so desynchronises datasets that do
-    # not start at the very first sample (common in partial exports) and causes
-    # lane sections and markings to shift upstream.  Instead, only convert the
-    # units to metres and keep the absolute reference intact.
-    off_cols = [c for c in df.columns if "Offset" in c]             # Offset[cm]
-    end_cols = [c for c in df.columns if "End Offset" in c]         # End Offset[cm]
+    # Offsets are provided in centimetres measured along the reference line.
+    # They use the same absolute origin as the geometry CSV.  The centreline
+    # normalisation step (``build_centerline``) already re-bases the offsets so
+    # that the first sample maps to ``s = 0``.  To keep lane sections aligned
+    # with the plan view we replicate that behaviour here and subtract the
+    # earliest valid offset before converting to metres.
+    off_cols = [c for c in df.columns if "Offset" in c]  # Offset[cm]
+    end_cols = [c for c in df.columns if "End Offset" in c]  # End Offset[cm]
 
-    off = None
-    end = None
+    off_values: List[float] = []
+    end_values: List[float] = []
 
     if off_cols:
-        off_values = df[off_cols[0]].astype(float).to_list()
-        off = Series([v / 100.0 for v in off_values], name=off_cols[0], kind="column")
+        try:
+            off_values = [float(v) / 100.0 for v in df[off_cols[0]].astype(float).to_list()]
+        except Exception:
+            off_values = []
 
     if end_cols:
-        end_values = df[end_cols[0]].astype(float).to_list()
-        end = Series([v / 100.0 for v in end_values], name=end_cols[0], kind="column")
+        try:
+            end_values = [float(v) / 100.0 for v in df[end_cols[0]].astype(float).to_list()]
+        except Exception:
+            end_values = []
+
+    base_offset: Optional[float] = None
+    for seq in (off_values, end_values):
+        for value in seq:
+            if not math.isfinite(value):
+                continue
+            base_offset = value if base_offset is None else min(base_offset, value)
+
+    if base_offset is not None:
+        off_values = [value - base_offset if math.isfinite(value) else value for value in off_values]
+        end_values = [value - base_offset if math.isfinite(value) else value for value in end_values]
+
+    off = Series(off_values, name=off_cols[0], kind="column") if off_cols and off_values else None
+    end = Series(end_values, name=end_cols[0], kind="column") if end_cols and end_values else None
 
     return off, end
 
@@ -153,10 +171,15 @@ def build_lane_topology(lane_link_df: DataFrame,
     )
     width_col = _find_column(cols, "幅員")
     is_retrans_col = _find_column(cols, "Is", "Retransmission")
+    nw_type_col = _find_column(cols, "NW", "種別") or _find_column(cols, "NW", "type")
     left_col = _find_column(cols, "左側車線")
     right_col = _find_column(cols, "右側車線")
     forward_cols = [c for c in cols if "前方レーンID" in c and "数" not in c]
     backward_cols = [c for c in cols if "後方レーンID" in c and "数" not in c]
+    lane_type_col = _find_column(cols, "Lane", "Type")
+    lane_add_remove_col = _find_column(cols, "Lane", "Add", "Remove")
+    accel_col = _find_column(cols, "Accelerating")
+    decel_col = _find_column(cols, "Decelerating")
 
     line_id_cols: List[Tuple[int, str]] = []
     line_pos_cols: Dict[int, str] = {}
@@ -203,6 +226,20 @@ def build_lane_topology(lane_link_df: DataFrame,
                 lane_no = int(float(str(lane_no_val).strip()))
             except Exception:
                 lane_no = None
+        lane_nw_type = None
+        if nw_type_col:
+            try:
+                lane_nw_type = str(row[nw_type_col]).strip()
+            except Exception:
+                lane_nw_type = None
+            if lane_nw_type:
+                if lane_no is not None:
+                    if lane_nw_type == "2":
+                        lane_no = -abs(lane_no)
+                    elif lane_nw_type == "1":
+                        lane_no = abs(lane_no)
+        else:
+            lane_nw_type = None
         if base_id is None or lane_no is None:
             continue
 
@@ -225,6 +262,44 @@ def build_lane_topology(lane_link_df: DataFrame,
             if tid:
                 backward_targets.append(tid)
 
+        lane_kind = "driving"
+        skip_lane = False
+
+        if lane_type_col:
+            lane_type_val = str(row[lane_type_col]).strip()
+            if lane_type_val:
+                lowered = lane_type_val.lower()
+                if "shoulder" in lowered:
+                    lane_kind = "shoulder"
+                elif "bus" in lowered:
+                    lane_kind = "bus"
+
+        def _flagged(col: Optional[str]) -> bool:
+            if not col:
+                return False
+            try:
+                value = row[col]
+            except Exception:
+                return False
+            text = str(value).strip().lower()
+            if text in {"1", "true"}:
+                return True
+            try:
+                return float(text) != 0.0
+            except Exception:
+                return False
+
+        if _flagged(accel_col):
+            lane_kind = "entry"
+            skip_lane = True
+        elif _flagged(decel_col):
+            lane_kind = "exit"
+            skip_lane = True
+        elif lane_add_remove_col:
+            raw_add_remove = str(row[lane_add_remove_col]).strip()
+            if raw_add_remove and raw_add_remove not in {"0", ""}:
+                skip_lane = True
+
         line_positions: Dict[int, str] = {}
         for idx, col in line_id_cols:
             lid = _canonical_numeric(row[col], allow_negative=True)
@@ -242,10 +317,14 @@ def build_lane_topology(lane_link_df: DataFrame,
                 line_positions[pos] = lid
 
         uid = _compose_lane_uid(base_id, lane_no)
+        if skip_lane:
+            continue
+
         raw_records.append({
             "uid": uid,
             "base_id": base_id,
             "lane_no": lane_no,
+            "nw_type": lane_nw_type,
             "start": start,
             "end": end,
             "width": width,
@@ -255,6 +334,7 @@ def build_lane_topology(lane_link_df: DataFrame,
             "predecessors": backward_targets,
             "line_positions": line_positions,
             "is_retrans": is_retrans,
+            "lane_kind": lane_kind,
         })
 
     if not raw_records:
@@ -318,10 +398,13 @@ def build_lane_topology(lane_link_df: DataFrame,
             continue
 
         uid = _compose_lane_uid(base_id, lane_no)
+        lane_type = cleaned[0].get("lane_kind", "driving") if cleaned else "driving"
+
         lanes[uid] = {
             "base_id": base_id,
             "lane_no": lane_no,
             "segments": cleaned,
+            "type": lane_type,
         }
         groups.setdefault(base_id, []).append(uid)
 

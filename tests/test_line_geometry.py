@@ -160,6 +160,54 @@ def test_build_line_geometry_lookup_keeps_mixed_retransmissions():
     assert lookup["10"][0]["s"][0] == pytest.approx(0.0)
 
 
+def test_build_line_geometry_lookup_filters_height_outliers():
+    df = DataFrame(
+        [
+            {
+                "ライン型地物ID": "50",
+                "Offset[cm]": "0",
+                "緯度[deg]": "35.0",
+                "経度[deg]": "139.0",
+                "高さ[m]": "55.0",
+                "ログ時刻": "base",
+                "Type": "1",
+                "Is Retransmission": "false",
+            },
+            {
+                "ライン型地物ID": "50",
+                "Offset[cm]": "100",
+                "緯度[deg]": "35.00001",
+                "経度[deg]": "139.00001",
+                "高さ[m]": "83886.07",
+                "ログ時刻": "base",
+                "Type": "1",
+                "Is Retransmission": "false",
+            },
+            {
+                "ライン型地物ID": "50",
+                "Offset[cm]": "200",
+                "緯度[deg]": "35.00002",
+                "経度[deg]": "139.00002",
+                "高さ[m]": "55.5",
+                "ログ時刻": "base",
+                "Type": "1",
+                "Is Retransmission": "false",
+            },
+        ]
+    )
+
+    lookup = build_line_geometry_lookup(
+        df, offset_mapper=lambda value: value, lat0=35.0, lon0=139.0
+    )
+
+    assert "50" in lookup
+    geom = lookup["50"][0]
+    assert geom["s"] == pytest.approx([0.0, 1.0, 2.0])
+    assert geom["z"] == pytest.approx(
+        [55.0, 55.0, 55.5]
+    ), "outlier heights should be clamped while keeping continuity"
+
+
 def test_build_line_geometry_lookup_splits_when_offset_resets():
     df = DataFrame(
         [

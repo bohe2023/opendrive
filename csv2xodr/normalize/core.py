@@ -566,6 +566,13 @@ def build_elevation_profile(
         if not math.isfinite(height):
             continue
 
+        if abs(height) >= 1e4:
+            # Sentinel-style placeholders in some datasets use extremely large
+            # values (for example ``83886.07``) to signal that the real
+            # elevation measurement is unavailable.  Treat them as missing data
+            # instead of letting them skew the typical height statistics.
+            continue
+
         grouped.setdefault(offset_cm, []).append(height)
         all_heights.append(height)
 
@@ -590,9 +597,6 @@ def build_elevation_profile(
         filtered: List[float] = []
         for value in heights:
             if not math.isfinite(value):
-                continue
-
-            if abs(value) >= 1e6:
                 continue
 
             if typical_height is not None:
@@ -772,9 +776,6 @@ def build_curvature_profile(
 
         return profile
 
-    # Datasets that expose "形状インデックス" encode a per-sample curvature
-    # sequence which requires finer interpolation.  Fall back to the legacy
-    # behaviour when the column is not present.
     if shape_col is None or lane_col is None:
         return _legacy_profile()
 
@@ -1414,8 +1415,7 @@ def build_geometry_segments(
                 idx += 1
                 continue
 
-            # Re-anchor the analytical pose for diagnostics, but keep the
-            # numerically propagated start unless the drift becomes excessive.
+
             current_s = start
 
             anchor_x, anchor_y, anchor_hdg = _interpolate_centerline(centerline, start)

@@ -10,6 +10,9 @@ from csv2xodr.topology.core import _canonical_numeric
 from csv2xodr.normalize.core import latlon_to_local_xy
 
 
+GEOMETRY_SIDE_CONFIDENCE_MIN = 0.5
+
+
 def _clip_geometry_segment(geom: Dict[str, List[float]], s0: float, s1: float) -> Optional[Dict[str, List[float]]]:
     s_vals = geom.get("s") or []
     if not s_vals:
@@ -150,14 +153,14 @@ def _estimate_lane_side_from_geometry(
     *,
     offset_mapper=None,
     geo_origin: Optional[Tuple[float, float]] = None,
-) -> Dict[str, str]:
+) -> Tuple[Dict[str, str], Dict[str, float]]:
     if (
         lanes_geom_df is None
         or len(lanes_geom_df) == 0
         or centerline is None
         or len(centerline) == 0
     ):
-        return {}
+        return {}, {}
 
     cols = list(lanes_geom_df.columns)
 
@@ -174,22 +177,39 @@ def _estimate_lane_side_from_geometry(
     offset_col = find_col("Offset")
 
     if lane_id_col is None or lat_col is None or lon_col is None or offset_col is None:
-        return {}
+        return {}, {}
 
     try:
         lat_vals = [float(v) for v in lanes_geom_df[lat_col].astype(float).to_list()]
         lon_vals = [float(v) for v in lanes_geom_df[lon_col].astype(float).to_list()]
         offsets_cm = [float(v) for v in lanes_geom_df[offset_col].astype(float).to_list()]
     except Exception:
-        return {}
+        return {}, {}
+
+    # ``Offset`` values in the raw CSV are absolute centimetre positions measured from
+    # a global reference.  The centreline normalisation logic rebases them so that the
+    # first valid sample maps to ``s = 0``.  Mirror that behaviour here to avoid feeding
+    # extremely large numbers into the mapper (which would collapse everything to the
+    # end of the alignment and cause lane sides to flip erratically).
+    offsets_m: List[float] = [value / 100.0 for value in offsets_cm]
+    base_offset_m: Optional[float] = None
+    for value in offsets_m:
+        if not math.isfinite(value):
+            continue
+        if base_offset_m is None or value < base_offset_m:
+            base_offset_m = value
+    if base_offset_m is not None:
+        offsets_m = [value - base_offset_m if math.isfinite(value) else value for value in offsets_m]
+    else:
+        offsets_m = [0.0 for _ in offsets_m]
 
     lane_ids = [
         _canonical_numeric(value)
         for value in lanes_geom_df[lane_id_col].to_list()
     ]
 
-    if not lane_ids or len(lane_ids) != len(offsets_cm):
-        return {}
+    if not lane_ids or len(lane_ids) != len(offsets_m):
+        return {}, {}
 
     if geo_origin is not None:
         lat0, lon0 = geo_origin
@@ -201,11 +221,11 @@ def _estimate_lane_side_from_geometry(
 
     side_samples: Dict[str, List[float]] = {}
 
-    for lane_id, off_cm, px, py in zip(lane_ids, offsets_cm, x_vals, y_vals):
+    for lane_id, off_m, px, py in zip(lane_ids, offsets_m, x_vals, y_vals):
         if lane_id is None:
             continue
         try:
-            s_val = float(off_cm) / 100.0
+            s_val = float(off_m)
         except (TypeError, ValueError):
             continue
         if offset_mapper is not None:
@@ -225,6 +245,7 @@ def _estimate_lane_side_from_geometry(
         side_samples.setdefault(lane_id, []).append(signed)
 
     side_map: Dict[str, str] = {}
+    strength_map: Dict[str, float] = {}
     for lane_id, values in side_samples.items():
         if not values:
             continue
@@ -232,8 +253,9 @@ def _estimate_lane_side_from_geometry(
         if abs(avg) <= 0.05:
             continue
         side_map[lane_id] = "left" if avg > 0.0 else "right"
+        strength_map[lane_id] = sum(abs(v) for v in values) / len(values)
 
-    return side_map
+    return side_map, strength_map
 
 
 def _build_division_lookup(
@@ -429,7 +451,7 @@ def build_lane_spec(
 
     sections_list = list(sections)
     lane_info = (lane_topo or {}).get("lanes") or {}
-    lane_groups = (lane_topo or {}).get("groups") or {}
+    raw_lane_groups = (lane_topo or {}).get("groups") or {}
     lane_count = (lane_topo or {}).get("lane_count") or 0
 
     if not lane_info:
@@ -475,19 +497,174 @@ def build_lane_spec(
             )
         return out
 
+    def _split_lane_groups(
+        groups: Dict[str, List[str]],
+        lane_data: Dict[str, Dict[str, Any]],
+    ) -> Tuple[Dict[str, List[str]], Dict[str, str], Dict[str, str]]:
+        """Split lane groups that mix positive/negative lane numbers."""
+
+        expanded: Dict[str, List[str]] = {}
+        parent_map: Dict[str, str] = {}
+        derived_hints: Dict[str, str] = {}
+
+        for base_id, uids in groups.items():
+            positive: List[str] = []
+            negative: List[str] = []
+            neutral: List[str] = []
+
+            for uid in uids:
+                info = lane_data.get(uid) or {}
+                lane_no = info.get("lane_no")
+                if isinstance(lane_no, (int, float)):
+                    if lane_no > 0:
+                        positive.append(uid)
+                    elif lane_no < 0:
+                        negative.append(uid)
+                    else:
+                        neutral.append(uid)
+                else:
+                    neutral.append(uid)
+
+            buckets: List[Tuple[str, List[str]]] = []
+            if positive:
+                buckets.append(("pos", positive))
+            if negative:
+                buckets.append(("neg", negative))
+            if neutral and (positive or negative):
+                buckets.append(("zero", neutral))
+
+            if len(buckets) <= 1:
+                expanded[base_id] = list(uids)
+                parent_map[base_id] = base_id
+                if positive and not negative:
+                    derived_hints[base_id] = "left"
+                elif negative and not positive:
+                    derived_hints[base_id] = "right"
+                continue
+
+            for suffix, items in buckets:
+                alias = f"{base_id}::{suffix}"
+                expanded[alias] = items
+                parent_map[alias] = base_id
+                if suffix == "pos":
+                    derived_hints[alias] = "left"
+                elif suffix == "neg":
+                    derived_hints[alias] = "right"
+                else:
+                    derived_hints.setdefault(alias, "center")
+
+        return expanded, parent_map, derived_hints
+
+    lane_groups, group_parent_map, derived_side_hints = _split_lane_groups(raw_lane_groups, lane_info)
+
     division_lookup = _build_division_lookup(
         lane_div_df, line_geometry_lookup=line_geometry_lookup, offset_mapper=offset_mapper
     )
 
-    geometry_side_hint = _estimate_lane_side_from_geometry(
+    raw_geometry_side_hint, raw_geometry_strength = _estimate_lane_side_from_geometry(
         lanes_geometry_df,
         centerline,
         offset_mapper=offset_mapper,
         geo_origin=geo_origin,
     )
 
+    parent_lane_signs: Dict[str, Tuple[bool, bool]] = {}
+    for base_id, members in raw_lane_groups.items():
+        has_positive = False
+        has_negative = False
+        for uid in members:
+            lane_no = lane_info.get(uid, {}).get("lane_no")
+            if isinstance(lane_no, (int, float)):
+                if lane_no > 0:
+                    has_positive = True
+                elif lane_no < 0:
+                    has_negative = True
+            if has_positive and has_negative:
+                break
+        parent_lane_signs[base_id] = (has_positive, has_negative)
+
+    geometry_side_hint: Dict[str, str] = {}
+    geometry_hint_strength: Dict[str, float] = {}
+    for alias, parent in group_parent_map.items():
+        hint = derived_side_hints.get(alias)
+        parent_hint = raw_geometry_side_hint.get(parent)
+        parent_strength = raw_geometry_strength.get(parent, 0.0)
+        if parent_hint in {"left", "right"}:
+            signs = parent_lane_signs.get(parent)
+            if signs is not None:
+                has_pos, has_neg = signs
+                if has_pos and has_neg:
+                    # 几何估计只适用于车道组位于参考线单侧的情况；
+                    # 当同一组同时包含正负 lane_no 时说明其跨越中心线，
+                    # 继续沿用几何提示会把所有车道推到同一侧，导致
+                    # 导出的道路在查看器中出现交错的白线。此时宁可
+                    # 完全依赖拓扑信息，也不要使用这样的提示。
+                    parent_hint = None
+                    parent_strength = 0.0
+        if hint in {"left", "right"}:
+            if parent_hint in {"left", "right"} and parent_hint != hint:
+                if alias == parent:
+                    # 当几何信息与车道编号推断相矛盾时，检查该组是否只包含
+                    # 单侧编号（全部为正或全部为负）。如果是这样，则更信任
+                    # 编号推断，以免把整组车道硬塞到错误的一侧，造成输出
+                    # 出现交错的白线。
+                    strength = raw_geometry_strength.get(parent, 0.0)
+                    if strength >= GEOMETRY_SIDE_CONFIDENCE_MIN:
+                        geometry_side_hint[alias] = parent_hint
+                        geometry_hint_strength[alias] = strength
+                    else:
+                        signs = parent_lane_signs.get(parent)
+                        if signs is not None:
+                            has_pos, has_neg = signs
+                        else:
+                            has_pos = has_neg = False
+                        if has_pos and has_neg:
+                            geometry_side_hint[alias] = parent_hint
+                            geometry_hint_strength[alias] = strength
+                        else:
+                            geometry_side_hint[alias] = hint
+                else:
+                    # For split groups ("::pos"/"::neg") the derived hint
+                    # still carries meaningful information about how the
+                    # sub-group relates to the reference line.
+                    geometry_side_hint[alias] = hint
+            else:
+                geometry_side_hint[alias] = hint
+            continue
+
+        if parent_hint in {"left", "right"}:
+            geometry_side_hint[alias] = parent_hint
+            if parent_strength >= GEOMETRY_SIDE_CONFIDENCE_MIN:
+                geometry_hint_strength[alias] = parent_strength
+
+
+    def _segment_spans(info: Dict[str, Any]) -> List[Tuple[float, float]]:
+        spans: List[Tuple[float, float]] = []
+        for seg in info.get("segments", []):
+            try:
+                start = float(seg.get("start", 0.0))
+                end = float(seg.get("end", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if end <= start:
+                continue
+            spans.append((start, end))
+        spans.sort(key=lambda item: item[0])
+        return spans
+
+    def _mergeable(existing: List[Tuple[float, float]], new_spans: List[Tuple[float, float]], *, tolerance: float = 1e-3) -> bool:
+        if not existing:
+            return True
+        for s0, s1 in new_spans:
+            for e0, e1 in existing:
+                if s1 <= e0 + tolerance or s0 >= e1 - tolerance:
+                    continue
+                return False
+        return True
+
     lane_no_by_base: Dict[str, Optional[int]] = {}
     base_start: Dict[str, float] = {}
+    lane_spans: Dict[str, List[Tuple[float, float]]] = {}
 
     for base_id, uids in lane_groups.items():
         lane_numbers: List[int] = []
@@ -497,13 +674,11 @@ def build_lane_spec(
             lane_no = info.get("lane_no")
             if isinstance(lane_no, (int, float)):
                 lane_numbers.append(int(lane_no))
-            for segment in info.get("segments", []):
-                try:
-                    start_val = float(segment.get("start", 0.0))
-                except (TypeError, ValueError):
-                    continue
-                if first_start is None or start_val < first_start:
-                    first_start = start_val
+            spans = _segment_spans(info)
+            if spans:
+                lane_spans[uid] = spans
+                if first_start is None or spans[0][0] < first_start:
+                    first_start = spans[0][0]
         lane_no_by_base[base_id] = min(lane_numbers) if lane_numbers else None
         base_start[base_id] = first_start or 0.0
 
@@ -513,6 +688,38 @@ def build_lane_spec(
 
     base_ids = sorted(lane_groups.keys(), key=_base_sort_key)
     lanes_per_base = {base: len(lane_groups[base]) for base in base_ids}
+
+    for base_id in base_ids:
+        lane_number = lane_no_by_base.get(base_id)
+        if lane_number is None or lane_number == 0:
+            continue
+        expected_side = "left" if lane_number > 0 else "right"
+        current = geometry_side_hint.get(base_id)
+        if current is None:
+            geometry_side_hint[base_id] = expected_side
+        elif current != expected_side:
+            strength = geometry_hint_strength.get(base_id, 0.0)
+            parent = group_parent_map.get(base_id)
+            if strength < GEOMETRY_SIDE_CONFIDENCE_MIN and parent is not None:
+                strength = geometry_hint_strength.get(parent, strength)
+
+            signs = parent_lane_signs.get(base_id)
+            if signs is None and parent is not None:
+                signs = parent_lane_signs.get(parent)
+            has_pos = has_neg = False
+            if signs is not None:
+                has_pos, has_neg = signs
+
+            if not (has_pos and has_neg):
+                if strength is not None and strength >= GEOMETRY_SIDE_CONFIDENCE_MIN:
+                    continue
+                geometry_side_hint[base_id] = expected_side
+                continue
+
+            if strength is not None and strength >= GEOMETRY_SIDE_CONFIDENCE_MIN:
+                continue
+
+            geometry_side_hint[base_id] = expected_side
 
     def _bases_with_sign(sign: int) -> List[str]:
         selected: List[str] = []
@@ -541,6 +748,29 @@ def build_lane_spec(
     if lane_count and len(ordered_lane_numbers) > lane_count:
         ordered_lane_numbers = ordered_lane_numbers[:lane_count]
 
+    default_lane_side = defaults.get("default_lane_side", "left")
+    if default_lane_side not in {"left", "right"}:
+        default_lane_side = "left"
+    default_lane_side_is_right = default_lane_side == "right"
+
+    has_geometry_right_hint = any(side == "right" for side in geometry_side_hint.values())
+    only_positive_without_initial_right_evidence = (
+        not negative_bases and not has_geometry_right_hint and bool(positive_bases)
+    )
+
+    force_single_side_left = False
+
+    if only_positive_without_initial_right_evidence:
+        # 没有任何右侧提示且全部车道编号为正，说明输入数据没有明确区分两侧。
+        # 之前的逻辑会尝试根据 lane_count 等参数重新划分左右两侧，反而会把
+        # 一部分车道强制分配到右侧。这里改为保持默认，让后续流程按照既有的
+        # 提示或车道编号推导结果继续处理。
+        for base in base_ids:
+            if lane_no_by_base.get(base) is None:
+                continue
+            geometry_side_hint.setdefault(base, "left")
+        force_single_side_left = True
+
     def _ordered_subset(candidates: Iterable[str]) -> List[str]:
         seen: List[str] = []
         for base in base_ids:
@@ -564,8 +794,24 @@ def build_lane_spec(
     derived_left: List[str] = []
     derived_right: List[str] = []
 
+    def _single_side_positive_only() -> bool:
+        return not negative_bases and not hinted_right and not derived_right
+
     if remaining_bases:
-        if positive_bases and negative_bases:
+        single_side_without_right_hint = (
+            not negative_bases
+            and not hinted_right
+            and not has_geometry_right_hint
+        )
+
+        if single_side_without_right_hint:
+            derived_left = list(remaining_bases)
+            derived_right = []
+            force_single_side_left = True
+        elif not negative_bases and not has_geometry_right_hint and not hinted_right:
+            derived_left = list(remaining_bases)
+            derived_right = []
+        elif positive_bases and negative_bases:
             derived_left = _ordered_subset(
                 [base for base in positive_bases if base in remaining_bases]
             )
@@ -573,26 +819,77 @@ def build_lane_spec(
                 [base for base in negative_bases if base in remaining_bases]
             )
         else:
-            if lane_count:
-                target_left = lane_count // 2
+            has_right_evidence = bool(
+                negative_bases or hinted_right or has_geometry_right_hint
+            )
+            has_left_evidence = bool(positive_bases or hinted_left)
+
+            if not has_right_evidence:
+                derived_left = list(remaining_bases)
+                derived_right = []
+            elif not has_left_evidence:
+                derived_right = list(remaining_bases)
+                derived_left = []
+            elif _single_side_positive_only():
+                if default_lane_side_is_right:
+                    derived_left = []
+                    derived_right = list(remaining_bases)
+                else:
+                    derived_left = list(remaining_bases)
+                    derived_right = []
             else:
-                target_left = len(ordered_lane_numbers) // 2
-            left_lane_numbers = set(ordered_lane_numbers[:target_left])
-            if lane_count:
-                right_limit = min(lane_count, len(ordered_lane_numbers))
-            else:
-                right_limit = len(ordered_lane_numbers)
-            right_lane_numbers = set(ordered_lane_numbers[target_left:right_limit])
-            derived_left = [
-                base
-                for base in remaining_bases
-                if lane_no_by_base.get(base) in left_lane_numbers
-            ]
-            derived_right = [
-                base
-                for base in remaining_bases
-                if lane_no_by_base.get(base) in right_lane_numbers
-            ]
+                # 根据已有的车道编号符号优先推断左右侧，剩余的按照默认侧放置。
+                derived_left = _ordered_subset(
+                    [
+                        base
+                        for base in positive_bases
+                        if base in remaining_bases
+                    ]
+                )
+                derived_right = _ordered_subset(
+                    [
+                        base
+                        for base in negative_bases
+                        if base in remaining_bases
+                    ]
+                )
+
+                unresolved = [
+                    base
+                    for base in remaining_bases
+                    if base not in derived_left and base not in derived_right
+                ]
+
+                if unresolved:
+                    preferred_side = (
+                        "right" if default_lane_side_is_right else "left"
+                    )
+                    if preferred_side == "left" or not has_right_evidence:
+                        derived_left.extend(unresolved)
+                    else:
+                        derived_right.extend(unresolved)
+
+    # `derived_right` 仅代表算法在缺乏直接信息时的暂时推断。如果没有来自
+    # 编号或几何的右侧证据，就不应该因为之前的推断而放弃“全部保持在同一侧”
+    # 的兜底策略，否则会把单侧车道硬性拆成左右两组。
+    final_no_right_evidence = (
+        not negative_bases
+        and not hinted_right
+        and not has_geometry_right_hint
+    )
+
+    if final_no_right_evidence:
+        force_single_side_left = True
+
+    only_positive_without_right_evidence = bool(positive_bases) and final_no_right_evidence
+
+    if remaining_bases and _single_side_positive_only() and not force_single_side_left:
+        if default_lane_side_is_right:
+            derived_left = []
+            derived_right = list(remaining_bases)
+        else:
+            derived_left = list(remaining_bases)
+            derived_right = []
 
     left_bases = hinted_left + [
         base for base in derived_left if base not in hinted_left and base not in hinted_right
@@ -601,60 +898,180 @@ def build_lane_spec(
         base for base in derived_right if base not in hinted_left and base not in hinted_right
     ]
 
-    if not hinted_left and not hinted_right:
-        if not left_bases and base_ids:
-            left_bases = base_ids[:1]
-            right_bases = [base for base in base_ids if base not in left_bases]
-        elif not right_bases and base_ids:
-            right_bases = [base for base in base_ids if base not in left_bases]
+    force_all_default_side = False
+    skip_unassigned_assignment = False
+
+    if force_single_side_left:
+        left_bases = [base for base in base_ids]
+        right_bases = []
+        skip_unassigned_assignment = True
+    else:
+        force_all_default_side = final_no_right_evidence
+        no_right_side_assignments = final_no_right_evidence
+
+        if force_all_default_side:
+            if default_lane_side_is_right:
+                left_bases = []
+                right_bases = [base for base in base_ids]
+            else:
+                left_bases = [base for base in base_ids]
+                right_bases = []
+            skip_unassigned_assignment = True
+
+        if not hinted_left and not hinted_right and not force_all_default_side:
+            has_right_evidence = bool(
+                negative_bases
+                or hinted_right
+                or derived_right
+                or has_geometry_right_hint
+            )
+            if (
+                not has_right_evidence
+                or only_positive_without_right_evidence
+                or no_right_side_assignments
+            ):
+                left_bases = [base for base in base_ids]
+                right_bases = []
+                skip_unassigned_assignment = True
+            else:
+                if not left_bases and base_ids:
+                    left_bases = base_ids[:1]
+                    right_bases = [base for base in base_ids if base not in left_bases]
+                elif not right_bases and base_ids:
+                    right_bases = [base for base in base_ids if base not in left_bases]
+
+    left_base_set = set(left_bases)
+    right_base_set = set(right_bases)
 
     unassigned = [
-        base for base in base_ids if base not in left_bases and base not in right_bases
+        base for base in base_ids if base not in left_base_set and base not in right_base_set
     ]
-    for base in unassigned:
-        if len(left_bases) <= len(right_bases):
-            left_bases.append(base)
-        else:
-            right_bases.append(base)
+    if (
+        not skip_unassigned_assignment
+        and not force_all_default_side
+        and not _single_side_positive_only()
+    ):
+        for base in unassigned:
+            neighbour_side: Optional[str] = None
+            for uid in lane_groups.get(base, []):
+                info = lane_info.get(uid) or {}
+                segments = info.get("segments", [])
+                for seg in segments:
+                    left_neighbour = seg.get("left_neighbor")
+                    right_neighbour = seg.get("right_neighbor")
+                    if left_neighbour in left_base_set or right_neighbour in left_base_set:
+                        neighbour_side = "left"
+                        break
+                    if left_neighbour in right_base_set or right_neighbour in right_base_set:
+                        neighbour_side = "right"
+                        break
+                if neighbour_side:
+                    break
+
+            if neighbour_side == "left":
+                left_bases.append(base)
+                left_base_set.add(base)
+            elif neighbour_side == "right":
+                right_bases.append(base)
+                right_base_set.add(base)
+            elif len(left_bases) <= len(right_bases):
+                left_bases.append(base)
+                left_base_set.add(base)
+            else:
+                right_bases.append(base)
+                right_base_set.add(base)
 
     if not left_bases and not right_bases and base_ids:
-        left_bases = base_ids[:1]
-        right_bases = [base for base in base_ids if base not in left_bases]
+        if not negative_bases and not hinted_right and not derived_right:
+            left_bases = [base for base in base_ids]
+            right_bases = []
+        else:
+            left_bases = base_ids[:1]
+            right_bases = [base for base in base_ids if base not in left_bases]
+        left_base_set = set(left_bases)
+        right_base_set = set(right_bases)
 
     lane_id_map: Dict[str, int] = {}
     lane_side_map: Dict[str, str] = {}
 
-    left_id_by_lane_no: Dict[Tuple[Optional[str], int], int] = {}
+    assigned_spans_left: Dict[int, List[Tuple[float, float]]] = {}
+    assigned_spans_right: Dict[int, List[Tuple[float, float]]] = {}
+
+    def _reuse_candidate(
+        uid: str,
+        *,
+        side: str,
+        assigned_spans: Dict[int, List[Tuple[float, float]]],
+    ) -> Optional[int]:
+        info = lane_info.get(uid) or {}
+        spans = lane_spans.get(uid, [])
+        if not spans:
+            return None
+
+        candidates: List[int] = []
+        for seg in info.get("segments", []):
+            for key in ("predecessors", "successors"):
+                for target in seg.get(key, []):
+                    candidate = lane_id_map.get(target)
+                    if candidate is None:
+                        continue
+                    if side == "left" and candidate <= 0:
+                        continue
+                    if side == "right" and candidate >= 0:
+                        continue
+                    if candidate not in candidates:
+                        candidates.append(candidate)
+
+        if not candidates:
+            return None
+
+        for candidate in sorted(candidates, key=lambda val: (abs(val), val)):
+            existing = assigned_spans.get(candidate, [])
+            if _mergeable(existing, spans):
+                return candidate
+        return None
+
+    left_id_by_lane_no: Dict[int, int] = {}
     current_id = 1
     for base in left_bases:
         ordered = reversed(sorted(lane_groups.get(base, []), key=lambda x: lane_info[x]["lane_no"]))
         for uid in ordered:
             info = lane_info[uid]
             lane_no = info["lane_no"]
-            key = (info.get("base_id"), lane_no)
-            assigned = left_id_by_lane_no.get(key)
+            key = int(lane_no)
+            assigned = _reuse_candidate(uid, side="left", assigned_spans=assigned_spans_left)
+            if assigned is None:
+                assigned = left_id_by_lane_no.get(key)
             if assigned is None:
                 assigned = current_id
                 left_id_by_lane_no[key] = assigned
                 current_id += 1
             lane_id_map[uid] = assigned
             lane_side_map[uid] = "left"
+            spans = lane_spans.get(uid, [])
+            if spans:
+                assigned_spans_left.setdefault(assigned, []).extend(spans)
 
-    right_id_by_lane_no: Dict[Tuple[Optional[str], int], int] = {}
+    right_id_by_lane_no: Dict[int, int] = {}
     current_id = -1
     for base in right_bases:
         ordered = reversed(sorted(lane_groups.get(base, []), key=lambda x: lane_info[x]["lane_no"]))
         for uid in ordered:
             info = lane_info[uid]
             lane_no = info["lane_no"]
-            key = (info.get("base_id"), lane_no)
-            assigned = right_id_by_lane_no.get(key)
+            key = int(lane_no)
+            assigned = _reuse_candidate(uid, side="right", assigned_spans=assigned_spans_right)
+            if assigned is None:
+                assigned = right_id_by_lane_no.get(key)
             if assigned is None:
                 assigned = current_id
                 right_id_by_lane_no[key] = assigned
                 current_id -= 1
             lane_id_map[uid] = assigned
             lane_side_map[uid] = "right"
+            spans = lane_spans.get(uid, [])
+            if spans:
+                assigned_spans_right.setdefault(assigned, []).extend(spans)
 
     lane_section_map: Dict[Tuple[str, int], Dict[str, Any]] = {}
     lane_section_indices: Dict[str, List[int]] = {uid: [] for uid in lane_id_map}
