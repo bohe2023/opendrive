@@ -5,6 +5,7 @@
     "lane_link": 47,
     "lane_division": 61,
     "lane_width": 652,
+    "curvature": 652,
     "slope": 652,
     "sign": 5
   },
@@ -15,8 +16,8 @@
   },
   "road_length_m": 1335.6507217769836,
   "xodr_file": {
-    "path": "/workspace/opendrive/out/US/map.xodr",
-    "size_bytes": 24834,
-    "line_count": 611
+    "path": "D:\\opendrive_git\\out\\US\\map.xodr",
+    "size_bytes": 239872,
+    "line_count": 3979
   }
 }

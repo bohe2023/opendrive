@@ -70,7 +70,6 @@ def _resolve_group_column(row: Mapping[str, str], column: str) -> str:
 
 
 def _group_rows(rows: Iterable[MutableMapping[str, str]]) -> Iterable[List[MutableMapping[str, str]]]:
-    """Yield consecutive groups of rows sharing the same lane descriptor."""
 
     current_key: List[str] | None = None
     current_group: List[MutableMapping[str, str]] = []
@@ -93,7 +92,6 @@ def _group_rows(rows: Iterable[MutableMapping[str, str]]) -> Iterable[List[Mutab
 
 
 def interpolate_group(rows: Sequence[MutableMapping[str, str]]) -> List[MutableMapping[str, str]]:
-    """Fill missing shape indices within ``rows`` belonging to the same lane."""
 
     interpolated: List[MutableMapping[str, str]] = []
     last_template: MutableMapping[str, str] | None = None

@@ -80,16 +80,11 @@ def assign_shape_indices(
         processed.append(row)
 
     return processed
-
-
 def add_shape_index_column(path: Path, *, encoding: str = DEFAULT_ENCODING) -> None:
-    """Add (or refresh) the shape index column for ``path`` in-place."""
-
     with path.open("r", encoding=encoding, newline="") as handle:
         reader = csv.DictReader(handle)
         fieldnames = list(reader.fieldnames or [])
         rows = [dict(row) for row in reader]
-
     assign_shape_indices(rows)
 
     if SHAPE_INDEX_COLUMN not in fieldnames:
@@ -115,18 +110,12 @@ def _parse_arguments() -> argparse.Namespace:
         help="Character encoding used to read/write the CSV files (default: %(default)s).",
     )
     return parser.parse_args()
-
-
 def default_files(root: Optional[Path] = None) -> List[Path]:
-    """Return the default lane geometry CSV files that should be processed."""
-
     base = root or Path(__file__).resolve().parents[1]
     return [
         base / "input_csv" / "JPN" / "LanesGeometryProfile.csv",
         base / "input_csv" / "US" / "LanesGeometryProfile_US.csv",
     ]
-
-
 def main() -> None:
     args = _parse_arguments()
     files = args.files or default_files(Path(__file__).resolve().parents[1])
