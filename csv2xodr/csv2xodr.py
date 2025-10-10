@@ -101,6 +101,7 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
         offset_mapper=offset_mapper,
         centerline=center,
         geo_origin=(lat0, lon0),
+        lane_geometry_df=dfs.get("lanes_geometry"),
     )
 
     line_geometry_lookup = build_line_geometry_lookup(

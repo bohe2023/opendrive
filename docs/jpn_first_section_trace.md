@@ -3,6 +3,7 @@
 本说明以导出的 `out/JPN/map.xodr` 最新首个 `<laneSection s="0">` 为例，逐条对应到 CSV 源文件的具体行，并说明转换脚本的处理流程，便于对客户解释“从原始表格到最终 OpenDRIVE” 的链路。
 
 ## 1. 车道截面在 XODR 中的结果
+
 - `map.xodr` 第 3508–3633 行展示了首段的车道编排：中心线左侧只有一条左路肩（`id=1`，宽度 1.386 m），右侧依次是三条行车道（`id=-1/-2/-3`，宽度分别为 3.610 m、3.770 m、3.600 m）以及一条右路肩（`id=-4`，宽度 0.244 m）。三条行车道的 `<roadMark>` 中分别写出了 0.200 m 与 0.150 m 的白线宽度，并附带显式几何。【F:out/JPN/map.xodr†L3508-L3633】
 
 ## 2. 中心线几何来源
@@ -17,8 +18,15 @@
 - `build_lane_topology`（`topology/core.py` 第 156–226 行）把 lane link 表解析为 lane ID、编号、宽度、左右相邻、前后继等结构化信息，供后续生成 `<lane>` 节点时引用。【F:csv2xodr/topology/core.py†L156-L226】
 
 ## 4. 标线与显式几何
+
 - `PROFILETYPE_MPU_ZGM_LANE_DIVISION_LINE.csv` 第 2–7 行覆盖了同一 `Path Id=285`、`Offset=2373538 cm` 段的白线数据：`区画線種別` 列指出了两种标线类型（值 1 对应 20 cm 实线，值 2 对应 15 cm 实线），`始点/終点側線幅[cm]` 为 20 或 15，即 0.200 m 与 0.150 m。【F:input_csv/JPN/PROFILETYPE_MPU_ZGM_LANE_DIVISION_LINE.csv†L1-L7】
+
 - `build_curvature_profile`（`normalize/core.py` 第 672–756 行）读取 `PROFILETYPE_MPU_ZGM_CURVATURE.csv` 第 2–9 行内的曲率样本，把 Offset 转成米后按段聚合，并同时保留 shape index + 经纬度，以便后续与标线几何对齐。【F:input_csv/JPN/PROFILETYPE_MPU_ZGM_CURVATURE.csv†L1-L9】【F:csv2xodr/normalize/core.py†L672-L756】
+- 同一段 `<arc curvature="0.0005"/>` 的曲率就是这么推出来的：
+  1. `PROFILETYPE_MPU_ZGM_CURVATURE.csv` 第 2–15 行里，`Path Id=285`、`Lane Number=7`、`形状インデックス=0–13` 的记录给出了原始曲率值，大约是 `-0.0001 rad/m`，意思是“几乎直线、略向右偏”。这些记录的起止 Offset 都是以厘米写的，只告诉我们沿里程走了 12 m 左右，但没有告诉这段折线在地面上到底拉了多长。【F:input_csv/JPN/PROFILETYPE_MPU_ZGM_CURVATURE.csv†L1-L15】
+  2. `build_curvature_profile` 会先把这些 Offset 除以 100 变成米，再按 shape index 把 14 个点拼成 `[s0,s1)` 段，算出原 CSV 认为的弧长（约 12 m），随后拿同一条白线在 `PROFILETYPE_MPU_LINE_GEOMETRY.csv` 里的 XY 坐标量一次真实折线（2.906 m）。在 `normalize/core.py` 第 996–1108 行，代码用“数据段长度 ÷ 实际折线长度”这一倍率去缩放曲率，同时把符号调整到和真实 heading 变化一致，于是 `-0.0001` 就被放大、翻转成 `+0.00058 rad/m` 这一类的小正数。【F:csv2xodr/normalize/core.py†L996-L1136】
+  3. 调整后的曲率值作为 `curvature_samples` 传给 `build_line_geometry_lookup`。在 `line_geometry.py` 第 468–780 行，程序把同一个 `line_id=1748801386482528588` 的折线点与这些重采样后的曲率对齐，塞进 `geometry["curvature"]` 列表里。写 XODR 时我们只保留四位小数，所以 `0.00058…` 会被四舍五入成 `<arc curvature="0.0005"/>`。【F:csv2xodr/line_geometry.py†L468-L780】【F:csv2xodr/writer/xodr_writer.py†L296-L347】【F:out/JPN/map.xodr†L3508-L3565】
+  4. 换句话说：原始曲率表只告诉我们“这 12 米略微向右”，流水线用真实几何把它校正成“在实际 2.9 米的这一段要向左弯 0.00058 rad/m”，最后在 `<explicit>` 里显示成四舍五入后的 `0.0005`，整个链路用到的就是曲率表 + 标线几何表，没有凭空生数。
 - `build_line_geometry_lookup`（`line_geometry.py` 第 57–156 行）把标线几何的经纬度投影成本地 XY；当传入 `curvature_samples` 时，会把同一 path/lane 的 shape index 点与曲率值绑定，为显式几何附带红点信息。【F:csv2xodr/line_geometry.py†L57-L156】
 - `build_lane_spec`（`lane_spec.py` 第 463–586 行）组装每个 `[s0,s1)` 内左右两侧 lane 的宽度、标线类型、几何点列等；当 `line_geometry_lookup` 提供折线点时，会附加到 `roadMark["geometry"]` 中。【F:csv2xodr/lane_spec.py†L463-L586】
 - `xodr_writer` 在写 `<roadMark>` 时，如发现 `geometry` 列表，会输出 `<explicit>` 节点；对应实现位于 `writer/xodr_writer.py` 第 296–366 行，可把标线节点（蓝点）与 shape index 对齐的曲率点（红点）写入成对的 `<geometry>` / `<arc>` 元素，从而在支持显式标线的查看器里直接渲染这些离散点。【F:csv2xodr/writer/xodr_writer.py†L296-L366】
