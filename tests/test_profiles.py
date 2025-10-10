@@ -81,6 +81,41 @@ def test_geometry_segments_from_curvature():
     assert geometry[1]["curvature"] == 0.1
 
 
+def test_curvature_samples_use_lane_geometry_coordinates():
+    curvature_df = DataFrame(
+        {
+            "Offset[cm]": [0, 0],
+            "End Offset[cm]": [200, 200],
+            "Lane Number": [2, 2],
+            "Path Id": [1, 1],
+            "形状インデックス": [0, 1],
+            "曲率値[rad/m]": [0.01, 0.02],
+            "Is Retransmission": ["False", "False"],
+        }
+    )
+
+    lane_geometry_df = DataFrame(
+        {
+            "Path Id": [1, 1],
+            "Lane Number": [2, 2],
+            "形状インデックス": [0, 1],
+            "緯度[deg]": [35.0, 35.0001],
+            "経度[deg]": [139.0, 139.0001],
+            "Is Retransmission": ["False", "False"],
+        }
+    )
+
+    _, samples = build_curvature_profile(
+        curvature_df,
+        geo_origin=(35.0, 139.0),
+        lane_geometry_df=lane_geometry_df,
+    )
+
+    assert samples, "expected curvature samples to be generated"
+    assert all("x" in sample and "y" in sample for sample in samples)
+    assert all(math.isfinite(sample["x"]) and math.isfinite(sample["y"]) for sample in samples)
+
+
 def test_geometry_segments_respect_threshold():
     center = DataFrame({
         "s": [0.0, 1.0],

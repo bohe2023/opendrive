@@ -675,6 +675,7 @@ def build_curvature_profile(
     offset_mapper: Optional[Callable[[float], float]] = None,
     centerline: Optional[DataFrame] = None,
     geo_origin: Optional[Tuple[float, float]] = None,
+    lane_geometry_df: Optional[DataFrame] = None,
 ) -> Tuple[List[Dict[str, float]], List[Dict[str, Any]]]:
     if df_curvature is None or len(df_curvature) == 0:
         return [], []
@@ -808,6 +809,62 @@ def build_curvature_profile(
     lane_stats: Dict[Tuple[Optional[Any], Optional[Any]], Dict[str, float]] = {}
     lane_samples: Dict[Tuple[Optional[Any], Optional[Any]], List[Dict[str, Any]]] = {}
 
+    lane_geometry_lookup: Dict[
+        Tuple[Optional[Any], Optional[Any], int], Tuple[float, float]
+    ] = {}
+
+    if lane_geometry_df is not None and len(lane_geometry_df) > 0:
+        geom_path_col = _find_column(lane_geometry_df, "path", "id")
+        geom_lane_col = (
+            _find_column(lane_geometry_df, "lane", "number")
+            or _find_column(lane_geometry_df, "lane", "no")
+        )
+        geom_shape_col = _find_column(lane_geometry_df, "形状", "インデックス")
+        geom_lat_col = _find_column(lane_geometry_df, "緯度") or _find_column(
+            lane_geometry_df, "latitude"
+        )
+        geom_lon_col = _find_column(lane_geometry_df, "経度") or _find_column(
+            lane_geometry_df, "longitude"
+        )
+        geom_retrans_col = _find_column(
+            lane_geometry_df, "is", "retransmission"
+        )
+
+        if (
+            geom_path_col is not None
+            and geom_lane_col is not None
+            and geom_shape_col is not None
+            and geom_lat_col is not None
+            and geom_lon_col is not None
+        ):
+            for idx in range(len(lane_geometry_df)):
+                row = lane_geometry_df.iloc[idx]
+
+                if geom_retrans_col is not None:
+                    retrans_val = str(row[geom_retrans_col]).strip().lower()
+                    if retrans_val == "true":
+                        continue
+
+                path_key = _normalise_key(row[geom_path_col])
+                lane_key = _normalise_key(row[geom_lane_col])
+                shape_val = _to_float(row[geom_shape_col])
+                lat_val = _to_float(row[geom_lat_col])
+                lon_val = _to_float(row[geom_lon_col])
+
+                if (
+                    lane_key is None
+                    or shape_val is None
+                    or lat_val is None
+                    or lon_val is None
+                    or not math.isfinite(lat_val)
+                    or not math.isfinite(lon_val)
+                ):
+                    continue
+
+                shape_idx_key = int(round(shape_val))
+                key = (path_key, lane_key, shape_idx_key)
+                lane_geometry_lookup.setdefault(key, (lat_val, lon_val))
+
     for idx in range(len(df_curvature)):
         row = df_curvature.iloc[idx]
 
@@ -834,6 +891,19 @@ def build_curvature_profile(
         shape_val = _to_float(row[shape_col])
         lat_val = _to_float(row[lat_col]) if lat_col is not None else None
         lon_val = _to_float(row[lon_col]) if lon_col is not None else None
+
+        if (lat_val is None or lon_val is None) and lane_geometry_lookup:
+            shape_idx_key = None
+            if shape_val is not None and math.isfinite(shape_val):
+                shape_idx_key = int(round(shape_val))
+            if shape_idx_key is not None:
+                lookup_key = (path_key, lane_key, shape_idx_key)
+                mapped = lane_geometry_lookup.get(lookup_key)
+                if mapped is None and path_key is None:
+                    # fall back to lane-only match for datasets that omit path IDs
+                    mapped = lane_geometry_lookup.get((None, lane_key, shape_idx_key))
+                if mapped is not None:
+                    lat_val, lon_val = mapped
 
         if (
             start_cm is None
