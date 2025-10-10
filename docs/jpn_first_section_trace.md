@@ -3,7 +3,8 @@
 本说明以导出的 `out/JPN/map.xodr` 最新首个 `<laneSection s="0">` 为例，逐条对应到 CSV 源文件的具体行，并说明转换脚本的处理流程，便于对客户解释“从原始表格到最终 OpenDRIVE” 的链路。
 
 ## 1. 车道截面在 XODR 中的结果
-- `map.xodr` 第 3508–3633 行展示了首段的车道编排：中心线左侧只有一条左路肩（`id=1`，宽度 1.386 m），右侧依次是三条行车道（`id=-1/-2/-3`，宽度分别为 3.610 m、3.770 m、3.600 m）以及一条右路肩（`id=-4`，宽度 0.244 m）。三条行车道的 `<roadMark>` 中分别写出了 0.200 m 与 0.150 m 的白线宽度，并附带显式几何（`<explicit>` 节点列出了区画线 CSV 的折线节点，查看器按这些离散坐标绘制蓝线，而非靠宽度重新推算）。【F:out/JPN/map.xodr†L3508-L3633】
+
+- `map.xodr` 第 3508–3633 行展示了首段的车道编排：中心线左侧只有一条左路肩（`id=1`，宽度 1.386 m），右侧依次是三条行车道（`id=-1/-2/-3`，宽度分别为 3.610 m、3.770 m、3.600 m）以及一条右路肩（`id=-4`，宽度 0.244 m）。三条行车道的 `<roadMark>` 中分别写出了 0.200 m 与 0.150 m 的白线宽度，并附带显式几何。【F:out/JPN/map.xodr†L3508-L3633】
 
 ## 2. 中心线几何来源
 - 对应的经纬度采样点位于 `PROFILETYPE_MPU_LINE_GEOMETRY.csv` 第 2–15 行，`Offset[cm]`=2373538 的段落给出了 14 个采样点；这些点和第 1 行表头共同表明列含义为 Offset、End Offset、Lane Number、纬度、经度等。【F:input_csv/JPN/PROFILETYPE_MPU_LINE_GEOMETRY.csv†L1-L15】
@@ -17,7 +18,9 @@
 - `build_lane_topology`（`topology/core.py` 第 156–226 行）把 lane link 表解析为 lane ID、编号、宽度、左右相邻、前后继等结构化信息，供后续生成 `<lane>` 节点时引用。【F:csv2xodr/topology/core.py†L156-L226】
 
 ## 4. 标线与显式几何
-- `PROFILETYPE_MPU_ZGM_LANE_DIVISION_LINE.csv` 第 2–7 行覆盖了同一 `Path Id=285`、`Offset=2373538 cm` 段的白线数据：`区画線種別` 列指出了两种标线类型（值 1 对应 20 cm 实线，值 2 对应 15 cm 实线），`始点/終点側線幅[cm]` 为 20 或 15，即 0.200 m 与 0.150 m；这些数值被 `lane_spec` 原样写进 `<roadMark width="…">`。【F:input_csv/JPN/PROFILETYPE_MPU_ZGM_LANE_DIVISION_LINE.csv†L1-L7】【F:csv2xodr/lane_spec.py†L463-L586】
+
+- `PROFILETYPE_MPU_ZGM_LANE_DIVISION_LINE.csv` 第 2–7 行覆盖了同一 `Path Id=285`、`Offset=2373538 cm` 段的白线数据：`区画線種別` 列指出了两种标线类型（值 1 对应 20 cm 实线，值 2 对应 15 cm 实线），`始点/終点側線幅[cm]` 为 20 或 15，即 0.200 m 与 0.150 m。【F:input_csv/JPN/PROFILETYPE_MPU_ZGM_LANE_DIVISION_LINE.csv†L1-L7】
+
 - `build_curvature_profile`（`normalize/core.py` 第 672–756 行）读取 `PROFILETYPE_MPU_ZGM_CURVATURE.csv` 第 2–9 行内的曲率样本，把 Offset 转成米后按段聚合，并同时保留 shape index + 经纬度，以便后续与标线几何对齐。【F:input_csv/JPN/PROFILETYPE_MPU_ZGM_CURVATURE.csv†L1-L9】【F:csv2xodr/normalize/core.py†L672-L756】
 - 同一段 `<arc curvature="0.0005"/>` 的曲率就是这么推出来的：
   1. `PROFILETYPE_MPU_ZGM_CURVATURE.csv` 第 2–15 行里，`Path Id=285`、`Lane Number=7`、`形状インデックス=0–13` 的记录给出了原始曲率值，大约是 `-0.0001 rad/m`，意思是“几乎直线、略向右偏”。这些记录的起止 Offset 都是以厘米写的，只告诉我们沿里程走了 12 m 左右，但没有告诉这段折线在地面上到底拉了多长。【F:input_csv/JPN/PROFILETYPE_MPU_ZGM_CURVATURE.csv†L1-L15】
