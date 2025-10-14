@@ -243,6 +243,10 @@ def write_xodr(
                 else:
                     attrs["value"] = str(value)
 
+            z_offset = signal.get("zOffset")
+            if z_offset is not None:
+                attrs["zOffset"] = _format_float(float(z_offset))
+
             for key in (
                 "name",
                 "type",
