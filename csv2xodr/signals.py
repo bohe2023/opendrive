@@ -61,6 +61,29 @@ def _normalise_offset(values: List[float]) -> Tuple[float, Callable[[float], flo
     return origin, _convert
 
 
+def _normalise_height(raw_value: Any, column_name: Optional[str]) -> Optional[float]:
+    """Convert height readings to metres while filtering obvious sentinels."""
+
+    height = _to_float(raw_value)
+    if height is None:
+        return None
+    if not math.isfinite(height):
+        return None
+    if abs(height) >= 1.0e4:
+        # Values such as 65535 are commonly used as "unknown" sentinels.
+        return None
+
+    column_hint = column_name or ""
+    lowered = column_hint.lower()
+    if "[cm]" in column_hint or "cm" in lowered:
+        return height * 0.01
+    if abs(height) > 50.0:
+        # Fallback heuristic: anything taller than a typical gantry is likely
+        # expressed in centimetres even if the column header lacks units.
+        return height * 0.01
+    return height
+
+
 def _to_int(value: Any) -> Optional[int]:
     """Best-effort conversion of ``value`` to :class:`int`."""
 
@@ -163,6 +186,7 @@ def generate_signals(
     speed_col_us = None
     shape_col = None
     type_col = None
+    height_col = None
 
     if upper_country == "JPN":
         speed_col_jp = (
@@ -174,6 +198,11 @@ def generate_signals(
         digital_col = _find_column(df_sign, "digital")
         attribute_flag_col = _find_column(df_sign, "標識付加属性")
         type_code_col_jp = _find_column(df_sign, "標識情報種別")
+        height_col = (
+            _find_column(df_sign, "地上高さ")
+            or _find_column(df_sign, "地上高")
+            or _find_column(df_sign, "height", "ground")
+        )
     else:
         speed_col_us = _find_column(df_sign, "speed", "limit")
         shape_col = _find_column(df_sign, "shape")
@@ -229,6 +258,11 @@ def generate_signals(
                 text = str(supplementary).strip() if supplementary is not None else ""
                 if text and text not in {"65535", "-1"}:
                     attrs["supplementary"] = text
+
+            if height_col is not None:
+                z_offset = _normalise_height(row[height_col], height_col)
+                if z_offset is not None:
+                    attrs["zOffset"] = z_offset
             entries.append((s_pos, attrs))
         else:
             speed_val = _format_numeric(row[speed_col_us]) if speed_col_us else None
