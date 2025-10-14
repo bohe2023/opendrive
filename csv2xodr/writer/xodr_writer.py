@@ -87,6 +87,7 @@ def write_xodr(
     elevation_profile=None,
     geometry_segments=None,
     superelevation_profile=None,
+    signals=None,
     road_metadata=None,
 ):
     road_metadata = road_metadata or {}
@@ -225,6 +226,40 @@ def write_xodr(
                 "d": _format_float(entry.get("d", 0.0)),
             }
             SubElement(lateral, "superelevation", attrs)
+
+    if signals:
+        signals_el = SubElement(road, "signals")
+        for signal in signals:
+            attrs = {
+                "s": _format_float(signal.get("s", 0.0), precision=9),
+                "t": _format_float(signal.get("t", 0.0), precision=9),
+                "id": str(signal.get("id", "")),
+            }
+
+            value = signal.get("value")
+            if value is not None:
+                if isinstance(value, (int, float)):
+                    attrs["value"] = _format_float(value)
+                else:
+                    attrs["value"] = str(value)
+
+            for key in (
+                "name",
+                "type",
+                "subtype",
+                "unit",
+                "dynamic",
+                "orientation",
+                "country",
+                "supplementary",
+                "shape",
+            ):
+                val = signal.get(key)
+                if val is None:
+                    continue
+                attrs[key] = str(val)
+
+            SubElement(signals_el, "signal", attrs)
 
     # lanes
     lanes = SubElement(road, "lanes")

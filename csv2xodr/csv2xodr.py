@@ -3,6 +3,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 if __package__ is None or __package__ == "":
     ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,7 @@ from csv2xodr.normalize.core import (
 from csv2xodr.line_geometry import build_line_geometry_lookup
 from csv2xodr.topology.core import make_sections, build_lane_topology
 from csv2xodr.writer.xodr_writer import write_xodr
+from csv2xodr.signals import generate_signals
 from csv2xodr.lane_spec import build_lane_spec, normalize_lane_ids
 
 
@@ -46,6 +48,17 @@ def _apply_dataset_overrides(dfs, cfg) -> None:
     enriched = merge_lane_width_into_links(lane_link, lane_width)
     if enriched is not None:
         dfs["lane_link"] = enriched
+
+
+def _detect_country(sign_filename: Optional[str]) -> str:
+    if not sign_filename:
+        return "JPN"
+    upper = sign_filename.upper()
+    if "US" in upper:
+        return "US"
+    if "JPN" in upper:
+        return "JPN"
+    return "JPN"
 
 
 def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
@@ -158,6 +171,15 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
     shoulder_profile = build_shoulder_profile(dfs.get("shoulder_width"), offset_mapper=offset_mapper)
     from csv2xodr.lane_spec import apply_shoulder_profile  # local import to avoid cycle
 
+    files_cfg = cfg.get("files") or {}
+    sign_filename = files_cfg.get("sign") if isinstance(files_cfg, dict) else None
+    signals = generate_signals(
+        dfs.get("sign"),
+        country=_detect_country(sign_filename),
+        offset_mapper=offset_mapper,
+        sign_filename=sign_filename,
+    )
+
     apply_shoulder_profile(lane_specs, shoulder_profile, defaults=cfg.get("defaults", {}))
     normalize_lane_ids(lane_specs)
 
@@ -186,6 +208,7 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
         elevation_profile=elevation_profile,
         geometry_segments=geometry_segments,
         superelevation_profile=superelevation_profile,
+        signals=signals,
         road_metadata=road_cfg,
     )
 
@@ -209,6 +232,7 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
             "lanes_total": sum(
                 1 + len(sec.get("left", [])) + len(sec.get("right", [])) for sec in lane_specs
             ),
+            "signals": len(signals),
         },
         "road_length_m": float(center["s"].iloc[-1]) if len(center["s"]) else 0.0,
         "xodr_file": {
