@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from csv2xodr.normalize.core import _find_column, _to_float
@@ -59,6 +60,43 @@ def _normalise_offset(values: List[float]) -> Tuple[float, Callable[[float], flo
         return max(0.0, metres)
 
     return origin, _convert
+
+
+def _extract_speed_hint(text: str) -> Optional[float]:
+    """Best-effort extraction of a numeric speed from supplementary text.
+
+    Some Japanese datasets mark variable/digital speed limit signs with a
+    supplementary classification value instead of filling ``最高速度値``.
+    These hints are typically a single digit (e.g. ``"4"`` for "40km/h").
+    When such a hint is present we try to recover a plausible km/h value so
+    that the exported OpenDRIVE sign carries a non-zero ``value`` and can be
+    rendered by viewers.
+    """
+
+    if not text:
+        return None
+
+    # Normalise full-width digits into ASCII and strip out everything that is
+    # not a decimal number.  ``unicodedata`` keeps the dependency footprint
+    # small and copes with values such as "４".
+    normalised = unicodedata.normalize("NFKC", text)
+    digits = "".join(ch for ch in normalised if ch.isdigit())
+    if not digits:
+        return None
+
+    try:
+        value = int(digits)
+    except ValueError:  # pragma: no cover - defensive, should not happen
+        return None
+
+    if len(digits) == 1:
+        value *= 10
+
+    if value <= 0 or value > 200:
+        # Filter obvious sentinels such as 65535 or corrupted readings.
+        return None
+
+    return float(value)
 
 
 def _normalise_height(raw_value: Any, column_name: Optional[str]) -> Optional[float]:
@@ -258,6 +296,12 @@ def generate_signals(
                 text = str(supplementary).strip() if supplementary is not None else ""
                 if text and text not in {"65535", "-1"}:
                     attrs["supplementary"] = text
+                    if attrs["dynamic"] == "yes" and (
+                        speed_val is None or abs(speed_val) <= 1e-6
+                    ):
+                        hint = _extract_speed_hint(text)
+                        if hint is not None:
+                            attrs["value"] = hint
 
             if height_col is not None:
                 z_offset = _normalise_height(row[height_col], height_col)
