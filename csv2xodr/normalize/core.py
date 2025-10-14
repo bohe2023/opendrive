@@ -1,5 +1,6 @@
 import math
 import statistics
+import unicodedata
 from typing import Callable, Iterable, List, Tuple, Optional, Any, Dict
 
 from csv2xodr.simpletable import DataFrame
@@ -24,14 +25,54 @@ def _find_column(df: DataFrame, *keywords: str, exclude: Tuple[str, ...] = ()) -
 
 
 def _to_float(value: Any) -> Optional[float]:
+    """Best-effort conversion that accepts common locale specific formats."""
+
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return None
+
+    # Normalise full-width characters that occasionally show up in JPN CSVs.
+    normalised = unicodedata.normalize("NFKC", text)
+
+    # Remove whitespace-like grouping characters before handling decimal/grouping
+    # separators.  This covers plain spaces as well as non-breaking/thin spaces
+    # that are often used as thousands separators in exported spreadsheets.
+    grouping_chars = {" ", "\u00a0", "\u2009", "_"}
+    compact = "".join(ch for ch in normalised if ch not in grouping_chars)
+
+    # Detect whether commas should be treated as decimal or grouping
+    # separators.  ``1,234.5`` → ``1234.5`` whereas ``12,5`` → ``12.5``.
+    candidate = compact
+    if "," in compact:
+        if "." in compact or compact.count(",") > 1:
+            candidate = compact.replace(",", "")
+        else:
+            head, tail = compact.split(",", 1)
+            tail_digits = tail.isdigit()
+            if tail_digits and tail and len(tail) % 3 == 0 and len(head) > 0:
+                candidate = head + tail
+            elif tail_digits:
+                candidate = f"{head}.{tail}"
+            else:
+                candidate = compact.replace(",", "")
+
     try:
-        if value is None:
-            return None
-        text = str(value).strip()
-        if text == "" or text.lower() == "nan":
-            return None
-        return float(text)
-    except Exception:  # pragma: no cover - defensive
+        return float(candidate)
+    except ValueError:
+        # As a last resort drop all commas.  This allows inputs such as
+        # ``1,234`` to still parse even when the decimal/comma heuristic above
+        # could not disambiguate the intent.
+        fallback = compact.replace(",", "")
+        if fallback != candidate:
+            try:
+                return float(fallback)
+            except ValueError:
+                return None
+        return None
+    except TypeError:  # pragma: no cover - defensive
         return None
 
 
