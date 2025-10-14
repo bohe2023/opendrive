@@ -61,6 +61,31 @@ def _normalise_offset(values: List[float]) -> Tuple[float, Callable[[float], flo
     return origin, _convert
 
 
+def _to_int(value: Any) -> Optional[int]:
+    """Best-effort conversion of ``value`` to :class:`int`."""
+
+    if value is None:
+        return None
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return int(text, 0)
+        except ValueError:
+            pass
+
+    numeric = _to_float(value)
+    if numeric is None:
+        return None
+
+    try:
+        return int(numeric)
+    except (TypeError, ValueError):  # pragma: no cover - defensive guard
+        return None
+
+
 _US_TYPE_RANGES: List[Tuple[int, int, str]] = [
     (66, 95, "max"),
     (96, 125, "min"),
@@ -133,6 +158,8 @@ def generate_signals(
     speed_col_jp = None
     supplementary_col = None
     digital_col = None
+    attribute_flag_col = None
+    type_code_col_jp = None
     speed_col_us = None
     shape_col = None
     type_col = None
@@ -145,6 +172,8 @@ def generate_signals(
         )
         supplementary_col = _find_column(df_sign, "補助標識")
         digital_col = _find_column(df_sign, "digital")
+        attribute_flag_col = _find_column(df_sign, "標識付加属性")
+        type_code_col_jp = _find_column(df_sign, "標識情報種別")
     else:
         speed_col_us = _find_column(df_sign, "speed", "limit")
         shape_col = _find_column(df_sign, "shape")
@@ -170,6 +199,14 @@ def generate_signals(
             is_digital = False
             if digital_col is not None:
                 is_digital = _as_bool(row[digital_col])
+            if not is_digital and attribute_flag_col is not None:
+                flags = _to_int(row[attribute_flag_col])
+                if flags is not None and flags & 0x80:
+                    is_digital = True
+            if not is_digital and type_code_col_jp is not None:
+                type_code = _to_int(row[type_code_col_jp])
+                if type_code is not None and type_code & 0x80000000:
+                    is_digital = True
             if speed_val is not None and abs(speed_val) <= 1e-6:
                 is_digital = True
             if speed_val is None and not is_digital:
