@@ -5,9 +5,9 @@ from csv2xodr.simpletable import DataFrame
 def test_generate_signals_jpn_handles_digital_signs():
     df = DataFrame(
         {
-            "Offset[cm]": ["100", "200"],
-            "最高速度値[km/h]": ["50", "0"],
-            "補助標識分類": ["123", "65535"],
+            "Offset[cm]": ["100", "200", "300"],
+            "最高速度値[km/h]": ["50", "0", "0"],
+            "補助標識分類": ["123", "4", "65535"],
         }
     )
 
@@ -19,8 +19,8 @@ def test_generate_signals_jpn_handles_digital_signs():
         log_fn=lambda message: None,
     )
 
-    assert len(signals) == 2
-    first, second = signals
+    assert len(signals) == 3
+    first, second, third = signals
 
     assert first["s"] == 0.0
     assert first["value"] == 50.0
@@ -30,8 +30,13 @@ def test_generate_signals_jpn_handles_digital_signs():
 
     assert second["s"] == 1.0
     assert second["dynamic"] == "yes"
-    assert second["value"] == 0.0
-    assert "supplementary" not in second
+    assert second["value"] == 40.0
+    assert second["supplementary"] == "4"
+
+    assert third["s"] == 2.0
+    assert third["dynamic"] == "yes"
+    assert third["value"] == 0.0
+    assert "supplementary" not in third
 
 
 def test_generate_signals_jpn_uses_attribute_flag_for_digital_detection():
