@@ -34,6 +34,26 @@ def test_generate_signals_jpn_handles_digital_signs():
     assert "supplementary" not in second
 
 
+def test_generate_signals_jpn_extracts_embedded_numeric_speeds():
+    df = DataFrame(
+        {
+            "Offset[cm]": ["0"],
+            "最高速度値[km/h]": ["約50km/h"],
+        }
+    )
+
+    signals = generate_signals(
+        df,
+        country="JPN",
+        offset_mapper=lambda value: value,
+        sign_filename="PROFILETYPE_MPU_ZGM_SIGN_INFO.csv",
+        log_fn=lambda message: None,
+    )
+
+    assert len(signals) == 1
+    assert signals[0]["value"] == 50.0
+
+
 def test_generate_signals_handles_grouped_numeric_offsets():
     df = DataFrame(
         {

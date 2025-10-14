@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from csv2xodr.normalize.core import _find_column, _to_float
@@ -21,15 +22,31 @@ def _as_bool(value: Any) -> bool:
 
 
 def _format_numeric(value: Optional[float]) -> Optional[float]:
+    """Return a floating point number when *value* contains numeric text."""
+
     if value is None:
         return None
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
+
+    # ``_to_float`` already normalises locale dependent formatting but it
+    # expects a clean numeric token.  Real-world CSV dumps occasionally embed
+    # speed limits inside human-readable strings such as ``"約50km/h"`` or
+    # include measurement units in brackets.  Extract the first numeric token
+    # before delegating to the shared conversion helper so that we still honour
+    # grouping separators and full-width digits.
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        match = re.search(r"[-+]?\d+(?:[.,]\d+)?", text)
+        if match is not None:
+            value = match.group(0)
+
+    numeric = _to_float(value)
+    if numeric is None:
         return None
     if not math.isfinite(numeric):
         return None
-    return numeric
+    return float(numeric)
 
 
 def _normalise_offset(values: List[float]) -> Tuple[float, Callable[[float], float]]:
