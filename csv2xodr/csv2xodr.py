@@ -173,12 +173,14 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
 
     files_cfg = cfg.get("files") or {}
     sign_filename = files_cfg.get("sign") if isinstance(files_cfg, dict) else None
-    signals = generate_signals(
+    signal_export = generate_signals(
         dfs.get("sign"),
         country=_detect_country(sign_filename),
         offset_mapper=offset_mapper,
         sign_filename=sign_filename,
     )
+    signals = signal_export.signals
+    signal_objects = signal_export.objects
 
     apply_shoulder_profile(lane_specs, shoulder_profile, defaults=cfg.get("defaults", {}))
     normalize_lane_ids(lane_specs)
@@ -209,6 +211,7 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
         geometry_segments=geometry_segments,
         superelevation_profile=superelevation_profile,
         signals=signals,
+        objects=signal_objects,
         road_metadata=road_cfg,
     )
 
@@ -233,6 +236,7 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
                 1 + len(sec.get("left", [])) + len(sec.get("right", [])) for sec in lane_specs
             ),
             "signals": len(signals),
+            "signalObjects": len(signal_objects),
         },
         "road_length_m": float(center["s"].iloc[-1]) if len(center["s"]) else 0.0,
         "xodr_file": {

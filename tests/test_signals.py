@@ -11,7 +11,7 @@ def test_generate_signals_jpn_handles_digital_signs():
         }
     )
 
-    signals = generate_signals(
+    result = generate_signals(
         df,
         country="JPN",
         offset_mapper=lambda value: value,
@@ -19,8 +19,8 @@ def test_generate_signals_jpn_handles_digital_signs():
         log_fn=lambda message: None,
     )
 
-    assert len(signals) == 3
-    first, second, third = signals
+    assert len(result.signals) == 3
+    first, second, third = result.signals
 
     assert first["s"] == 0.0
     assert first["value"] == 50.0
@@ -38,6 +38,11 @@ def test_generate_signals_jpn_handles_digital_signs():
     assert third["value"] == 0.0
     assert "supplementary" not in third
 
+    assert len(result.objects) == 3
+    pole = result.objects[0]
+    assert pole["type"] == "pole"
+    assert pole["orientation"] == "+"
+
 
 def test_generate_signals_jpn_uses_attribute_flag_for_digital_detection():
     df = DataFrame(
@@ -49,7 +54,7 @@ def test_generate_signals_jpn_uses_attribute_flag_for_digital_detection():
         }
     )
 
-    signals = generate_signals(
+    result = generate_signals(
         df,
         country="JPN",
         offset_mapper=lambda value: value,
@@ -57,8 +62,8 @@ def test_generate_signals_jpn_uses_attribute_flag_for_digital_detection():
         log_fn=lambda message: None,
     )
 
-    assert len(signals) == 1
-    signal = signals[0]
+    assert len(result.signals) == 1
+    signal = result.signals[0]
     assert signal["s"] == 0.0
     assert signal["dynamic"] == "yes"
     assert signal["value"] == 0.0
@@ -72,7 +77,7 @@ def test_generate_signals_jpn_extracts_embedded_numeric_speeds():
         }
     )
 
-    signals = generate_signals(
+    result = generate_signals(
         df,
         country="JPN",
         offset_mapper=lambda value: value,
@@ -80,8 +85,8 @@ def test_generate_signals_jpn_extracts_embedded_numeric_speeds():
         log_fn=lambda message: None,
     )
 
-    assert len(signals) == 1
-    assert signals[0]["value"] == 50.0
+    assert len(result.signals) == 1
+    assert result.signals[0]["value"] == 50.0
 
 
 def test_generate_signals_handles_grouped_numeric_offsets():
@@ -92,7 +97,7 @@ def test_generate_signals_handles_grouped_numeric_offsets():
         }
     )
 
-    signals = generate_signals(
+    result = generate_signals(
         df,
         country="JPN",
         offset_mapper=lambda value: value,
@@ -100,11 +105,11 @@ def test_generate_signals_handles_grouped_numeric_offsets():
         log_fn=lambda message: None,
     )
 
-    assert len(signals) == 2
-    assert signals[0]["s"] == 0.0
-    assert signals[0]["value"] == 40.0
-    assert signals[1]["s"] == 5.0
-    assert signals[1]["value"] == 35.0
+    assert len(result.signals) == 2
+    assert result.signals[0]["s"] == 0.0
+    assert result.signals[0]["value"] == 40.0
+    assert result.signals[1]["s"] == 5.0
+    assert result.signals[1]["value"] == 35.0
 
 
 def test_generate_signals_us_uses_speed_limit_and_shape():
@@ -118,7 +123,7 @@ def test_generate_signals_us_uses_speed_limit_and_shape():
         }
     )
 
-    signals = generate_signals(
+    result = generate_signals(
         df,
         country="US",
         offset_mapper=lambda value: value,
@@ -126,8 +131,8 @@ def test_generate_signals_us_uses_speed_limit_and_shape():
         log_fn=lambda message: None,
     )
 
-    assert len(signals) == 2
-    first, second = signals
+    assert len(result.signals) == 2
+    first, second = result.signals
 
     assert first["s"] == 0.0
     assert first["value"] == 45.0
