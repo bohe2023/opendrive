@@ -387,8 +387,15 @@ def generate_signals(
             "orientation": "+",
             "length": _SUPPORT_LENGTH_M,
             "width": _SUPPORT_WIDTH_M,
-            "height": _SUPPORT_HEIGHT_M,
         }
+        sign_z_offset = _to_float(attrs.get("zOffset"))
+        if sign_z_offset is None:
+            sign_z_offset = _SIGN_BOARD_Z_OFFSET_M
+        sign_height = _to_float(attrs.get("height"))
+        if sign_height is None or sign_height <= 0.0:
+            sign_height = _SIGN_BOARD_HEIGHT_M
+        support_height = max(_SUPPORT_HEIGHT_M, sign_z_offset + sign_height)
+        support_attrs["height"] = support_height
         objects.append(support_attrs)
 
     if log_fn is not None:
