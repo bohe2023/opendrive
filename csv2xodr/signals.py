@@ -5,10 +5,30 @@ from __future__ import annotations
 import math
 import re
 import unicodedata
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from csv2xodr.normalize.core import _find_column, _to_float
 from csv2xodr.simpletable import DataFrame
+
+
+@dataclass
+class SignalExport:
+    """Container bundling exported signals with their support objects."""
+
+    signals: List[Dict[str, Any]]
+    objects: List[Dict[str, Any]]
+
+
+_SPEED_SIGN_TYPE_CODE = "1000011"
+_SIGN_COUNTRY = "OpenDRIVE"
+_SIGN_BOARD_HEIGHT_M = 0.75
+_SIGN_BOARD_WIDTH_M = 0.55
+_SIGN_BOARD_Z_OFFSET_M = 1.5
+_SUPPORT_OBJECT_TYPE = "pole"
+_SUPPORT_LENGTH_M = 0.10
+_SUPPORT_WIDTH_M = 0.10
+_SUPPORT_HEIGHT_M = 2.0
 
 
 def _as_bool(value: Any) -> bool:
@@ -177,22 +197,23 @@ def generate_signals(
     offset_mapper: Optional[Callable[[float], float]] = None,
     sign_filename: Optional[str] = None,
     log_fn: Optional[Callable[[str], None]] = print,
-) -> List[Dict[str, Any]]:
+) -> SignalExport:
     """Generate OpenDRIVE signal dictionaries from a sign profile table."""
 
     signals: List[Dict[str, Any]] = []
+    objects: List[Dict[str, Any]] = []
     if df_sign is None or len(df_sign) == 0:
         if log_fn is not None:
             source = sign_filename or "<missing>"
             log_fn(f"[signals] 0 entries from {source}")
-        return signals
+        return SignalExport(signals=signals, objects=objects)
 
     offset_col = _find_column(df_sign, "offset")
     if offset_col is None:
         if log_fn is not None:
             source = sign_filename or "<missing>"
             log_fn(f"[signals] 0 entries from {source} (no offset column)")
-        return signals
+        return SignalExport(signals=signals, objects=objects)
 
     retrans_col = _find_column(df_sign, "is", "retransmission")
 
@@ -209,7 +230,7 @@ def generate_signals(
         if log_fn is not None:
             source = sign_filename or "<missing>"
             log_fn(f"[signals] 0 entries from {source} (no valid offsets)")
-        return signals
+        return SignalExport(signals=signals, objects=objects)
 
     _, offset_to_metres = _normalise_offset(offsets_cm)
 
@@ -281,16 +302,27 @@ def generate_signals(
             attrs: Dict[str, Any] = {
                 "s": s_pos,
                 "t": 0.0,
-                "type": "speed",
-                "subtype": "max",
+                "type": _SPEED_SIGN_TYPE_CODE,
                 "unit": "km/h",
-                "country": "JPN",
+                "country": _SIGN_COUNTRY,
                 "dynamic": "yes" if is_digital else "no",
+                "orientation": "+",
+                "height": _SIGN_BOARD_HEIGHT_M,
+                "width": _SIGN_BOARD_WIDTH_M,
+                "zOffset": _SIGN_BOARD_Z_OFFSET_M,
             }
             if speed_val is not None and not (is_digital and abs(speed_val) <= 1e-6):
                 attrs["value"] = speed_val
             else:
                 attrs["value"] = speed_val if speed_val is not None else 0.0
+            try:
+                subtype_value = float(attrs.get("value", 0.0))
+            except (TypeError, ValueError):
+                subtype_value = 0.0
+            if math.isfinite(subtype_value):
+                attrs["subtype"] = str(int(round(subtype_value)))
+            else:
+                attrs["subtype"] = "0"
             if supplementary_col is not None:
                 supplementary = row[supplementary_col]
                 text = str(supplementary).strip() if supplementary is not None else ""
@@ -338,13 +370,29 @@ def generate_signals(
 
     entries.sort(key=lambda item: item[0])
     for idx, (s_pos, attrs) in enumerate(entries, start=1):
-        attrs.setdefault("id", f"sig_{idx}")
-        attrs.setdefault("orientation", "none")
+        attrs.setdefault("id", f"sig_main_{idx}")
+        attrs.setdefault("orientation", "+")
         attrs.setdefault("name", attrs.get("supplementary", ""))
         signals.append(attrs)
+
+        support_attrs: Dict[str, Any] = {
+            "id": f"pole_sig_main_{idx}",
+            "name": f"sign_pole_{idx}",
+            "type": _SUPPORT_OBJECT_TYPE,
+            "s": s_pos,
+            "t": 0.0,
+            "zOffset": 0.0,
+            "pitch": 0.0,
+            "roll": 0.0,
+            "orientation": "+",
+            "length": _SUPPORT_LENGTH_M,
+            "width": _SUPPORT_WIDTH_M,
+            "height": _SUPPORT_HEIGHT_M,
+        }
+        objects.append(support_attrs)
 
     if log_fn is not None:
         source = sign_filename or "sign"
         log_fn(f"[signals] {len(signals)} entries from {source}")
 
-    return signals
+    return SignalExport(signals=signals, objects=objects)
