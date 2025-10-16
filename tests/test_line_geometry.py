@@ -266,116 +266,36 @@ def test_build_line_geometry_lookup_splits_when_offset_resets():
     assert first["s"] == pytest.approx([0.0, 1.0])
     assert second["s"] == pytest.approx([0.0, 1.0])
     assert first["y"][0] != pytest.approx(second["y"][0])
-
-
-def test_line_geometry_lookup_assigns_curvature_from_samples():
+def test_line_geometry_lookup_fits_curvature_from_geometry():
     meters_to_degrees = 180.0 / (math.pi * 6378137.0)
-    df = DataFrame(
-        [
+    radius = 50.0
+    rows = []
+    for idx, theta in enumerate([0.0, 0.25, 0.5, 0.75, 1.0]):
+        arc_length = radius * theta
+        x = radius * math.sin(theta)
+        y = radius * (1.0 - math.cos(theta))
+        rows.append(
             {
-                "ライン型地物ID": "curv",
-                "Offset[cm]": "0",
-                "緯度[deg]": "0.0",
-                "経度[deg]": "0.0",
+                "ライン型地物ID": "arc",
+                "Offset[cm]": f"{arc_length * 100.0}",
+                "緯度[deg]": f"{y * meters_to_degrees}",
+                "経度[deg]": f"{x * meters_to_degrees}",
                 "高さ[m]": "0.0",
                 "ログ時刻": "t0",
                 "Type": "1",
                 "Is Retransmission": "false",
-            },
-            {
-                "ライン型地物ID": "curv",
-                "Offset[cm]": "100",
-                "緯度[deg]": "0.0",
-                "経度[deg]": f"{1.0 * meters_to_degrees}",
-                "高さ[m]": "0.0",
-                "ログ時刻": "t0",
-                "Type": "1",
-                "Is Retransmission": "false",
-            },
-        ]
-    )
-
-    curvature_samples = [
-        {"x": 0.0, "y": 0.0, "curvature": 0.25},
-        {"x": 1.0, "y": 0.0, "curvature": -0.5},
-    ]
+            }
+        )
 
     lookup = build_line_geometry_lookup(
-        df,
+        DataFrame(rows),
         offset_mapper=lambda value: value,
         lat0=0.0,
         lon0=0.0,
-        curvature_samples=curvature_samples,
     )
 
-    assert "curv" in lookup
-    geom = lookup["curv"][0]
+    geom = lookup["arc"][0]
     assert "curvature" in geom
-    assert geom["curvature"][0] == pytest.approx(0.25)
-    assert geom["curvature"][1] == pytest.approx(-0.5)
-
-
-def test_line_geometry_lookup_prefers_lane_local_curvature_samples():
-    meters_to_degrees = 180.0 / (math.pi * 6378137.0)
-    df = DataFrame(
-        [
-            {
-                "ライン型地物ID": "shape",  # line id
-                "Path Id": "500",  # path identifier
-                "Lane Number": "3",  # lane identifier
-                "Offset[cm]": "0",
-                "End Offset[cm]": "100",
-                "緯度[deg]": "0.0",
-                "経度[deg]": "0.0",
-                "高さ[m]": "0.0",
-                "ログ時刻": "t0",
-                "Type": "1",
-                "Is Retransmission": "false",
-            },
-            {
-                "ライン型地物ID": "shape",
-                "Path Id": "500",
-                "Lane Number": "3",
-                "Offset[cm]": "100",
-                "End Offset[cm]": "200",
-                "緯度[deg]": "0.0",
-                "経度[deg]": f"{1.0 * meters_to_degrees}",
-                "高さ[m]": "0.0",
-                "ログ時刻": "t0",
-                "Type": "1",
-                "Is Retransmission": "false",
-            },
-        ]
-    )
-
-    curvature_samples = [
-        {
-            "path": "500",
-            "lane": "3",
-            "shape_index": 100,
-            "offset": 10.0,
-            "curvature": 0.01,
-            "x": 0.0,
-            "y": 0.0,
-        },
-        {
-            "path": "500",
-            "lane": "3",
-            "shape_index": 200,
-            "offset": 20.0,
-            "curvature": -0.02,
-            "x": 1.0,
-            "y": 0.0,
-        },
-    ]
-
-    lookup = build_line_geometry_lookup(
-        df,
-        offset_mapper=lambda value: value,
-        lat0=0.0,
-        lon0=0.0,
-        curvature_samples=curvature_samples,
-    )
-
-    geom = lookup["shape"][0]
-    assert geom["curvature"] == pytest.approx([0.01, -0.02])
+    expected = 1.0 / radius
+    for value in geom["curvature"]:
+        assert value == pytest.approx(expected, rel=0.05)
