@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 import math
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -545,6 +546,118 @@ def build_line_geometry_lookup(
 
         for seq in sequences:
             points = list(seq)
+
+            resampled = _resample_sequence_with_polynomial(points)
+            if resampled is not None:
+                resampled_s = [float(val) for val in resampled["s"]]
+                resampled_x = [float(val) for val in resampled["x"]]
+                resampled_y = [float(val) for val in resampled["y"]]
+                resampled_z = [float(val) for val in resampled["z"]]
+                resampled_curvature = [float(val) for val in resampled["curvature"]]
+                signature = _geometry_signature(
+                    list(zip(resampled_s, resampled_x, resampled_y, resampled_z))
+                )
+                if any(
+                    _geometry_signature(list(zip(g["s"], g["x"], g["y"], g["z"])))
+                    == signature
+                    for g in geoms
+                ):
+                    continue
+
+                curvature_vals: List[Optional[float]] = list(resampled_curvature)
+                path_token = entry.get("path_token")
+                lane_token = entry.get("lane_token")
+                lane_key = (path_token, lane_token)
+                locator = _lane_locator(lane_key)
+
+                direct_lookup: Optional[Dict[int, List[Tuple[Optional[float], float]]]] = None
+                offset_lookup: Optional[Dict[float, List[float]]] = None
+                if path_token is not None and lane_token is not None:
+                    direct_lookup = curvature_by_index.get(lane_key)
+                    offset_lookup = curvature_by_offset.get(lane_key)
+
+                shape_series = resampled.get("shape_index") or [None] * len(resampled_s)
+                offset_series = resampled.get("absolute_offset") or [None] * len(resampled_s)
+
+                for idx_point, (
+                    x_coord,
+                    y_coord,
+                    shape_idx,
+                    absolute_offset,
+                ) in enumerate(zip(resampled_x, resampled_y, shape_series, offset_series)):
+                    best_curv: Optional[float] = curvature_vals[idx_point]
+
+                    if prepared_samples:
+                        sample_curv = _nearest_curvature(x_coord, y_coord)
+                        if sample_curv is not None:
+                            best_curv = sample_curv
+
+                    if best_curv is None and locator is not None:
+                        loc_curv = locator(x_coord, y_coord)
+                        if loc_curv is not None:
+                            best_curv = loc_curv
+
+                    if best_curv is None and direct_lookup and shape_idx is not None:
+                        try:
+                            idx_key = int(round(float(shape_idx)))
+                        except (TypeError, ValueError):
+                            idx_key = None
+                        if idx_key is not None:
+                            candidates = direct_lookup.get(idx_key, [])
+                            if candidates:
+                                if absolute_offset is not None and math.isfinite(float(absolute_offset)):
+                                    finite = [
+                                        item
+                                        for item in candidates
+                                        if item[0] is not None and math.isfinite(float(item[0]))
+                                    ]
+                                    if finite:
+                                        best_offset, best_curv_val = min(
+                                            finite,
+                                            key=lambda item: abs(float(item[0]) - float(absolute_offset)),
+                                        )
+                                        if abs(float(best_offset) - float(absolute_offset)) <= 0.5:
+                                            best_curv = float(best_curv_val)
+                                    else:
+                                        best_curv = float(candidates[0][1])
+                                else:
+                                    best_curv = float(candidates[0][1])
+
+                    if (
+                        best_curv is None
+                        and offset_lookup
+                        and absolute_offset is not None
+                        and math.isfinite(float(absolute_offset))
+                    ):
+                        offset_key = round(float(absolute_offset), 6)
+                        candidates_off = offset_lookup.get(offset_key)
+                        if not candidates_off and offset_lookup:
+                            try:
+                                best_key = min(
+                                    offset_lookup.keys(),
+                                    key=lambda key_val: abs(key_val - offset_key),
+                                )
+                                candidates_off = offset_lookup.get(best_key)
+                            except ValueError:
+                                candidates_off = None
+                        if candidates_off:
+                            best_curv = sum(candidates_off) / len(candidates_off)
+
+                    curvature_vals[idx_point] = best_curv
+
+                geom_entry = {
+                    "s": resampled_s,
+                    "x": resampled_x,
+                    "y": resampled_y,
+                    "z": resampled_z,
+                }
+                if any(val is not None and abs(float(val)) > 1e-12 for val in curvature_vals):
+                    geom_entry["curvature"] = [
+                        float(val) if val is not None else 0.0 for val in curvature_vals
+                    ]
+                geoms.append(geom_entry)
+                continue
+
             signature = _geometry_signature([(p[0], p[1], p[2], p[3]) for p in points])
             if any(
                 _geometry_signature(list(zip(g["s"], g["x"], g["y"], g["z"]))) == signature
@@ -638,4 +751,245 @@ def build_line_geometry_lookup(
             geoms.append(geom_entry)
 
     return lookup
+
+RESAMPLE_STEP_METERS = 10.0
+MIN_POLY_DEGREE = 3
+MAX_POLY_DEGREE = 5
+
+
+def _polyval(coeffs: List[float], values: Iterable[float]) -> List[float]:
+    result: List[float] = []
+    for val in values:
+        acc = 0.0
+        for coeff in coeffs:
+            acc = acc * val + coeff
+        result.append(float(acc))
+    return result
+
+
+def _polyder(coeffs: List[float], order: int = 1) -> List[float]:
+    deriv = list(coeffs)
+    for _ in range(order):
+        if len(deriv) <= 1:
+            return [0.0]
+        next_deriv: List[float] = []
+        degree = len(deriv) - 1
+        for idx, coeff in enumerate(deriv[:-1]):
+            power = degree - idx
+            next_deriv.append(coeff * power)
+        deriv = next_deriv
+    return deriv if deriv else [0.0]
+
+
+def _solve_linear_system(matrix: List[List[float]], rhs: List[float]) -> Optional[List[float]]:
+    size = len(rhs)
+    augmented = [row[:] + [rhs[idx]] for idx, row in enumerate(matrix)]
+
+    for col in range(size):
+        pivot_row = max(range(col, size), key=lambda r: abs(augmented[r][col]))
+        pivot_val = augmented[pivot_row][col]
+        if abs(pivot_val) <= 1e-12:
+            return None
+        if pivot_row != col:
+            augmented[col], augmented[pivot_row] = augmented[pivot_row], augmented[col]
+
+        pivot_val = augmented[col][col]
+        for j in range(col, size + 1):
+            augmented[col][j] /= pivot_val
+
+        for row in range(size):
+            if row == col:
+                continue
+            factor = augmented[row][col]
+            if abs(factor) <= 1e-12:
+                continue
+            for j in range(col, size + 1):
+                augmented[row][j] -= factor * augmented[col][j]
+
+    return [augmented[i][size] for i in range(size)]
+
+
+def _polyfit(ts: List[float], values: List[float], degree: int) -> Optional[List[float]]:
+    if degree < 0:
+        return None
+    count = len(ts)
+    cols = degree + 1
+    vandermonde = [[t ** (degree - idx) for idx in range(cols)] for t in ts]
+
+    normal: List[List[float]] = [[0.0 for _ in range(cols)] for _ in range(cols)]
+    rhs: List[float] = [0.0 for _ in range(cols)]
+
+    for row_idx in range(count):
+        row = vandermonde[row_idx]
+        value = values[row_idx]
+        for i in range(cols):
+            rhs[i] += row[i] * value
+            for j in range(cols):
+                normal[i][j] += row[i] * row[j]
+
+    solution = _solve_linear_system(normal, rhs)
+    return solution
+
+
+def _interp_values(xs: List[float], ys: List[float], targets: List[float]) -> List[float]:
+    if not xs:
+        return [0.0 for _ in targets]
+    result: List[float] = []
+    last_idx = len(xs) - 1
+    for val in targets:
+        if val <= xs[0]:
+            result.append(float(ys[0]))
+            continue
+        if val >= xs[last_idx]:
+            result.append(float(ys[last_idx]))
+            continue
+        idx = bisect.bisect_left(xs, val) - 1
+        if idx < 0:
+            idx = 0
+        next_idx = min(idx + 1, last_idx)
+        x0 = xs[idx]
+        x1 = xs[next_idx]
+        y0 = ys[idx]
+        y1 = ys[next_idx]
+        if abs(x1 - x0) <= 1e-12:
+            result.append(float(y0))
+            continue
+        ratio = (val - x0) / (x1 - x0)
+        result.append(float(y0 + (y1 - y0) * ratio))
+    return result
+
+
+def _interp_optional_values(
+    xs: List[float], values: List[Optional[float]], targets: List[float]
+) -> List[Optional[float]]:
+    defined = [
+        (float(x), float(val))
+        for x, val in zip(xs, values)
+        if val is not None and math.isfinite(float(val))
+    ]
+    if not defined:
+        return [None for _ in targets]
+    defined.sort(key=lambda item: item[0])
+    xs_def = [item[0] for item in defined]
+    ys_def = [item[1] for item in defined]
+    if len(xs_def) == 1:
+        return [ys_def[0] for _ in targets]
+    return [
+        _interp_values(xs_def, ys_def, [target])[0]
+        if target >= xs_def[0] and target <= xs_def[-1]
+        else (
+            ys_def[0]
+            if target < xs_def[0]
+            else ys_def[-1]
+        )
+        for target in targets
+    ]
+
+
+def _select_polynomial_degree(sample_count: int) -> Optional[int]:
+    """Return an appropriate polynomial degree for ``sample_count`` points."""
+
+    if sample_count < 2:
+        return None
+
+    max_supported = min(MAX_POLY_DEGREE, sample_count - 1)
+    if max_supported < 1:
+        return None
+    if max_supported < MIN_POLY_DEGREE:
+        return max_supported
+    return max(MIN_POLY_DEGREE, min(MAX_POLY_DEGREE, max_supported))
+
+
+def _resample_sequence_with_polynomial(
+    points: List[Tuple[float, float, float, float, Optional[float], Optional[float]]],
+    *,
+    step: float = RESAMPLE_STEP_METERS,
+) -> Optional[Dict[str, List[float] | List[Optional[float]]]]:
+    """Fit a parametric polynomial to ``points`` and resample curvature."""
+
+    if len(points) < 2:
+        return None
+
+    s_vals = [float(p[0]) for p in points]
+    x_vals = [float(p[1]) for p in points]
+    y_vals = [float(p[2]) for p in points]
+    z_vals = [float(p[3]) for p in points]
+
+    seg_lengths: List[float] = []
+    total_length = 0.0
+    for idx in range(1, len(points)):
+        dx = x_vals[idx] - x_vals[idx - 1]
+        dy = y_vals[idx] - y_vals[idx - 1]
+        length = math.hypot(dx, dy)
+        seg_lengths.append(length)
+        total_length += length
+    if not math.isfinite(total_length) or total_length <= 0.0:
+        return None
+
+    arc_lengths: List[float] = [0.0]
+    for length in seg_lengths:
+        arc_lengths.append(arc_lengths[-1] + length)
+    degree = _select_polynomial_degree(len(points))
+    if degree is None or degree < 1:
+        return None
+
+    t_vals = [arc / total_length for arc in arc_lengths]
+
+    poly_x = _polyfit(t_vals, x_vals, degree)
+    poly_y = _polyfit(t_vals, y_vals, degree)
+    if poly_x is None or poly_y is None:
+        return None
+
+    dpoly_x = _polyder(poly_x, 1)
+    ddpoly_x = _polyder(poly_x, 2)
+    dpoly_y = _polyder(poly_y, 1)
+    ddpoly_y = _polyder(poly_y, 2)
+
+    targets: List[float] = []
+    current = 0.0
+    while current < total_length:
+        targets.append(current)
+        current += step
+    if not targets or abs(targets[-1] - total_length) > 1e-6:
+        targets.append(total_length)
+
+    combined = sorted(targets + arc_lengths)
+    dedup_targets: List[float] = []
+    for value in combined:
+        if not dedup_targets or abs(value - dedup_targets[-1]) > 1e-9:
+            dedup_targets.append(value)
+    targets = dedup_targets
+
+    t_new = [target / total_length for target in targets]
+    x_new = _polyval(poly_x, t_new)
+    y_new = _polyval(poly_y, t_new)
+    z_new = _interp_values(arc_lengths, z_vals, targets)
+    s_new = _interp_values(arc_lengths, s_vals, targets)
+    shape_vals = [p[4] if p[4] is not None else None for p in points]
+    abs_offsets = [p[5] if p[5] is not None else None for p in points]
+    shape_new = _interp_optional_values(arc_lengths, shape_vals, targets)
+    offset_new = _interp_optional_values(arc_lengths, abs_offsets, targets)
+
+    x_prime = _polyval(dpoly_x, t_new)
+    y_prime = _polyval(dpoly_y, t_new)
+    x_double = _polyval(ddpoly_x, t_new)
+    y_double = _polyval(ddpoly_y, t_new)
+
+    curvature: List[float] = []
+    for xp, yp, xd, yd in zip(x_prime, y_prime, x_double, y_double):
+        denom = (xp * xp + yp * yp) ** 1.5
+        if denom <= 1e-9:
+            curvature.append(0.0)
+        else:
+            curvature.append((xp * yd - yp * xd) / denom)
+
+    return {
+        "s": s_new,
+        "x": x_new,
+        "y": y_new,
+        "z": z_new,
+        "curvature": curvature,
+        "shape_index": shape_new,
+        "absolute_offset": offset_new,
+    }
 
