@@ -29,6 +29,7 @@ _SUPPORT_OBJECT_TYPE = "pole"
 _SUPPORT_LENGTH_M = 0.10
 _SUPPORT_WIDTH_M = 0.10
 _SUPPORT_HEIGHT_M = 2.0
+_SIGN_STACK_GAP_M = 0.15
 
 
 def _as_bool(value: Any) -> bool:
@@ -247,6 +248,9 @@ def generate_signals(
     type_col = None
     height_col = None
 
+    arrangement_col = None
+    instance_id_col = None
+
     if upper_country == "JPN":
         speed_col_jp = (
             _find_column(df_sign, "最高速度情報")
@@ -271,11 +275,15 @@ def generate_signals(
         width_col = _find_column(df_sign, "width")
         elevation_col = _find_column(df_sign, "elevation")
         azimuth_col = _find_column(df_sign, "azimuth")
+        arrangement_col = _find_column(df_sign, "標識情報", "配列")
+        instance_id_col = _find_column(df_sign, "instance", "id")
         sign_id_col = (
             _find_column(df_sign, "標識", "id")
             or _find_column(df_sign, "sign", "id")
             or _find_column(df_sign, "sign", "identifier")
         )
+
+    group_vertical_offsets: Dict[Tuple[str, float], float] = {}
 
     for idx in range(len(df_sign)):
         row = df_sign.iloc[idx]
@@ -388,10 +396,15 @@ def generate_signals(
                     attrs["shape"] = text
                     if "type" in attrs and attrs["type"] != "speed" and not raw_type:
                         attrs["subtype"] = text
+            board_height = None
             if height_col is not None:
                 height_val = _format_numeric(row[height_col])
                 if height_val is not None and height_val > 0.0:
                     attrs["height"] = height_val
+                    board_height = float(height_val)
+            if board_height is None:
+                board_height = _SIGN_BOARD_HEIGHT_M
+                attrs.setdefault("height", board_height)
             if width_col is not None:
                 width_val = _format_numeric(row[width_col])
                 if width_val is not None and width_val > 0.0:
@@ -404,6 +417,21 @@ def generate_signals(
                 azimuth_val = _format_numeric(row[azimuth_col])
                 if azimuth_val is not None:
                     attrs.setdefault("hOffset", math.radians(azimuth_val))
+            arrangement_total = _to_int(row[arrangement_col]) if arrangement_col is not None else None
+            base_z_offset = _to_float(attrs.get("zOffset"))
+            if base_z_offset is None:
+                base_z_offset = _SIGN_BOARD_Z_OFFSET_M
+            support_identifier = ""
+            if instance_id_col is not None:
+                identifier = row[instance_id_col]
+                support_identifier = str(identifier).strip() if identifier is not None else ""
+            if not support_identifier:
+                support_identifier = f"{offset_cm}:{s_pos}"  # fallback key when dataset lacks IDs
+            stack_key = (support_identifier, round(float(s_pos), 6))
+            next_z_offset = group_vertical_offsets.get(stack_key, float(base_z_offset))
+            attrs["zOffset"] = next_z_offset
+            gap = _SIGN_STACK_GAP_M if arrangement_total is None or arrangement_total > 1 else 0.0
+            group_vertical_offsets[stack_key] = next_z_offset + float(board_height) + gap
             if sign_id_col is not None:
                 identifier = row[sign_id_col]
                 text = str(identifier).strip() if identifier is not None else ""
