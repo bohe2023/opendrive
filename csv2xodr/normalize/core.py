@@ -1,3 +1,4 @@
+import bisect
 import math
 import statistics
 import unicodedata
@@ -5,6 +6,11 @@ from typing import Callable, Iterable, List, Tuple, Optional, Any, Dict
 
 from csv2xodr.simpletable import DataFrame
 from csv2xodr.topology.core import _canonical_numeric
+
+
+CURVATURE_RESAMPLE_STEP = 10.0
+CURVATURE_MIN_POLY_DEGREE = 3
+CURVATURE_MAX_POLY_DEGREE = 5
 
 def _col_like(df: DataFrame, keyword: str):
     cols = [c for c in df.columns if keyword in c]
@@ -105,6 +111,210 @@ def _advance_pose(
         end_x = start_x + dx
         end_y = start_y + dy
     return end_x, end_y, end_hdg
+
+
+def _polyval(coeffs: List[float], values: Iterable[float]) -> List[float]:
+    result: List[float] = []
+    for val in values:
+        acc = 0.0
+        for coeff in coeffs:
+            acc = acc * val + coeff
+        result.append(float(acc))
+    return result
+
+
+def _polyder(coeffs: List[float], order: int = 1) -> List[float]:
+    deriv = list(coeffs)
+    for _ in range(order):
+        if len(deriv) <= 1:
+            return [0.0]
+        next_deriv: List[float] = []
+        degree = len(deriv) - 1
+        for idx, coeff in enumerate(deriv[:-1]):
+            power = degree - idx
+            next_deriv.append(coeff * power)
+        deriv = next_deriv
+    return deriv if deriv else [0.0]
+
+
+def _solve_linear_system(matrix: List[List[float]], rhs: List[float]) -> Optional[List[float]]:
+    size = len(rhs)
+    augmented = [row[:] + [rhs[idx]] for idx, row in enumerate(matrix)]
+
+    for col in range(size):
+        pivot_row = max(range(col, size), key=lambda r: abs(augmented[r][col]))
+        pivot_val = augmented[pivot_row][col]
+        if abs(pivot_val) <= 1e-12:
+            return None
+        if pivot_row != col:
+            augmented[col], augmented[pivot_row] = augmented[pivot_row], augmented[col]
+
+        pivot_val = augmented[col][col]
+        for j in range(col, size + 1):
+            augmented[col][j] /= pivot_val
+
+        for row in range(size):
+            if row == col:
+                continue
+            factor = augmented[row][col]
+            if abs(factor) <= 1e-12:
+                continue
+            for j in range(col, size + 1):
+                augmented[row][j] -= factor * augmented[col][j]
+
+    return [augmented[i][size] for i in range(size)]
+
+
+def _polyfit(ts: List[float], values: List[float], degree: int) -> Optional[List[float]]:
+    if degree < 0:
+        return None
+    count = len(ts)
+    cols = degree + 1
+    vandermonde = [[t ** (degree - idx) for idx in range(cols)] for t in ts]
+
+    normal: List[List[float]] = [[0.0 for _ in range(cols)] for _ in range(cols)]
+    rhs: List[float] = [0.0 for _ in range(cols)]
+
+    for row_idx in range(count):
+        row = vandermonde[row_idx]
+        value = values[row_idx]
+        for i in range(cols):
+            rhs[i] += row[i] * value
+            for j in range(cols):
+                normal[i][j] += row[i] * row[j]
+
+    solution = _solve_linear_system(normal, rhs)
+    return solution
+
+
+def _interp_values(xs: List[float], ys: List[float], targets: List[float]) -> List[float]:
+    if not xs:
+        return [0.0 for _ in targets]
+    ordered = sorted(zip(xs, ys), key=lambda item: item[0])
+    xs_sorted = [float(item[0]) for item in ordered]
+    ys_sorted = [float(item[1]) for item in ordered]
+    result: List[float] = []
+    last_idx = len(xs_sorted) - 1
+    for val in targets:
+        if val <= xs_sorted[0]:
+            result.append(float(ys_sorted[0]))
+            continue
+        if val >= xs_sorted[last_idx]:
+            result.append(float(ys_sorted[last_idx]))
+            continue
+        idx = bisect.bisect_left(xs_sorted, val) - 1
+        if idx < 0:
+            idx = 0
+        next_idx = min(idx + 1, last_idx)
+        x0 = xs_sorted[idx]
+        x1 = xs_sorted[next_idx]
+        y0 = ys_sorted[idx]
+        y1 = ys_sorted[next_idx]
+        if abs(x1 - x0) <= 1e-12:
+            result.append(float(y0))
+            continue
+        ratio = (val - x0) / (x1 - x0)
+        result.append(float(y0 + (y1 - y0) * ratio))
+    return result
+
+
+def _select_polynomial_degree(sample_count: int) -> Optional[int]:
+    if sample_count < 2:
+        return None
+    max_supported = min(CURVATURE_MAX_POLY_DEGREE, sample_count - 1)
+    if max_supported < 1:
+        return None
+    if max_supported < CURVATURE_MIN_POLY_DEGREE:
+        return max_supported
+    return max(CURVATURE_MIN_POLY_DEGREE, min(CURVATURE_MAX_POLY_DEGREE, max_supported))
+
+
+def _resample_parametric_curve(
+    s_vals: List[float],
+    x_vals: List[float],
+    y_vals: List[float],
+    *,
+    step: float = CURVATURE_RESAMPLE_STEP,
+) -> Optional[Dict[str, List[float]]]:
+    if len(s_vals) < 2 or len(x_vals) < 2 or len(y_vals) < 2:
+        return None
+
+    combined = sorted(zip(s_vals, x_vals, y_vals), key=lambda item: item[0])
+    s_vals = [float(item[0]) for item in combined]
+    x_vals = [float(item[1]) for item in combined]
+    y_vals = [float(item[2]) for item in combined]
+
+    seg_lengths: List[float] = []
+    total_length = 0.0
+    for idx in range(1, len(x_vals)):
+        dx = x_vals[idx] - x_vals[idx - 1]
+        dy = y_vals[idx] - y_vals[idx - 1]
+        length = math.hypot(dx, dy)
+        seg_lengths.append(length)
+        total_length += length
+    if not math.isfinite(total_length) or total_length <= 0.0:
+        return None
+
+    arc_lengths: List[float] = [0.0]
+    for length in seg_lengths:
+        arc_lengths.append(arc_lengths[-1] + length)
+
+    degree = _select_polynomial_degree(len(x_vals))
+    if degree is None or degree < 1:
+        return None
+
+    t_vals = [arc / total_length for arc in arc_lengths]
+    poly_x = _polyfit(t_vals, x_vals, degree)
+    poly_y = _polyfit(t_vals, y_vals, degree)
+    if poly_x is None or poly_y is None:
+        return None
+
+    dpoly_x = _polyder(poly_x, 1)
+    ddpoly_x = _polyder(poly_x, 2)
+    dpoly_y = _polyder(poly_y, 1)
+    ddpoly_y = _polyder(poly_y, 2)
+
+    targets: List[float] = []
+    current = 0.0
+    while current < total_length:
+        targets.append(current)
+        current += step
+    if not targets or abs(targets[-1] - total_length) > 1e-6:
+        targets.append(total_length)
+
+    combined_targets = sorted(targets + arc_lengths)
+    dedup_targets: List[float] = []
+    for value in combined_targets:
+        if not dedup_targets or abs(value - dedup_targets[-1]) > 1e-9:
+            dedup_targets.append(value)
+    targets = dedup_targets
+
+    t_new = [target / total_length for target in targets]
+    x_new = _polyval(poly_x, t_new)
+    y_new = _polyval(poly_y, t_new)
+
+    x_prime = _polyval(dpoly_x, t_new)
+    y_prime = _polyval(dpoly_y, t_new)
+    x_double = _polyval(ddpoly_x, t_new)
+    y_double = _polyval(ddpoly_y, t_new)
+
+    curvature: List[float] = []
+    for xp, yp, xd, yd in zip(x_prime, y_prime, x_double, y_double):
+        denom = (xp * xp + yp * yp) ** 1.5
+        if denom <= 1e-9:
+            curvature.append(0.0)
+        else:
+            curvature.append((xp * yd - yp * xd) / denom)
+
+    s_interp = _interp_values(arc_lengths, s_vals, targets)
+
+    return {
+        "s": s_interp,
+        "curvature": curvature,
+        "x": x_new,
+        "y": y_new,
+        "arc": targets,
+    }
 
 
 def _find_height_column(df: DataFrame) -> Optional[str]:
@@ -1121,64 +1331,130 @@ def build_curvature_profile(
         lane_token = (path_key, lane_key)
         sample_bucket = lane_samples.setdefault(lane_token, [])
 
-        for i, (idx_val, curv_val, _, _) in enumerate(ordered):
-            if i >= len(offsets):
-                break
-            offset_val = offsets[i]
-            mapped_val = mapped_s[i]
-            sample_entry: Dict[str, Any] = {
-                "s": float(mapped_val),
-                "offset": float(offset_val),
-                "curvature": float(curv_val),
-                "path": path_key,
-                "lane": lane_key,
-                "shape_index": float(idx_val),
-            }
-            if xs_for_samples is not None and ys_for_samples is not None and i < len(xs_for_samples):
-                sample_entry["x"] = float(xs_for_samples[i])
-                sample_entry["y"] = float(ys_for_samples[i])
-            sample_bucket.append(sample_entry)
+        bucket_segments: List[Dict[str, float]] = []
+        resampled = None
+        if (
+            xs_for_samples is not None
+            and ys_for_samples is not None
+            and len(xs_for_samples) >= 2
+            and len(ys_for_samples) >= 2
+        ):
+            resampled = _resample_parametric_curve(
+                mapped_s,
+                xs_for_samples,
+                ys_for_samples,
+                step=CURVATURE_RESAMPLE_STEP,
+            )
 
-        for i in range(len(ordered) - 1):
-            idx0, curv0, _, _ = ordered[i]
-            idx1, _, _, _ = ordered[i + 1]
-            if idx1 <= idx0:
-                continue
+        if resampled is not None and len(resampled.get("s", [])) >= 2:
+            s_series = [float(val) for val in resampled["s"]]
+            curvature_series = [float(val) for val in resampled["curvature"]]
+            x_series = [float(val) for val in resampled.get("x", [])]
+            y_series = [float(val) for val in resampled.get("y", [])]
+            offset_series = _interp_values(mapped_s, offsets, s_series) if offsets else [0.0 for _ in s_series]
+            shape_series = _interp_values(
+                mapped_s,
+                [item[0] for item in ordered],
+                s_series,
+            )
 
-            offset0 = offsets[i]
-            offset1 = offsets[i + 1]
-            s0 = mapped_s[i]
-            s1 = mapped_s[i + 1]
+            for idx_sample, s_val in enumerate(s_series):
+                if idx_sample >= len(curvature_series):
+                    break
+                offset_val = offset_series[idx_sample] if idx_sample < len(offset_series) else offset_series[-1]
+                shape_val = shape_series[idx_sample] if idx_sample < len(shape_series) else None
+                sample_entry: Dict[str, Any] = {
+                    "s": float(s_val),
+                    "offset": float(offset_val),
+                    "curvature": float(curvature_series[idx_sample]),
+                    "path": path_key,
+                    "lane": lane_key,
+                }
+                if shape_val is not None and math.isfinite(shape_val):
+                    sample_entry["shape_index"] = float(shape_val)
+                if idx_sample < len(x_series) and idx_sample < len(y_series):
+                    sample_entry["x"] = float(x_series[idx_sample])
+                    sample_entry["y"] = float(y_series[idx_sample])
+                sample_bucket.append(sample_entry)
 
-            if not (
-                math.isfinite(offset0)
-                and math.isfinite(offset1)
-                and math.isfinite(s0)
-                and math.isfinite(s1)
-            ):
-                continue
-            if offset1 <= offset0 or s1 <= s0:
-                continue
+            for idx_seg in range(len(s_series) - 1):
+                s0 = s_series[idx_seg]
+                s1 = s_series[idx_seg + 1]
+                if not (
+                    math.isfinite(s0)
+                    and math.isfinite(s1)
+                    and s1 > s0
+                ):
+                    continue
+                c0 = curvature_series[idx_seg]
+                c1 = curvature_series[idx_seg + 1]
+                curvature_val = 0.5 * (c0 + c1)
+                if not math.isfinite(curvature_val):
+                    continue
+                bucket_segments.append({"s0": float(s0), "s1": float(s1), "curvature": float(curvature_val)})
+        else:
+            for i, (idx_val, curv_val, _, _) in enumerate(ordered):
+                if i >= len(offsets):
+                    break
+                offset_val = offsets[i]
+                mapped_val = mapped_s[i]
+                sample_entry = {
+                    "s": float(mapped_val),
+                    "offset": float(offset_val),
+                    "curvature": float(curv_val),
+                    "path": path_key,
+                    "lane": lane_key,
+                    "shape_index": float(idx_val),
+                }
+                if (
+                    xs_for_samples is not None
+                    and ys_for_samples is not None
+                    and i < len(xs_for_samples)
+                ):
+                    sample_entry["x"] = float(xs_for_samples[i])
+                    sample_entry["y"] = float(ys_for_samples[i])
+                sample_bucket.append(sample_entry)
 
-            dataset_span = offset1 - offset0
-            if dataset_span <= 0:
-                continue
+            for i in range(len(ordered) - 1):
+                idx0, curv0, _, _ = ordered[i]
+                idx1, _, _, _ = ordered[i + 1]
+                if idx1 <= idx0:
+                    continue
 
-            s_span = s1 - s0
-            if s_span <= 0:
-                continue
+                offset0 = offsets[i]
+                offset1 = offsets[i + 1]
+                s0 = mapped_s[i]
+                s1 = mapped_s[i + 1]
 
-            curv0_val = float(curv0)
-            if not math.isfinite(curv0_val):
-                continue
+                if not (
+                    math.isfinite(offset0)
+                    and math.isfinite(offset1)
+                    and math.isfinite(s0)
+                    and math.isfinite(s1)
+                ):
+                    continue
+                if offset1 <= offset0 or s1 <= s0:
+                    continue
 
-            scale = dataset_span / s_span if s_span > 1e-12 else 1.0
-            curvature_val = curv0_val * scale
+                dataset_span = offset1 - offset0
+                if dataset_span <= 0:
+                    continue
 
-            if not math.isfinite(curvature_val):
-                continue
+                s_span = s1 - s0
+                if s_span <= 0:
+                    continue
 
-            bucket_segments.append({"s0": s0, "s1": s1, "curvature": curvature_val})
+                curv0_val = float(curv0)
+                if not math.isfinite(curv0_val):
+                    continue
+
+                scale = dataset_span / s_span if s_span > 1e-12 else 1.0
+                curvature_val = curv0_val * scale
+
+                if not math.isfinite(curvature_val):
+                    continue
+
+                bucket_segments.append({"s0": s0, "s1": s1, "curvature": curvature_val})
 
         if not bucket_segments:
             continue
