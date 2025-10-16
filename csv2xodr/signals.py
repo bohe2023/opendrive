@@ -267,6 +267,15 @@ def generate_signals(
         shape_col = _find_column(df_sign, "shape")
         digital_col = _find_column(df_sign, "digital")
         type_col = _find_column(df_sign, "type")
+        height_col = _find_column(df_sign, "height", exclude=("elevation",))
+        width_col = _find_column(df_sign, "width")
+        elevation_col = _find_column(df_sign, "elevation")
+        azimuth_col = _find_column(df_sign, "azimuth")
+        sign_id_col = (
+            _find_column(df_sign, "標識", "id")
+            or _find_column(df_sign, "sign", "id")
+            or _find_column(df_sign, "sign", "identifier")
+        )
 
     for idx in range(len(df_sign)):
         row = df_sign.iloc[idx]
@@ -348,24 +357,58 @@ def generate_signals(
                 speed_val = derived
                 if derived_subtype:
                     subtype = derived_subtype
-            if speed_val is None:
-                continue
             is_digital = _as_bool(row[digital_col]) if digital_col is not None else False
-            attrs = {
+            raw_type = ""
+            attrs: Dict[str, Any] = {
                 "s": s_pos,
                 "t": 0.0,
-                "type": "speed",
-                "subtype": subtype,
-                "unit": "mph",
                 "country": "US",
                 "dynamic": "yes" if is_digital else "no",
-                "value": speed_val,
             }
+            if speed_val is not None:
+                attrs.update(
+                    {
+                        "type": "speed",
+                        "subtype": subtype,
+                        "unit": "mph",
+                        "value": speed_val,
+                    }
+                )
+            else:
+                raw_type = str(row[type_col]).strip() if type_col is not None else ""
+                if raw_type:
+                    attrs["subtype"] = raw_type
+                else:
+                    attrs["subtype"] = "general"
+                attrs.update({"type": "information", "value": 0.0})
             if shape_col is not None:
                 shape = row[shape_col]
                 text = str(shape).strip() if shape is not None else ""
                 if text:
                     attrs["shape"] = text
+                    if "type" in attrs and attrs["type"] != "speed" and not raw_type:
+                        attrs["subtype"] = text
+            if height_col is not None:
+                height_val = _format_numeric(row[height_col])
+                if height_val is not None and height_val > 0.0:
+                    attrs["height"] = height_val
+            if width_col is not None:
+                width_val = _format_numeric(row[width_col])
+                if width_val is not None and width_val > 0.0:
+                    attrs["width"] = width_val
+            if elevation_col is not None:
+                elevation_val = _format_numeric(row[elevation_col])
+                if elevation_val is not None:
+                    attrs["pitch"] = math.radians(elevation_val)
+            if azimuth_col is not None:
+                azimuth_val = _format_numeric(row[azimuth_col])
+                if azimuth_val is not None:
+                    attrs.setdefault("hOffset", math.radians(azimuth_val))
+            if sign_id_col is not None:
+                identifier = row[sign_id_col]
+                text = str(identifier).strip() if identifier is not None else ""
+                if text:
+                    attrs["name"] = text
             entries.append((s_pos, attrs))
 
     entries.sort(key=lambda item: item[0])
