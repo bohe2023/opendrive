@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import bisect
 import math
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from csv2xodr.normalize.core import latlon_to_local_xy
 from csv2xodr.simpletable import DataFrame
@@ -106,169 +106,10 @@ def build_line_geometry_lookup(
         Tuple[Any, Any, Any, Any, Any, float, Optional[float]], Dict[str, float]
     ] = {}
 
-    prepared_samples: List[Tuple[float, float, float]] = []
-    lane_samples_xy: Dict[
-        Tuple[Optional[str], Optional[str]], List[Tuple[float, float, float]]
-    ] = {}
-    curvature_by_index: Dict[
-        Tuple[Optional[str], Optional[str]], Dict[int, List[Tuple[Optional[float], float]]]
-    ] = {}
-    curvature_by_offset: Dict[
-        Tuple[Optional[str], Optional[str]], Dict[float, List[float]]
-    ] = {}
-    if curvature_samples:
-        for sample in curvature_samples:
-            path_key = _normalise_key(sample.get("path"))
-            lane_key = _normalise_key(sample.get("lane"))
-
-            curv_val: Optional[float]
-            try:
-                curv_val = float(sample.get("curvature"))
-            except (TypeError, ValueError):
-                curv_val = None
-
-            idx_val: Optional[float]
-            try:
-                idx_val = float(sample.get("shape_index"))
-            except (TypeError, ValueError):
-                idx_val = None
-
-            offset_val: Optional[float]
-            try:
-                offset_val = float(sample.get("offset"))
-            except (TypeError, ValueError):
-                offset_val = None
-
-            x_raw = sample.get("x")
-            y_raw = sample.get("y")
-            try:
-                x_val = float(x_raw) if x_raw is not None else None
-            except (TypeError, ValueError):
-                x_val = None
-            try:
-                y_val = float(y_raw) if y_raw is not None else None
-            except (TypeError, ValueError):
-                y_val = None
-
-            if (
-                curv_val is not None
-                and math.isfinite(curv_val)
-                and x_val is not None
-                and y_val is not None
-            ):
-                prepared_samples.append((x_val, y_val, curv_val))
-                if path_key is not None or lane_key is not None:
-                    lane_samples_xy.setdefault((path_key, lane_key), []).append(
-                        (x_val, y_val, curv_val)
-                    )
-
-            if (
-                path_key is None
-                or lane_key is None
-                or idx_val is None
-                or curv_val is None
-                or not math.isfinite(curv_val)
-            ):
-                continue
-
-            idx_key = int(round(idx_val))
-            bucket = curvature_by_index.setdefault((path_key, lane_key), {})
-            bucket.setdefault(idx_key, []).append((offset_val, curv_val))
-
-            if offset_val is not None and math.isfinite(offset_val):
-                offset_key = round(float(offset_val), 6)
-                offset_bucket = curvature_by_offset.setdefault((path_key, lane_key), {})
-                offset_bucket.setdefault(offset_key, []).append(curv_val)
-
-    cell_size = 1.5
-    sample_grid: Dict[Tuple[int, int], List[Tuple[float, float, float]]] = {}
-    if prepared_samples:
-        for x_val, y_val, curv_val in prepared_samples:
-            cell_x = int(math.floor(x_val / cell_size))
-            cell_y = int(math.floor(y_val / cell_size))
-            sample_grid.setdefault((cell_x, cell_y), []).append((x_val, y_val, curv_val))
-
-    max_radius_sq = (cell_size * 1.5) ** 2
-
-    def _nearest_curvature(x_val: float, y_val: float) -> Optional[float]:
-        if not prepared_samples:
-            return None
-
-        cell_x = int(math.floor(x_val / cell_size))
-        cell_y = int(math.floor(y_val / cell_size))
-        best_curv: Optional[float] = None
-        best_dist_sq = max_radius_sq
-
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                bucket = sample_grid.get((cell_x + dx, cell_y + dy))
-                if not bucket:
-                    continue
-                for sx, sy, curv in bucket:
-                    dist_sq = (sx - x_val) ** 2 + (sy - y_val) ** 2
-                    if dist_sq < best_dist_sq:
-                        best_dist_sq = dist_sq
-                        best_curv = curv
-
-        if best_curv is None:
-            for sx, sy, curv in prepared_samples:
-                dist_sq = (sx - x_val) ** 2 + (sy - y_val) ** 2
-                if dist_sq < best_dist_sq:
-                    best_dist_sq = dist_sq
-                    best_curv = curv
-
-        return best_curv
-
-    lane_locators: Dict[
-        Tuple[Optional[str], Optional[str]], Optional[Callable[[float, float], Optional[float]]]
-    ] = {}
-
-    def _lane_locator(
-        key: Tuple[Optional[str], Optional[str]]
-    ) -> Optional[Callable[[float, float], Optional[float]]]:
-        if key in lane_locators:
-            return lane_locators[key]
-
-        samples = lane_samples_xy.get(key)
-        if not samples:
-            lane_locators[key] = None
-            return None
-
-        grid: Dict[Tuple[int, int], List[Tuple[float, float, float]]] = {}
-        for sx, sy, curv in samples:
-            cell_x = int(math.floor(sx / cell_size))
-            cell_y = int(math.floor(sy / cell_size))
-            grid.setdefault((cell_x, cell_y), []).append((sx, sy, curv))
-
-        def _nearest(x_val: float, y_val: float) -> Optional[float]:
-            best_curv: Optional[float] = None
-            best_dist_sq = max_radius_sq
-
-            cell_x = int(math.floor(x_val / cell_size))
-            cell_y = int(math.floor(y_val / cell_size))
-
-            for dx in (-1, 0, 1):
-                for dy in (-1, 0, 1):
-                    bucket = grid.get((cell_x + dx, cell_y + dy))
-                    if not bucket:
-                        continue
-                    for sx, sy, curv in bucket:
-                        dist_sq = (sx - x_val) ** 2 + (sy - y_val) ** 2
-                        if dist_sq < best_dist_sq:
-                            best_dist_sq = dist_sq
-                            best_curv = curv
-
-            if best_curv is None:
-                for sx, sy, curv in samples:
-                    dist_sq = (sx - x_val) ** 2 + (sy - y_val) ** 2
-                    if dist_sq < best_dist_sq:
-                        best_dist_sq = dist_sq
-                        best_curv = curv
-
-            return best_curv
-
-        lane_locators[key] = _nearest
-        return _nearest
+    # ``curvature_samples`` had previously been used to inject raw curvature
+    # measurements.  The new smoothing-based pipeline derives curvature from the
+    # lane geometry directly, therefore any supplied samples are ignored.  The
+    # parameter is kept for backwards compatibility with existing call sites.
 
     for idx in range(len(line_geom_df)):
         row = line_geom_df.iloc[idx]
@@ -564,97 +405,16 @@ def build_line_geometry_lookup(
                 ):
                     continue
 
-                curvature_vals: List[Optional[float]] = list(resampled_curvature)
-                path_token = entry.get("path_token")
-                lane_token = entry.get("lane_token")
-                lane_key = (path_token, lane_token)
-                locator = _lane_locator(lane_key)
-
-                direct_lookup: Optional[Dict[int, List[Tuple[Optional[float], float]]]] = None
-                offset_lookup: Optional[Dict[float, List[float]]] = None
-                if path_token is not None and lane_token is not None:
-                    direct_lookup = curvature_by_index.get(lane_key)
-                    offset_lookup = curvature_by_offset.get(lane_key)
-
-                shape_series = resampled.get("shape_index") or [None] * len(resampled_s)
-                offset_series = resampled.get("absolute_offset") or [None] * len(resampled_s)
-
-                for idx_point, (
-                    x_coord,
-                    y_coord,
-                    shape_idx,
-                    absolute_offset,
-                ) in enumerate(zip(resampled_x, resampled_y, shape_series, offset_series)):
-                    best_curv: Optional[float] = curvature_vals[idx_point]
-
-                    if prepared_samples:
-                        sample_curv = _nearest_curvature(x_coord, y_coord)
-                        if sample_curv is not None:
-                            best_curv = sample_curv
-
-                    if best_curv is None and locator is not None:
-                        loc_curv = locator(x_coord, y_coord)
-                        if loc_curv is not None:
-                            best_curv = loc_curv
-
-                    if best_curv is None and direct_lookup and shape_idx is not None:
-                        try:
-                            idx_key = int(round(float(shape_idx)))
-                        except (TypeError, ValueError):
-                            idx_key = None
-                        if idx_key is not None:
-                            candidates = direct_lookup.get(idx_key, [])
-                            if candidates:
-                                if absolute_offset is not None and math.isfinite(float(absolute_offset)):
-                                    finite = [
-                                        item
-                                        for item in candidates
-                                        if item[0] is not None and math.isfinite(float(item[0]))
-                                    ]
-                                    if finite:
-                                        best_offset, best_curv_val = min(
-                                            finite,
-                                            key=lambda item: abs(float(item[0]) - float(absolute_offset)),
-                                        )
-                                        if abs(float(best_offset) - float(absolute_offset)) <= 0.5:
-                                            best_curv = float(best_curv_val)
-                                    else:
-                                        best_curv = float(candidates[0][1])
-                                else:
-                                    best_curv = float(candidates[0][1])
-
-                    if (
-                        best_curv is None
-                        and offset_lookup
-                        and absolute_offset is not None
-                        and math.isfinite(float(absolute_offset))
-                    ):
-                        offset_key = round(float(absolute_offset), 6)
-                        candidates_off = offset_lookup.get(offset_key)
-                        if not candidates_off and offset_lookup:
-                            try:
-                                best_key = min(
-                                    offset_lookup.keys(),
-                                    key=lambda key_val: abs(key_val - offset_key),
-                                )
-                                candidates_off = offset_lookup.get(best_key)
-                            except ValueError:
-                                candidates_off = None
-                        if candidates_off:
-                            best_curv = sum(candidates_off) / len(candidates_off)
-
-                    curvature_vals[idx_point] = best_curv
-
                 geom_entry = {
                     "s": resampled_s,
                     "x": resampled_x,
                     "y": resampled_y,
                     "z": resampled_z,
                 }
-                if any(val is not None and abs(float(val)) > 1e-12 for val in curvature_vals):
-                    geom_entry["curvature"] = [
-                        float(val) if val is not None else 0.0 for val in curvature_vals
-                    ]
+                if any(abs(val) > 1e-12 for val in resampled_curvature):
+                    geom_entry["curvature"] = resampled_curvature
+                else:
+                    geom_entry["curvature"] = [0.0 for _ in resampled_curvature]
                 geoms.append(geom_entry)
                 continue
 
@@ -665,88 +425,17 @@ def build_line_geometry_lookup(
             ):
                 continue
 
-            curvature_vals: List[Optional[float]] = [None] * len(points)
-            path_token = entry.get("path_token")
-            lane_token = entry.get("lane_token")
-            lane_key = (path_token, lane_token)
-            locator = _lane_locator(lane_key)
+            curvature_vals = _estimate_discrete_curvature(points)
 
-            direct_lookup: Optional[Dict[int, List[Tuple[Optional[float], float]]]] = None
-            offset_lookup: Optional[Dict[float, List[float]]] = None
-            if path_token is not None and lane_token is not None:
-                direct_lookup = curvature_by_index.get(lane_key)
-                offset_lookup = curvature_by_offset.get(lane_key)
-
-            for idx_point, (
-                _,
-                x_coord,
-                y_coord,
-                _,
-                shape_idx,
-                absolute_offset,
-            ) in enumerate(points):
-                best_curv: Optional[float] = None
-
-                if prepared_samples:
-                    best_curv = _nearest_curvature(x_coord, y_coord)
-
-                if best_curv is None and locator is not None:
-                    best_curv = locator(x_coord, y_coord)
-
-                if best_curv is None and direct_lookup and shape_idx is not None:
-                    idx_key = int(round(shape_idx))
-                    candidates = direct_lookup.get(idx_key, [])
-                    if candidates:
-                        if absolute_offset is not None and math.isfinite(absolute_offset):
-                            finite = [
-                                item
-                                for item in candidates
-                                if item[0] is not None and math.isfinite(item[0])
-                            ]
-                            if finite:
-                                best_offset, best_curv_val = min(
-                                    finite,
-                                    key=lambda item: abs(item[0] - absolute_offset),
-                                )
-                                if abs(best_offset - absolute_offset) <= 0.5:
-                                    best_curv = best_curv_val
-                            else:
-                                best_curv = candidates[0][1]
-                        else:
-                            best_curv = candidates[0][1]
-
-                if (
-                    best_curv is None
-                    and offset_lookup
-                    and absolute_offset is not None
-                    and math.isfinite(absolute_offset)
-                ):
-                    offset_key = round(float(absolute_offset), 6)
-                    candidates_off = offset_lookup.get(offset_key)
-                    if not candidates_off and offset_lookup:
-                        try:
-                            best_key = min(
-                                offset_lookup.keys(),
-                                key=lambda key_val: abs(key_val - offset_key),
-                            )
-                            candidates_off = offset_lookup.get(best_key)
-                        except ValueError:
-                            candidates_off = None
-                    if candidates_off:
-                        best_curv = sum(candidates_off) / len(candidates_off)
-
-                curvature_vals[idx_point] = best_curv
-
-            geom_entry: Dict[str, Any] = {
+            geom_entry = {
                 "s": [p[0] for p in points],
                 "x": [p[1] for p in points],
                 "y": [p[2] for p in points],
                 "z": [p[3] for p in points],
             }
 
-            if curvature_vals and len(curvature_vals) == len(points):
-                if any(val is not None for val in curvature_vals):
-                    geom_entry["curvature"] = curvature_vals
+            if curvature_vals:
+                geom_entry["curvature"] = curvature_vals
 
             geoms.append(geom_entry)
 
@@ -992,4 +681,46 @@ def _resample_sequence_with_polynomial(
         "shape_index": shape_new,
         "absolute_offset": offset_new,
     }
+
+
+def _estimate_discrete_curvature(
+    points: List[Tuple[float, float, float, float, Optional[float], Optional[float]]]
+) -> List[float]:
+    if not points:
+        return []
+
+    count = len(points)
+    if count == 1:
+        return [0.0]
+
+    result: List[float] = []
+    for idx in range(count):
+        prev_idx = max(idx - 1, 0)
+        next_idx = min(idx + 1, count - 1)
+        if prev_idx == idx or next_idx == idx:
+            result.append(0.0)
+            continue
+
+        _, x_prev, y_prev, _, _, _ = points[prev_idx]
+        _, x_curr, y_curr, _, _, _ = points[idx]
+        _, x_next, y_next, _, _, _ = points[next_idx]
+
+        vec_prev = (x_curr - x_prev, y_curr - y_prev)
+        vec_next = (x_next - x_curr, y_next - y_curr)
+        chord = (x_next - x_prev, y_next - y_prev)
+
+        len_prev = math.hypot(vec_prev[0], vec_prev[1])
+        len_next = math.hypot(vec_next[0], vec_next[1])
+        len_chord = math.hypot(chord[0], chord[1])
+
+        denom = len_prev * len_next * len_chord
+        if denom <= 1e-12:
+            result.append(0.0)
+            continue
+
+        area_twice = vec_prev[0] * chord[1] - vec_prev[1] * chord[0]
+        curvature = 2.0 * area_twice / denom
+        result.append(float(curvature))
+
+    return result
 
