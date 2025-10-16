@@ -1,5 +1,6 @@
 import math
 
+from csv2xodr import signals as signals_mod
 from csv2xodr.signals import generate_signals
 from csv2xodr.simpletable import DataFrame
 
@@ -147,12 +148,14 @@ def test_generate_signals_us_uses_speed_limit_and_shape():
     assert math.isclose(first["height"], 1.2)
     assert math.isclose(first["width"], 0.9)
     assert math.isclose(first["pitch"], math.radians(0.5))
+    assert math.isclose(first["zOffset"], signals_mod._SIGN_BOARD_Z_OFFSET_M)
 
     assert second["s"] == 2.0
     assert second["value"] == 5.0
     assert second["dynamic"] == "no"
     assert second["shape"] == "circle"
     assert second["subtype"] == "max"
+    assert math.isclose(second["zOffset"], signals_mod._SIGN_BOARD_Z_OFFSET_M)
 
 
 def test_generate_signals_us_exports_non_speed_signs():
@@ -188,9 +191,41 @@ def test_generate_signals_us_exports_non_speed_signs():
     assert math.isclose(first["pitch"], math.radians(5.0))
     assert first["name"] == "A123"
     assert first["value"] == 0.0
+    assert math.isclose(first["zOffset"], signals_mod._SIGN_BOARD_Z_OFFSET_M)
 
     assert second["type"] == "information"
     assert second["dynamic"] == "yes"
     assert second["shape"] == "8"
     assert second["subtype"] == "16"
     assert second["name"] == "B456"
+    assert math.isclose(second["zOffset"], signals_mod._SIGN_BOARD_Z_OFFSET_M)
+
+
+def test_generate_signals_us_stacks_signs_for_same_support():
+    df = DataFrame(
+        {
+            "Offset[cm]": ["1000", "1000", "1000"],
+            "type": ["17", "17", "16"],
+            "shape": ["A", "B", "C"],
+            "Instance ID": ["0x1", "0x1", "0x1"],
+            "標識情報の配列数": ["3", "3", "3"],
+            "height[m]": ["1.0", "0.8", "0.6"],
+        }
+    )
+
+    result = generate_signals(
+        df,
+        country="US",
+        offset_mapper=lambda value: value,
+        sign_filename="PROFILETYPE_MPU_US_SIGN.csv",
+        log_fn=lambda message: None,
+    )
+
+    assert len(result.signals) == 3
+    first, second, third = result.signals
+    base = signals_mod._SIGN_BOARD_Z_OFFSET_M
+    gap = signals_mod._SIGN_STACK_GAP_M
+
+    assert math.isclose(first["zOffset"], base)
+    assert math.isclose(second["zOffset"], base + 1.0 + gap)
+    assert math.isclose(third["zOffset"], base + 1.0 + gap + 0.8 + gap)
