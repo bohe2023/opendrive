@@ -3,6 +3,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 if __package__ is None or __package__ == "":
     ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,7 @@ from csv2xodr.normalize.core import (
 from csv2xodr.line_geometry import build_line_geometry_lookup
 from csv2xodr.topology.core import make_sections, build_lane_topology
 from csv2xodr.writer.xodr_writer import write_xodr
+from csv2xodr.signals import generate_signals
 from csv2xodr.lane_spec import build_lane_spec, normalize_lane_ids
 
 
@@ -46,6 +48,17 @@ def _apply_dataset_overrides(dfs, cfg) -> None:
     enriched = merge_lane_width_into_links(lane_link, lane_width)
     if enriched is not None:
         dfs["lane_link"] = enriched
+
+
+def _detect_country(sign_filename: Optional[str]) -> str:
+    if not sign_filename:
+        return "JPN"
+    upper = sign_filename.upper()
+    if "US" in upper:
+        return "US"
+    if "JPN" in upper:
+        return "JPN"
+    return "JPN"
 
 
 def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
@@ -96,8 +109,21 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
     lane_topo = build_lane_topology(dfs["lane_link"], offset_mapper=offset_mapper)
 
     # per-section spec (width/roadMark/topology flags)
+    curvature_profile, curvature_samples = build_curvature_profile(
+        dfs.get("curvature"),
+        offset_mapper=offset_mapper,
+        centerline=center,
+        geo_origin=(lat0, lon0),
+        lane_geometry_df=dfs.get("lanes_geometry"),
+    )
+
     line_geometry_lookup = build_line_geometry_lookup(
-        dfs["line_geometry"], offset_mapper=offset_mapper, lat0=lat0, lon0=lon0
+        dfs["line_geometry"],
+        offset_mapper=offset_mapper,
+        lat0=lat0,
+        lon0=lon0,
+        curvature_samples=curvature_samples,
+        centerline=center,
     )
     lane_specs = build_lane_spec(
         sections,
@@ -109,10 +135,6 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
         lanes_geometry_df=dfs.get("lanes_geometry"),
         centerline=center,
         geo_origin=(lat0, lon0),
-    )
-
-    curvature_profile = build_curvature_profile(
-        dfs.get("curvature"), offset_mapper=offset_mapper, centerline=center
     )
 
     geometry_cfg_raw = cfg.get("geometry") or {}
@@ -150,6 +172,19 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
     shoulder_profile = build_shoulder_profile(dfs.get("shoulder_width"), offset_mapper=offset_mapper)
     from csv2xodr.lane_spec import apply_shoulder_profile  # local import to avoid cycle
 
+    files_cfg = cfg.get("files") or {}
+    sign_filename = files_cfg.get("sign") if isinstance(files_cfg, dict) else None
+    signal_export = generate_signals(
+        dfs.get("sign"),
+        country=_detect_country(sign_filename),
+        offset_mapper=offset_mapper,
+        sign_filename=sign_filename,
+        centerline=center,
+        geo_origin=(lat0, lon0),
+    )
+    signals = signal_export.signals
+    signal_objects = signal_export.objects
+
     apply_shoulder_profile(lane_specs, shoulder_profile, defaults=cfg.get("defaults", {}))
     normalize_lane_ids(lane_specs)
 
@@ -178,6 +213,8 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
         elevation_profile=elevation_profile,
         geometry_segments=geometry_segments,
         superelevation_profile=superelevation_profile,
+        signals=signals,
+        objects=signal_objects,
         road_metadata=road_cfg,
     )
 
@@ -201,6 +238,8 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
             "lanes_total": sum(
                 1 + len(sec.get("left", [])) + len(sec.get("right", [])) for sec in lane_specs
             ),
+            "signals": len(signals),
+            "signalObjects": len(signal_objects),
         },
         "road_length_m": float(center["s"].iloc[-1]) if len(center["s"]) else 0.0,
         "xodr_file": {

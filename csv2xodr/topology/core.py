@@ -300,7 +300,7 @@ def build_lane_topology(lane_link_df: DataFrame,
             if raw_add_remove and raw_add_remove not in {"0", ""}:
                 skip_lane = True
 
-        line_positions: Dict[int, str] = {}
+        line_positions: Dict[int, List[str]] = {}
         for idx, col in line_id_cols:
             lid = _canonical_numeric(row[col], allow_negative=True)
             if not lid or lid in {"-1"}:
@@ -313,8 +313,9 @@ def build_lane_topology(lane_link_df: DataFrame,
                 pos = None
             if pos is None:
                 continue
-            if pos not in line_positions:
-                line_positions[pos] = lid
+            bucket = line_positions.setdefault(pos, [])
+            if lid not in bucket:
+                bucket.append(lid)
 
         uid = _compose_lane_uid(base_id, lane_no)
         if skip_lane:
@@ -353,6 +354,9 @@ def build_lane_topology(lane_link_df: DataFrame,
         if offset_mapper is not None:
             mapped_start = offset_mapper(mapped_start)
             mapped_end = offset_mapper(mapped_end)
+
+        if mapped_end - mapped_start <= 1e-6:
+            continue
 
         updated = dict(record)
         updated["start"] = mapped_start

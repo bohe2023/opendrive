@@ -1,9 +1,45 @@
+import bisect
 import math
 import statistics
+import unicodedata
 from typing import Callable, Iterable, List, Tuple, Optional, Any, Dict
 
 from csv2xodr.simpletable import DataFrame
 from csv2xodr.topology.core import _canonical_numeric
+
+
+CURVATURE_RESAMPLE_STEP = 10.0
+CURVATURE_MIN_POLY_DEGREE = 3
+CURVATURE_MAX_POLY_DEGREE = 5
+
+
+def _smooth_series(values: List[float], positions: List[float], window: float) -> List[float]:
+    if len(values) <= 2 or len(values) != len(positions) or window <= 0.0:
+        return list(values)
+
+    half_window = max(window * 0.5, 1e-6)
+    smoothed: List[float] = [0.0 for _ in values]
+
+    left = 0
+    right = 0
+    running_sum = 0.0
+    running_count = 0
+
+    for idx, center in enumerate(positions):
+        while left < len(values) and positions[left] < center - half_window:
+            running_sum -= values[left]
+            running_count -= 1
+            left += 1
+        while right < len(values) and positions[right] <= center + half_window:
+            running_sum += values[right]
+            running_count += 1
+            right += 1
+        if running_count > 0:
+            smoothed[idx] = running_sum / running_count
+        else:  # pragma: no cover - defensive fallback
+            smoothed[idx] = values[idx]
+
+    return smoothed
 
 def _col_like(df: DataFrame, keyword: str):
     cols = [c for c in df.columns if keyword in c]
@@ -24,14 +60,54 @@ def _find_column(df: DataFrame, *keywords: str, exclude: Tuple[str, ...] = ()) -
 
 
 def _to_float(value: Any) -> Optional[float]:
+    """Best-effort conversion that accepts common locale specific formats."""
+
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return None
+
+    # Normalise full-width characters that occasionally show up in JPN CSVs.
+    normalised = unicodedata.normalize("NFKC", text)
+
+    # Remove whitespace-like grouping characters before handling decimal/grouping
+    # separators.  This covers plain spaces as well as non-breaking/thin spaces
+    # that are often used as thousands separators in exported spreadsheets.
+    grouping_chars = {" ", "\u00a0", "\u2009", "_"}
+    compact = "".join(ch for ch in normalised if ch not in grouping_chars)
+
+    # Detect whether commas should be treated as decimal or grouping
+    # separators.  ``1,234.5`` → ``1234.5`` whereas ``12,5`` → ``12.5``.
+    candidate = compact
+    if "," in compact:
+        if "." in compact or compact.count(",") > 1:
+            candidate = compact.replace(",", "")
+        else:
+            head, tail = compact.split(",", 1)
+            tail_digits = tail.isdigit()
+            if tail_digits and tail and len(tail) % 3 == 0 and len(head) > 0:
+                candidate = head + tail
+            elif tail_digits:
+                candidate = f"{head}.{tail}"
+            else:
+                candidate = compact.replace(",", "")
+
     try:
-        if value is None:
-            return None
-        text = str(value).strip()
-        if text == "" or text.lower() == "nan":
-            return None
-        return float(text)
-    except Exception:  # pragma: no cover - defensive
+        return float(candidate)
+    except ValueError:
+        # As a last resort drop all commas.  This allows inputs such as
+        # ``1,234`` to still parse even when the decimal/comma heuristic above
+        # could not disambiguate the intent.
+        fallback = compact.replace(",", "")
+        if fallback != candidate:
+            try:
+                return float(fallback)
+            except ValueError:
+                return None
+        return None
+    except TypeError:  # pragma: no cover - defensive
         return None
 
 
@@ -64,6 +140,443 @@ def _advance_pose(
         end_x = start_x + dx
         end_y = start_y + dy
     return end_x, end_y, end_hdg
+
+
+def _polyval(coeffs: List[float], values: Iterable[float]) -> List[float]:
+    result: List[float] = []
+    for val in values:
+        acc = 0.0
+        for coeff in coeffs:
+            acc = acc * val + coeff
+        result.append(float(acc))
+    return result
+
+
+def _polyder(coeffs: List[float], order: int = 1) -> List[float]:
+    deriv = list(coeffs)
+    for _ in range(order):
+        if len(deriv) <= 1:
+            return [0.0]
+        next_deriv: List[float] = []
+        degree = len(deriv) - 1
+        for idx, coeff in enumerate(deriv[:-1]):
+            power = degree - idx
+            next_deriv.append(coeff * power)
+        deriv = next_deriv
+    return deriv if deriv else [0.0]
+
+
+def _build_cubic_spline(knots: List[float], values: List[float]) -> Optional[Dict[str, List[float]]]:
+    count = len(knots)
+    if count < 2 or len(values) != count:
+        return None
+
+    spacing: List[float] = []
+    for idx in range(count - 1):
+        step = knots[idx + 1] - knots[idx]
+        if step <= 0.0:
+            return None
+        spacing.append(step)
+
+    alpha: List[float] = [0.0] * count
+    for idx in range(1, count - 1):
+        alpha[idx] = (
+            3.0 * (values[idx + 1] - values[idx]) / spacing[idx]
+            - 3.0 * (values[idx] - values[idx - 1]) / spacing[idx - 1]
+        )
+
+    lower: List[float] = [1.0] + [0.0] * (count - 1)
+    upper: List[float] = [0.0] * count
+    middle: List[float] = [0.0] * count
+
+    for idx in range(1, count - 1):
+        lower[idx] = (
+            2.0 * (knots[idx + 1] - knots[idx - 1]) - spacing[idx - 1] * upper[idx - 1]
+        )
+        if abs(lower[idx]) <= 1e-12:
+            return None
+        upper[idx] = spacing[idx] / lower[idx]
+        middle[idx] = (alpha[idx] - spacing[idx - 1] * middle[idx - 1]) / lower[idx]
+
+    lower[-1] = 1.0
+    middle[-1] = 0.0
+
+    second: List[float] = [0.0] * count
+    for idx in range(count - 2, -1, -1):
+        second[idx] = middle[idx] - upper[idx] * second[idx + 1]
+
+    coeff_a: List[float] = list(values[:-1])
+    coeff_b: List[float] = [0.0] * (count - 1)
+    coeff_c: List[float] = [0.0] * (count - 1)
+    coeff_d: List[float] = [0.0] * (count - 1)
+
+    for idx in range(count - 1):
+        coeff_c[idx] = second[idx] * 0.5
+        coeff_d[idx] = (second[idx + 1] - second[idx]) / (6.0 * spacing[idx])
+        coeff_b[idx] = (
+            (values[idx + 1] - values[idx]) / spacing[idx]
+            - spacing[idx] * (second[idx + 1] + 2.0 * second[idx]) / 6.0
+        )
+
+    return {
+        "knots": list(knots),
+        "a": coeff_a,
+        "b": coeff_b,
+        "c": coeff_c,
+        "d": coeff_d,
+    }
+
+
+def _eval_cubic_spline(
+    spline: Dict[str, List[float]], value: float
+) -> Tuple[float, float, float]:
+    knots = spline["knots"]
+    if value <= knots[0]:
+        idx = 0
+    elif value >= knots[-1]:
+        idx = len(knots) - 2
+    else:
+        idx = max(0, bisect.bisect_right(knots, value) - 1)
+
+    dt = value - knots[idx]
+    a = spline["a"][idx]
+    b = spline["b"][idx]
+    c = spline["c"][idx]
+    d = spline["d"][idx]
+
+    position = ((d * dt + c) * dt + b) * dt + a
+    first = (3.0 * d * dt + 2.0 * c) * dt + b
+    second = 6.0 * d * dt + 2.0 * c
+    return position, first, second
+
+
+def _solve_linear_system(matrix: List[List[float]], rhs: List[float]) -> Optional[List[float]]:
+    size = len(rhs)
+    augmented = [row[:] + [rhs[idx]] for idx, row in enumerate(matrix)]
+
+    for col in range(size):
+        pivot_row = max(range(col, size), key=lambda r: abs(augmented[r][col]))
+        pivot_val = augmented[pivot_row][col]
+        if abs(pivot_val) <= 1e-12:
+            return None
+        if pivot_row != col:
+            augmented[col], augmented[pivot_row] = augmented[pivot_row], augmented[col]
+
+        pivot_val = augmented[col][col]
+        for j in range(col, size + 1):
+            augmented[col][j] /= pivot_val
+
+        for row in range(size):
+            if row == col:
+                continue
+            factor = augmented[row][col]
+            if abs(factor) <= 1e-12:
+                continue
+            for j in range(col, size + 1):
+                augmented[row][j] -= factor * augmented[col][j]
+
+    return [augmented[i][size] for i in range(size)]
+
+
+def _polyfit(ts: List[float], values: List[float], degree: int) -> Optional[List[float]]:
+    if degree < 0:
+        return None
+    count = len(ts)
+    cols = degree + 1
+    vandermonde = [[t ** (degree - idx) for idx in range(cols)] for t in ts]
+
+    normal: List[List[float]] = [[0.0 for _ in range(cols)] for _ in range(cols)]
+    rhs: List[float] = [0.0 for _ in range(cols)]
+
+    for row_idx in range(count):
+        row = vandermonde[row_idx]
+        value = values[row_idx]
+        for i in range(cols):
+            rhs[i] += row[i] * value
+            for j in range(cols):
+                normal[i][j] += row[i] * row[j]
+
+    solution = _solve_linear_system(normal, rhs)
+    return solution
+
+
+def _interp_values(xs: List[float], ys: List[float], targets: List[float]) -> List[float]:
+    if not xs:
+        return [0.0 for _ in targets]
+    ordered = sorted(zip(xs, ys), key=lambda item: item[0])
+    xs_sorted = [float(item[0]) for item in ordered]
+    ys_sorted = [float(item[1]) for item in ordered]
+    result: List[float] = []
+    last_idx = len(xs_sorted) - 1
+    for val in targets:
+        if val <= xs_sorted[0]:
+            result.append(float(ys_sorted[0]))
+            continue
+        if val >= xs_sorted[last_idx]:
+            result.append(float(ys_sorted[last_idx]))
+            continue
+        idx = bisect.bisect_left(xs_sorted, val) - 1
+        if idx < 0:
+            idx = 0
+        next_idx = min(idx + 1, last_idx)
+        x0 = xs_sorted[idx]
+        x1 = xs_sorted[next_idx]
+        y0 = ys_sorted[idx]
+        y1 = ys_sorted[next_idx]
+        if abs(x1 - x0) <= 1e-12:
+            result.append(float(y0))
+            continue
+        ratio = (val - x0) / (x1 - x0)
+        result.append(float(y0 + (y1 - y0) * ratio))
+    return result
+
+
+def _select_polynomial_degree(sample_count: int) -> Optional[int]:
+    if sample_count < 2:
+        return None
+    max_supported = min(CURVATURE_MAX_POLY_DEGREE, sample_count - 1)
+    if max_supported < 1:
+        return None
+    if max_supported < CURVATURE_MIN_POLY_DEGREE:
+        return max_supported
+    return max(CURVATURE_MIN_POLY_DEGREE, min(CURVATURE_MAX_POLY_DEGREE, max_supported))
+
+
+def _resample_parametric_curve(
+    s_vals: List[float],
+    x_vals: List[float],
+    y_vals: List[float],
+    *,
+    step: float = CURVATURE_RESAMPLE_STEP,
+    preserve_targets: Optional[Iterable[float]] = None,
+) -> Optional[Dict[str, List[float]]]:
+    if len(s_vals) < 2 or len(x_vals) < 2 or len(y_vals) < 2:
+        return None
+
+    combined = sorted(zip(s_vals, x_vals, y_vals), key=lambda item: item[0])
+    s_vals = [float(item[0]) for item in combined]
+    x_vals = [float(item[1]) for item in combined]
+    y_vals = [float(item[2]) for item in combined]
+
+    seg_lengths: List[float] = []
+    total_length = 0.0
+    for idx in range(1, len(x_vals)):
+        dx = x_vals[idx] - x_vals[idx - 1]
+        dy = y_vals[idx] - y_vals[idx - 1]
+        length = math.hypot(dx, dy)
+        seg_lengths.append(length)
+        total_length += length
+    if not math.isfinite(total_length) or total_length <= 0.0:
+        return None
+
+    arc_lengths: List[float] = [0.0]
+    for length in seg_lengths:
+        arc_lengths.append(arc_lengths[-1] + length)
+
+    # 原始白线点位存在测量噪声时，直接拟合多项式会放大误差导致曲率
+    # 高频震荡。先对坐标序列做弧长域上的平滑与等距重采样，可以抑制
+    # 浮噪并让后续的导数运算更加稳定。
+    if len(arc_lengths) == len(x_vals) == len(y_vals) and len(x_vals) >= 3:
+        original_arc = list(arc_lengths)
+        original_s = list(s_vals)
+        smooth_window = max(step * 0.5, total_length * 0.05)
+        smooth_window = min(smooth_window, total_length)
+        if smooth_window > 0.0:
+            x_vals = _smooth_series(x_vals, arc_lengths, smooth_window)
+            y_vals = _smooth_series(y_vals, arc_lengths, smooth_window)
+
+        # 通过沿弧长的线性插值生成等距采样点，避免原始测量的稠密/稀疏
+        # 区域对多项式拟合的权重造成偏差。
+        target_spacing = max(step * 0.25, total_length / max(len(arc_lengths) * 4, 1))
+        target_spacing = min(target_spacing, max(total_length, 1e-6))
+        if target_spacing > 0.0 and target_spacing < total_length:
+            uniform_targets: List[float] = [0.0]
+            while uniform_targets[-1] + target_spacing < total_length:
+                uniform_targets.append(uniform_targets[-1] + target_spacing)
+            if abs(uniform_targets[-1] - total_length) > 1e-6:
+                uniform_targets.append(total_length)
+
+            # 在原始序列上插值，确保重采样后的点仍然沿原曲线分布。
+            x_vals = _interp_values(original_arc, x_vals, uniform_targets)
+            y_vals = _interp_values(original_arc, y_vals, uniform_targets)
+            s_vals = _interp_values(original_arc, original_s, uniform_targets)
+            arc_lengths = uniform_targets
+
+        # Savitzky–Golay 滤波可以进一步抑制高频噪声，同时保留真实曲率
+        # 变化趋势；SciPy 不一定可用，因此在运行时按需导入。
+        try:  # pragma: no cover - 依赖环境可能缺失
+            from scipy.signal import savgol_filter  # type: ignore
+        except Exception:  # pragma: no cover - 当 SciPy 不可用时静默跳过
+            savgol_filter = None  # type: ignore
+
+        if "savgol_filter" in locals() and callable(savgol_filter):  # type: ignore[name-defined]
+            max_window = len(x_vals) if len(x_vals) % 2 == 1 else len(x_vals) - 1
+            if max_window >= 5:
+                approx_points_per_step = max(1, int(round(step / max(target_spacing, 1e-6))))
+                window_length = min(max_window, approx_points_per_step * 2 + 1)
+                if window_length < 5:
+                    window_length = 5 if max_window >= 5 else max_window
+                if window_length % 2 == 0:
+                    window_length = max(5, window_length - 1)
+                poly_order = min(3, max(1, window_length - 2))
+                if window_length >= poly_order + 2 and window_length <= len(x_vals):
+                    try:  # pragma: no cover - SciPy 调用
+                        x_vals = savgol_filter(x_vals, window_length, poly_order).tolist()
+                        y_vals = savgol_filter(y_vals, window_length, poly_order).tolist()
+                    except Exception:  # pragma: no cover - 失败时回退原序列
+                        pass
+
+    filtered: List[Tuple[float, float, float, float]] = []
+    last_arc: Optional[float] = None
+    for arc_val, x_val, y_val, s_val in zip(arc_lengths, x_vals, y_vals, s_vals):
+        if not (
+            math.isfinite(arc_val)
+            and math.isfinite(x_val)
+            and math.isfinite(y_val)
+            and math.isfinite(s_val)
+        ):
+            continue
+        if last_arc is not None and abs(arc_val - last_arc) <= 1e-9:
+            continue
+        filtered.append((arc_val, x_val, y_val, s_val))
+        last_arc = arc_val
+
+    if len(filtered) < 2:
+        return None
+
+    arc_lengths = [item[0] for item in filtered]
+    x_vals = [item[1] for item in filtered]
+    y_vals = [item[2] for item in filtered]
+    s_vals = [item[3] for item in filtered]
+
+    origin = arc_lengths[0]
+    if abs(origin) > 1e-9:
+        arc_lengths = [arc - origin for arc in arc_lengths]
+        if preserve_targets is not None:
+            adjusted_targets: List[float] = []
+            for value in preserve_targets:
+                if value is None:
+                    continue
+                shifted = float(value) - origin
+                if math.isfinite(shifted):
+                    adjusted_targets.append(shifted)
+            preserve_targets = adjusted_targets
+    total_length = arc_lengths[-1]
+    if total_length <= 0.0:
+        return None
+
+    spline_x = _build_cubic_spline(arc_lengths, x_vals)
+    spline_y = _build_cubic_spline(arc_lengths, y_vals)
+
+    if spline_x is None or spline_y is None:
+        degree = _select_polynomial_degree(len(x_vals))
+        if degree is None or degree < 1 or total_length <= 0.0:
+            return None
+        t_vals = [arc / total_length for arc in arc_lengths]
+        poly_x = _polyfit(t_vals, x_vals, degree)
+        poly_y = _polyfit(t_vals, y_vals, degree)
+        if poly_x is None or poly_y is None:
+            return None
+        spline_targets: List[float] = []
+        current = 0.0
+        while current < total_length:
+            spline_targets.append(current)
+            current += step
+        if not spline_targets or abs(spline_targets[-1] - total_length) > 1e-6:
+            spline_targets.append(total_length)
+        if preserve_targets is not None:
+            for value in preserve_targets:
+                if math.isfinite(value) and 0.0 <= value <= total_length:
+                    spline_targets.append(float(value))
+        dedup_targets: List[float] = []
+        for value in sorted(spline_targets):
+            if not dedup_targets or abs(value - dedup_targets[-1]) > 1e-9:
+                dedup_targets.append(value)
+        spline_targets = dedup_targets
+        t_new = [target / total_length for target in spline_targets]
+        x_new = _polyval(poly_x, t_new)
+        y_new = _polyval(poly_y, t_new)
+        dpoly_x = _polyder(poly_x, 1)
+        dpoly_y = _polyder(poly_y, 1)
+        ddpoly_x = _polyder(poly_x, 2)
+        ddpoly_y = _polyder(poly_y, 2)
+        x_prime = _polyval(dpoly_x, t_new)
+        y_prime = _polyval(dpoly_y, t_new)
+        x_double = _polyval(ddpoly_x, t_new)
+        y_double = _polyval(ddpoly_y, t_new)
+        curvature: List[float] = []
+        for xp, yp, xd, yd in zip(x_prime, y_prime, x_double, y_double):
+            denom = (xp * xp + yp * yp) ** 1.5
+            if denom <= 1e-9:
+                curvature.append(0.0)
+            else:
+                curvature.append((xp * yd - yp * xd) / denom)
+        if curvature:
+            curvature = _smooth_series(curvature, spline_targets, step)
+        s_interp = _interp_values(arc_lengths, s_vals, spline_targets)
+        return {
+            "s": s_interp,
+            "curvature": curvature,
+            "x": x_new,
+            "y": y_new,
+            "arc": spline_targets,
+        }
+
+    targets: List[float] = []
+    current = 0.0
+    while current < total_length:
+        targets.append(current)
+        current += step
+    if not targets or abs(targets[-1] - total_length) > 1e-6:
+        targets.append(total_length)
+
+    if preserve_targets is not None:
+        for value in preserve_targets:
+            if math.isfinite(value) and 0.0 <= value <= total_length:
+                targets.append(float(value))
+
+    dedup_targets: List[float] = []
+    for value in sorted(targets):
+        if not dedup_targets or abs(value - dedup_targets[-1]) > 1e-9:
+            dedup_targets.append(value)
+    targets = dedup_targets
+
+    x_new: List[float] = []
+    y_new: List[float] = []
+    x_prime: List[float] = []
+    y_prime: List[float] = []
+    x_double: List[float] = []
+    y_double: List[float] = []
+    for target in targets:
+        x_pos, x_first, x_second = _eval_cubic_spline(spline_x, target)
+        y_pos, y_first, y_second = _eval_cubic_spline(spline_y, target)
+        x_new.append(x_pos)
+        y_new.append(y_pos)
+        x_prime.append(x_first)
+        y_prime.append(y_first)
+        x_double.append(x_second)
+        y_double.append(y_second)
+
+    curvature: List[float] = []
+    for xp, yp, xd, yd in zip(x_prime, y_prime, x_double, y_double):
+        denom = (xp * xp + yp * yp) ** 1.5
+        if denom <= 1e-9:
+            curvature.append(0.0)
+        else:
+            curvature.append((xp * yd - yp * xd) / denom)
+
+    if curvature:
+        curvature = _smooth_series(curvature, targets, step)
+
+    s_interp = _interp_values(arc_lengths, s_vals, targets)
+
+    return {
+        "s": s_interp,
+        "curvature": curvature,
+        "x": x_new,
+        "y": y_new,
+        "arc": targets,
+    }
 
 
 def _find_height_column(df: DataFrame) -> Optional[str]:
@@ -471,6 +984,23 @@ def build_offset_mapper(centerline: DataFrame) -> Callable[[float], float]:
     if not offsets or len(offsets) != len(s_vals):
         return lambda value: float(value)
 
+    first_slope: Optional[float] = None
+    last_slope: Optional[float] = None
+    for i in range(1, len(offsets)):
+        delta_offset = offsets[i] - offsets[i - 1]
+        delta_s = s_vals[i] - s_vals[i - 1]
+        if delta_offset <= 1e-9:
+            continue
+        slope = delta_s / delta_offset
+        if first_slope is None:
+            first_slope = slope
+        last_slope = slope
+
+    if first_slope is None:
+        first_slope = 1.0
+    if last_slope is None:
+        last_slope = first_slope
+
     def mapper(value: float) -> float:
         if not isinstance(value, (int, float)):
             try:
@@ -479,7 +1009,7 @@ def build_offset_mapper(centerline: DataFrame) -> Callable[[float], float]:
                 return s_vals[0]
 
         if value <= offsets[0]:
-            return s_vals[0]
+            return float(s_vals[0] + (value - offsets[0]) * first_slope)
 
         for i in range(1, len(offsets)):
             lo = offsets[i - 1]
@@ -490,7 +1020,7 @@ def build_offset_mapper(centerline: DataFrame) -> Callable[[float], float]:
                 t = (value - lo) / (hi - lo)
                 return s_vals[i - 1] + t * (s_vals[i] - s_vals[i - 1])
 
-        return s_vals[-1]
+        return float(s_vals[-1] + (value - offsets[-1]) * last_slope)
 
     return mapper
 
@@ -674,9 +1204,11 @@ def build_curvature_profile(
     *,
     offset_mapper: Optional[Callable[[float], float]] = None,
     centerline: Optional[DataFrame] = None,
-) -> List[Dict[str, float]]:
+    geo_origin: Optional[Tuple[float, float]] = None,
+    lane_geometry_df: Optional[DataFrame] = None,
+) -> Tuple[List[Dict[str, float]], List[Dict[str, Any]]]:
     if df_curvature is None or len(df_curvature) == 0:
-        return []
+        return [], []
 
     start_col = _find_column(df_curvature, "offset", exclude=("end",))
     end_col = _find_column(df_curvature, "end", "offset")
@@ -700,9 +1232,19 @@ def build_curvature_profile(
         or _find_column(df_curvature, "shape", "index")
         or _find_column(df_curvature, "index")
     )
+    lat_col = (
+        _find_column(df_curvature, "緯度")
+        or _find_column(df_curvature, "latitude")
+        or _find_column(df_curvature, "lat")
+    )
+    lon_col = (
+        _find_column(df_curvature, "経度")
+        or _find_column(df_curvature, "longitude")
+        or _find_column(df_curvature, "lon")
+    )
 
     if start_col is None or end_col is None or curvature_col is None:
-        return []
+        return [], []
 
     def _legacy_profile() -> List[Dict[str, float]]:
         best_path = _select_best_path(df_curvature, path_col)
@@ -777,7 +1319,8 @@ def build_curvature_profile(
         return profile
 
     if shape_col is None or lane_col is None:
-        return _legacy_profile()
+        legacy = _legacy_profile()
+        return legacy, []
 
     best_path = _select_best_path(df_curvature, path_col)
 
@@ -794,6 +1337,63 @@ def build_curvature_profile(
     groups: Dict[Tuple[Optional[Any], Optional[Any], float, float], Dict[str, Any]] = {}
     lane_segments: Dict[Tuple[Optional[Any], Optional[Any]], List[Dict[str, float]]] = {}
     lane_stats: Dict[Tuple[Optional[Any], Optional[Any]], Dict[str, float]] = {}
+    lane_samples: Dict[Tuple[Optional[Any], Optional[Any]], List[Dict[str, Any]]] = {}
+
+    lane_geometry_lookup: Dict[
+        Tuple[Optional[Any], Optional[Any], int], Tuple[float, float]
+    ] = {}
+
+    if lane_geometry_df is not None and len(lane_geometry_df) > 0:
+        geom_path_col = _find_column(lane_geometry_df, "path", "id")
+        geom_lane_col = (
+            _find_column(lane_geometry_df, "lane", "number")
+            or _find_column(lane_geometry_df, "lane", "no")
+        )
+        geom_shape_col = _find_column(lane_geometry_df, "形状", "インデックス")
+        geom_lat_col = _find_column(lane_geometry_df, "緯度") or _find_column(
+            lane_geometry_df, "latitude"
+        )
+        geom_lon_col = _find_column(lane_geometry_df, "経度") or _find_column(
+            lane_geometry_df, "longitude"
+        )
+        geom_retrans_col = _find_column(
+            lane_geometry_df, "is", "retransmission"
+        )
+
+        if (
+            geom_path_col is not None
+            and geom_lane_col is not None
+            and geom_shape_col is not None
+            and geom_lat_col is not None
+            and geom_lon_col is not None
+        ):
+            for idx in range(len(lane_geometry_df)):
+                row = lane_geometry_df.iloc[idx]
+
+                if geom_retrans_col is not None:
+                    retrans_val = str(row[geom_retrans_col]).strip().lower()
+                    if retrans_val == "true":
+                        continue
+
+                path_key = _normalise_key(row[geom_path_col])
+                lane_key = _normalise_key(row[geom_lane_col])
+                shape_val = _to_float(row[geom_shape_col])
+                lat_val = _to_float(row[geom_lat_col])
+                lon_val = _to_float(row[geom_lon_col])
+
+                if (
+                    lane_key is None
+                    or shape_val is None
+                    or lat_val is None
+                    or lon_val is None
+                    or not math.isfinite(lat_val)
+                    or not math.isfinite(lon_val)
+                ):
+                    continue
+
+                shape_idx_key = int(round(shape_val))
+                key = (path_key, lane_key, shape_idx_key)
+                lane_geometry_lookup.setdefault(key, (lat_val, lon_val))
 
     for idx in range(len(df_curvature)):
         row = df_curvature.iloc[idx]
@@ -819,6 +1419,21 @@ def build_curvature_profile(
         end_cm = _to_float(row[end_col])
         curvature_val = _to_float(row[curvature_col])
         shape_val = _to_float(row[shape_col])
+        lat_val = _to_float(row[lat_col]) if lat_col is not None else None
+        lon_val = _to_float(row[lon_col]) if lon_col is not None else None
+
+        if (lat_val is None or lon_val is None) and lane_geometry_lookup:
+            shape_idx_key = None
+            if shape_val is not None and math.isfinite(shape_val):
+                shape_idx_key = int(round(shape_val))
+            if shape_idx_key is not None:
+                lookup_key = (path_key, lane_key, shape_idx_key)
+                mapped = lane_geometry_lookup.get(lookup_key)
+                if mapped is None and path_key is None:
+                    # fall back to lane-only match for datasets that omit path IDs
+                    mapped = lane_geometry_lookup.get((None, lane_key, shape_idx_key))
+                if mapped is not None:
+                    lat_val, lon_val = mapped
 
         if (
             start_cm is None
@@ -847,19 +1462,30 @@ def build_curvature_profile(
         except (TypeError, ValueError):
             continue
 
-        # Aggregate duplicate samples for the same shape index instead of
-        # picking whichever record happens to appear first.  Some datasets
-        # retransmit curvature rows without flipping the retransmission flag,
-        # in which case the repeated entries may carry slightly different
-        # values.  Averaging them keeps the per-point curvature consistent and
-        # avoids injecting sharp heading jumps when neighbouring intervals are
-        # stitched together.
-        bucket_entry = bucket["shapes"].setdefault(shape_idx, {"sum": 0.0, "count": 0})
-        bucket_entry["sum"] += curvature_val_f
-        bucket_entry["count"] += 1
+        entry = bucket["shapes"].setdefault(
+            shape_idx,
+            {
+                "sum": 0.0,
+                "count": 0,
+                "lat_sum": 0.0,
+                "lon_sum": 0.0,
+                "geo_count": 0,
+            },
+        )
+        entry["sum"] += curvature_val_f
+        entry["count"] += 1
+        if (
+            lat_val is not None
+            and lon_val is not None
+            and math.isfinite(lat_val)
+            and math.isfinite(lon_val)
+        ):
+            entry["lat_sum"] += float(lat_val)
+            entry["lon_sum"] += float(lon_val)
+            entry["geo_count"] += 1
 
     if not groups:
-        return []
+        return [], []
 
     profile: List[Dict[str, float]] = []
 
@@ -883,7 +1509,7 @@ def build_curvature_profile(
             continue
 
         shapes = bucket.get("shapes", {})
-        averaged_shapes: List[Tuple[float, float]] = []
+        averaged_shapes: List[Tuple[float, float, Optional[float], Optional[float]]] = []
         for idx_val, stats in shapes.items():
             total = float(stats.get("sum", 0.0))
             count = float(stats.get("count", 0.0))
@@ -892,7 +1518,14 @@ def build_curvature_profile(
             averaged = total / count
             if not math.isfinite(averaged):
                 continue
-            averaged_shapes.append((float(idx_val), averaged))
+            geo_count = float(stats.get("geo_count", 0.0))
+            if geo_count > 0:
+                lat_avg = float(stats.get("lat_sum", 0.0) / geo_count)
+                lon_avg = float(stats.get("lon_sum", 0.0) / geo_count)
+            else:
+                lat_avg = None
+                lon_avg = None
+            averaged_shapes.append((float(idx_val), averaged, lat_avg, lon_avg))
 
         if len(averaged_shapes) < 2:
             continue
@@ -905,48 +1538,215 @@ def build_curvature_profile(
             continue
 
         bucket_segments: List[Dict[str, float]] = []
+        offsets: List[float] = []
+        mapped_s: List[float] = []
 
-        for i in range(len(ordered) - 1):
-            idx0, curv0 = ordered[i]
-            idx1, curv1 = ordered[i + 1]
-            if idx1 <= idx0:
-                continue
+        lat_vals: List[float] = []
+        lon_vals: List[float] = []
+        has_latlon = True
+        for _, _, lat_avg, lon_avg in ordered:
+            if lat_avg is None or lon_avg is None:
+                has_latlon = False
+                break
+            lat_vals.append(float(lat_avg))
+            lon_vals.append(float(lon_avg))
 
-            frac0 = (idx0 - idx_min) / span_idx
-            frac1 = (idx1 - idx_min) / span_idx
-            offset0 = start_m + (end_m - start_m) * frac0
-            offset1 = start_m + (end_m - start_m) * frac1
+        xy_vals: Optional[Tuple[List[float], List[float]]] = None
+        if has_latlon and len(lat_vals) >= 2:
+            try:
+                if geo_origin is not None:
+                    lat0_use, lon0_use = float(geo_origin[0]), float(geo_origin[1])
+                else:
+                    lat0_use, lon0_use = lat_vals[0], lon_vals[0]
+                xy_vals = latlon_to_local_xy(lat_vals, lon_vals, lat0_use, lon0_use)
+            except Exception:  # pragma: no cover - defensive
+                xy_vals = None
+                has_latlon = False
+        else:
+            has_latlon = False
 
-            if offset1 <= offset0:
-                continue
+        cumulative: List[float] = []
+        if has_latlon and xy_vals is not None:
+            xs, ys = xy_vals
+            cumulative.append(0.0)
+            for i in range(len(xs) - 1):
+                dist = math.hypot(xs[i + 1] - xs[i], ys[i + 1] - ys[i])
+                cumulative.append(cumulative[-1] + dist)
+        else:
+            cumulative = []
 
-            s0 = float(offset_mapper(offset0)) if offset_mapper is not None else float(offset0)
-            s1 = float(offset_mapper(offset1)) if offset_mapper is not None else float(offset1)
+        dataset_span_total = end_m - start_m
+        if dataset_span_total <= 0:
+            continue
 
-            if not (math.isfinite(s0) and math.isfinite(s1)):
-                continue
-            if s1 <= s0:
-                continue
+        if cumulative and len(cumulative) == len(ordered):
+            geom_length = cumulative[-1]
+            if geom_length > 0:
+                scale_factor = dataset_span_total / geom_length
+            else:
+                scale_factor = 1.0
+            for dist in cumulative:
+                offset_val = start_m + dist * scale_factor
+                offsets.append(offset_val)
+                mapped = float(offset_mapper(offset_val)) if offset_mapper is not None else float(offset_val)
+                mapped_s.append(mapped)
+        else:
+            for idx_val, _, _, _ in ordered:
+                frac = (idx_val - idx_min) / span_idx
+                offset_val = start_m + dataset_span_total * frac
+                offsets.append(offset_val)
+                mapped = float(offset_mapper(offset_val)) if offset_mapper is not None else float(offset_val)
+                mapped_s.append(mapped)
 
-            dataset_span = offset1 - offset0
-            if dataset_span <= 0:
-                continue
+        if len(offsets) != len(ordered) or len(mapped_s) != len(ordered):
+            continue
 
-            s_span = s1 - s0
-            if s_span <= 0:
-                continue
+        xs_for_samples: Optional[List[float]] = None
+        ys_for_samples: Optional[List[float]] = None
+        if xy_vals is not None and len(xy_vals[0]) == len(ordered):
+            xs_for_samples = list(xy_vals[0])
+            ys_for_samples = list(xy_vals[1])
 
-            curv0_val = float(curv0)
-            if not math.isfinite(curv0_val):
-                continue
+        lane_token = (path_key, lane_key)
+        sample_bucket = lane_samples.setdefault(lane_token, [])
 
-            scale = dataset_span / s_span if s_span > 1e-12 else 1.0
-            curvature_val = curv0_val * scale
+        bucket_segments: List[Dict[str, float]] = []
+        resampled = None
+        preserve_targets: Optional[List[float]] = None
+        if cumulative and len(cumulative) == len(ordered):
+            preserve_targets = []
+            last_shape: Optional[float] = None
+            for (shape_idx, *_), arc_val in zip(ordered, cumulative):
+                if last_shape is None or shape_idx != last_shape:
+                    preserve_targets.append(float(arc_val))
+                    last_shape = shape_idx
+            if cumulative:
+                last_arc = float(cumulative[-1])
+                if not preserve_targets or abs(preserve_targets[-1] - last_arc) > 1e-9:
+                    preserve_targets.append(last_arc)
+        if (
+            xs_for_samples is not None
+            and ys_for_samples is not None
+            and len(xs_for_samples) >= 2
+            and len(ys_for_samples) >= 2
+        ):
+            resampled = _resample_parametric_curve(
+                mapped_s,
+                xs_for_samples,
+                ys_for_samples,
+                step=CURVATURE_RESAMPLE_STEP,
+                preserve_targets=preserve_targets,
+            )
 
-            if not math.isfinite(curvature_val):
-                continue
+        if resampled is not None and len(resampled.get("s", [])) >= 2:
+            s_series = [float(val) for val in resampled["s"]]
+            curvature_series = [float(val) for val in resampled["curvature"]]
+            x_series = [float(val) for val in resampled.get("x", [])]
+            y_series = [float(val) for val in resampled.get("y", [])]
+            offset_series = _interp_values(mapped_s, offsets, s_series) if offsets else [0.0 for _ in s_series]
+            shape_series = _interp_values(
+                mapped_s,
+                [item[0] for item in ordered],
+                s_series,
+            )
 
-            bucket_segments.append({"s0": s0, "s1": s1, "curvature": curvature_val})
+            for idx_sample, s_val in enumerate(s_series):
+                if idx_sample >= len(curvature_series):
+                    break
+                offset_val = offset_series[idx_sample] if idx_sample < len(offset_series) else offset_series[-1]
+                shape_val = shape_series[idx_sample] if idx_sample < len(shape_series) else None
+                sample_entry: Dict[str, Any] = {
+                    "s": float(s_val),
+                    "offset": float(offset_val),
+                    "curvature": float(curvature_series[idx_sample]),
+                    "path": path_key,
+                    "lane": lane_key,
+                }
+                if shape_val is not None and math.isfinite(shape_val):
+                    sample_entry["shape_index"] = float(shape_val)
+                if idx_sample < len(x_series) and idx_sample < len(y_series):
+                    sample_entry["x"] = float(x_series[idx_sample])
+                    sample_entry["y"] = float(y_series[idx_sample])
+                sample_bucket.append(sample_entry)
+
+            for idx_seg in range(len(s_series) - 1):
+                s0 = s_series[idx_seg]
+                s1 = s_series[idx_seg + 1]
+                if not (
+                    math.isfinite(s0)
+                    and math.isfinite(s1)
+                    and s1 > s0
+                ):
+                    continue
+                c0 = curvature_series[idx_seg]
+                c1 = curvature_series[idx_seg + 1]
+                curvature_val = 0.5 * (c0 + c1)
+                if not math.isfinite(curvature_val):
+                    continue
+                bucket_segments.append({"s0": float(s0), "s1": float(s1), "curvature": float(curvature_val)})
+        else:
+            for i, (idx_val, curv_val, _, _) in enumerate(ordered):
+                if i >= len(offsets):
+                    break
+                offset_val = offsets[i]
+                mapped_val = mapped_s[i]
+                sample_entry = {
+                    "s": float(mapped_val),
+                    "offset": float(offset_val),
+                    "curvature": float(curv_val),
+                    "path": path_key,
+                    "lane": lane_key,
+                    "shape_index": float(idx_val),
+                }
+                if (
+                    xs_for_samples is not None
+                    and ys_for_samples is not None
+                    and i < len(xs_for_samples)
+                ):
+                    sample_entry["x"] = float(xs_for_samples[i])
+                    sample_entry["y"] = float(ys_for_samples[i])
+                sample_bucket.append(sample_entry)
+
+            for i in range(len(ordered) - 1):
+                idx0, curv0, _, _ = ordered[i]
+                idx1, _, _, _ = ordered[i + 1]
+                if idx1 <= idx0:
+                    continue
+
+                offset0 = offsets[i]
+                offset1 = offsets[i + 1]
+                s0 = mapped_s[i]
+                s1 = mapped_s[i + 1]
+
+                if not (
+                    math.isfinite(offset0)
+                    and math.isfinite(offset1)
+                    and math.isfinite(s0)
+                    and math.isfinite(s1)
+                ):
+                    continue
+                if offset1 <= offset0 or s1 <= s0:
+                    continue
+
+                dataset_span = offset1 - offset0
+                if dataset_span <= 0:
+                    continue
+
+                s_span = s1 - s0
+                if s_span <= 0:
+                    continue
+
+                curv0_val = float(curv0)
+                if not math.isfinite(curv0_val):
+                    continue
+
+                scale = dataset_span / s_span if s_span > 1e-12 else 1.0
+                curvature_val = curv0_val * scale
+
+                if not math.isfinite(curvature_val):
+                    continue
+
+                bucket_segments.append({"s0": s0, "s1": s1, "curvature": curvature_val})
 
         if not bucket_segments:
             continue
@@ -984,7 +1784,7 @@ def build_curvature_profile(
             stats["samples"] += 1.0
 
     if not lane_segments:
-        return []
+        return [], []
 
     def _lane_priority(
         lane_key: Optional[Any],
@@ -1013,6 +1813,8 @@ def build_curvature_profile(
     for (path_key, lane_key), segments in lane_segments.items():
         segments_by_path.setdefault(path_key, []).append((lane_key, segments))
 
+    selected_samples: List[Dict[str, Any]] = []
+
     for path_key, lane_entries in segments_by_path.items():
         if not lane_entries:
             continue
@@ -1028,8 +1830,17 @@ def build_curvature_profile(
         ordered_segments = sorted(best_segments, key=lambda seg: seg["s0"])
         profile.extend(ordered_segments)
 
+        lane_token = (path_key, best_lane_key)
+        sample_values = lane_samples.get(lane_token)
+        if sample_values:
+            sample_values = sorted(
+                sample_values,
+                key=lambda item: (float(item.get("s", 0.0)), float(item.get("offset", 0.0))),
+            )
+            selected_samples.extend(sample_values)
+
     profile.sort(key=lambda item: item["s0"])
-    return profile
+    return profile, selected_samples
 
 
 def build_slope_profile(
@@ -1131,8 +1942,6 @@ def build_slope_profile(
             superelevation.append({"s0": s0, "s1": s1, "angle": avg_cross})
 
     return {"longitudinal": longitudinal, "superelevation": superelevation}
-
-
 def build_elevation_profile_from_slopes(
     segments: List[Dict[str, float]],
     *,
@@ -1219,6 +2028,124 @@ def _interpolate_centerline(centerline: DataFrame, target_s: float) -> Tuple[flo
     return x_vals[-1], y_vals[-1], hdg_vals[-1]
 
 
+def _suppress_curvature_spikes(
+    segments: List[Dict[str, float]],
+    *,
+    min_span: float = 0.4,
+    spike_curvature: float = 0.01,
+    curvature_similarity: float = 0.15,
+) -> List[Dict[str, float]]:
+    """Collapse very short curvature spans that oscillate in sign.
+
+    Shape-index based curvature samples occasionally encode centimetre-long
+    arcs whose curvature abruptly flips sign relative to the surrounding
+    segments.  Offsetting these spikes to generate lane boundaries amplifies
+    the oscillation and renders as visibly jagged white lines.  The source
+    geometry, however, remains smooth when the offending spikes are replaced
+    by their longer neighbours.
+
+    This helper trims suspicious spans before the planView approximation is
+    constructed so that downstream integration only sees curvature that varies
+    gradually along the reference line.
+    """
+
+    if not segments:
+        return []
+
+    # Normalise the entries to avoid mutating the caller's data while keeping
+    # track of any auxiliary metadata that may be present on each segment.
+    ordered: List[Dict[str, float]] = []
+    for raw in segments:
+        try:
+            start = float(raw["s0"])
+            end = float(raw["s1"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        if not math.isfinite(start) or not math.isfinite(end):
+            continue
+        if end - start <= 1e-9:
+            continue
+
+        entry = dict(raw)
+        entry["s0"] = start
+        entry["s1"] = end
+
+        curvature_raw = raw.get("curvature", 0.0)
+        try:
+            curvature = float(curvature_raw)
+        except (TypeError, ValueError):
+            curvature = 0.0
+        if not math.isfinite(curvature):
+            curvature = 0.0
+        entry["curvature"] = curvature
+        ordered.append(entry)
+
+    if not ordered:
+        return []
+
+    ordered.sort(key=lambda seg: seg["s0"])
+
+    def _segment_span(entry: Dict[str, float]) -> float:
+        return float(entry["s1"]) - float(entry["s0"])
+
+    def _curvature_info(entry: Optional[Dict[str, float]]) -> Tuple[Optional[float], float]:
+        if entry is None:
+            return None, 0.0
+        value = float(entry.get("curvature", 0.0))
+        if abs(value) <= 1e-12:
+            return None, value
+        return math.copysign(1.0, value), value
+
+    changed = True
+    while changed:
+        changed = False
+        for idx in range(1, len(ordered) - 1):
+            current = ordered[idx]
+            span = _segment_span(current)
+            curvature = float(current.get("curvature", 0.0))
+            if span >= min_span - 1e-9:
+                continue
+            if abs(curvature) < spike_curvature:
+                continue
+
+            prev_entry = ordered[idx - 1]
+            next_entry = ordered[idx + 1]
+            prev_sign, prev_curv = _curvature_info(prev_entry)
+            next_sign, next_curv = _curvature_info(next_entry)
+            curr_sign, _ = _curvature_info(current)
+
+            if curr_sign is None:
+                continue
+            if prev_sign is None or next_sign is None:
+                continue
+            if prev_sign != next_sign:
+                continue
+            if curr_sign == prev_sign:
+                continue
+
+            reference = max(abs(prev_curv), abs(next_curv), spike_curvature)
+            if abs(prev_curv - next_curv) > curvature_similarity * reference:
+                continue
+
+            prev_entry["s1"] = max(prev_entry["s1"], current["s1"])
+            if next_entry["s0"] < prev_entry["s1"]:
+                next_entry["s0"] = prev_entry["s1"]
+
+            del ordered[idx]
+            changed = True
+            break
+
+    cleaned: List[Dict[str, float]] = []
+    for seg in ordered:
+        span = _segment_span(seg)
+        if span <= 1e-9:
+            continue
+        cleaned.append(seg)
+
+    return cleaned
+
+
 def build_geometry_segments(
     centerline: DataFrame,
     curvature_segments: List[Dict[str, float]],
@@ -1226,6 +2153,10 @@ def build_geometry_segments(
     max_endpoint_deviation: float = 0.5,
     max_segment_length: float = 2.0,
 ) -> List[Dict[str, float]]:
+    if not curvature_segments:
+        return []
+
+    curvature_segments = _suppress_curvature_spikes(list(curvature_segments))
     if not curvature_segments:
         return []
 
@@ -1664,7 +2595,7 @@ def build_geometry_segments(
         _record_best(segments, deviation)
 
     if deviation > max_endpoint_deviation:
-        if best_deviation <= max_endpoint_deviation:
+        if best_segments:
             return best_segments
         return []
 

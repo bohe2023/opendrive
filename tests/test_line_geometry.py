@@ -1,6 +1,6 @@
-from pathlib import Path
-
+import math
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from csv2xodr.line_geometry import build_line_geometry_lookup
+from csv2xodr.line_geometry import build_line_geometry_lookup, _resample_sequence_with_polynomial
 from csv2xodr.simpletable import DataFrame
 
 
@@ -266,3 +266,109 @@ def test_build_line_geometry_lookup_splits_when_offset_resets():
     assert first["s"] == pytest.approx([0.0, 1.0])
     assert second["s"] == pytest.approx([0.0, 1.0])
     assert first["y"][0] != pytest.approx(second["y"][0])
+def test_line_geometry_lookup_fits_curvature_from_geometry():
+    meters_to_degrees = 180.0 / (math.pi * 6378137.0)
+    radius = 50.0
+    rows = []
+    for idx, theta in enumerate([0.0, 0.25, 0.5, 0.75, 1.0]):
+        arc_length = radius * theta
+        x = radius * math.sin(theta)
+        y = radius * (1.0 - math.cos(theta))
+        rows.append(
+            {
+                "ライン型地物ID": "arc",
+                "Offset[cm]": f"{arc_length * 100.0}",
+                "緯度[deg]": f"{y * meters_to_degrees}",
+                "経度[deg]": f"{x * meters_to_degrees}",
+                "高さ[m]": "0.0",
+                "ログ時刻": "t0",
+                "Type": "1",
+                "Is Retransmission": "false",
+            }
+        )
+
+    lookup = build_line_geometry_lookup(
+        DataFrame(rows),
+        offset_mapper=lambda value: value,
+        lat0=0.0,
+        lon0=0.0,
+    )
+
+    geom = lookup["arc"][0]
+    assert "curvature" in geom
+    expected = 1.0 / radius
+    for value in geom["curvature"]:
+        assert value == pytest.approx(expected, rel=0.05)
+
+
+def test_line_geometry_lookup_projects_onto_centerline():
+    meters_to_degrees = 180.0 / (math.pi * 6378137.0)
+    offsets_cm = [0.0, 250.0, 500.0, 750.0, 1000.0]
+    base_x = [0.0, 2.5, 5.0, 7.5, 10.0]
+    base_y = [0.0 for _ in base_x]
+    width = 3.0
+    jitter = [0.4, -0.3, 0.5, -0.2, 0.3]
+
+    rows = []
+    for offset, x, y, noise in zip(offsets_cm, base_x, base_y, jitter):
+        lat = (y + width + noise) * meters_to_degrees
+        lon = x * meters_to_degrees
+        rows.append(
+            {
+                "ライン型地物ID": "LEFT",
+                "Offset[cm]": f"{offset}",
+                "緯度[deg]": f"{lat}",
+                "経度[deg]": f"{lon}",
+                "高さ[m]": "0.0",
+                "ログ時刻": "proj",
+                "Type": "1",
+                "Is Retransmission": "false",
+            }
+        )
+
+    centerline = DataFrame({"s": base_x, "x": base_x, "y": base_y})
+
+    lookup = build_line_geometry_lookup(
+        DataFrame(rows),
+        offset_mapper=lambda value: value,
+        lat0=0.0,
+        lon0=0.0,
+        centerline=centerline,
+    )
+
+    geom = lookup["LEFT"][0]
+    s_vals = geom["s"]
+    assert s_vals[0] == pytest.approx(0.0)
+    assert s_vals[-1] == pytest.approx(10.0)
+    assert len(s_vals) >= len(offsets_cm)
+
+    # The reconstructed geometry should follow the centreline heading without jitter.
+    for s_val, x_val in zip(s_vals, geom["x"]):
+        assert x_val == pytest.approx(s_val, abs=1e-3)
+
+    y_vals = geom["y"]
+    avg_y = sum(y_vals) / len(y_vals)
+    assert avg_y == pytest.approx(width, abs=0.15)
+
+    diffs = [abs(y_vals[i + 1] - y_vals[i]) for i in range(len(y_vals) - 1)]
+    raw_y = [width + noise for noise in jitter]
+    raw_diffs = [abs(raw_y[i + 1] - raw_y[i]) for i in range(len(raw_y) - 1)]
+    assert sum(diffs) / len(diffs) < sum(raw_diffs) / len(raw_diffs)
+
+
+def test_resample_sequence_adds_points_for_tight_curves():
+    radius = 30.0
+    points = []
+    for idx in range(6):
+        angle = (math.pi / 4.0) * (idx / 5.0)
+        s_val = radius * angle
+        x_val = radius * math.cos(angle)
+        y_val = radius * math.sin(angle)
+        points.append((s_val, x_val, y_val, 0.0, None, None))
+
+    resampled = _resample_sequence_with_polynomial(points)
+    assert resampled is not None
+    s_vals = resampled["s"]
+    assert len(s_vals) > len(points)
+    gaps = [s_vals[i + 1] - s_vals[i] for i in range(len(s_vals) - 1)]
+    assert max(gaps) < 3.0

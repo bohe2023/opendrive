@@ -9,6 +9,7 @@ from csv2xodr.normalize.core import (
     build_superelevation_profile,
     _advance_pose,
     _merge_geometry_segments,
+    _suppress_curvature_spikes,
     _normalize_angle,
 )
 from csv2xodr.lane_spec import apply_shoulder_profile
@@ -72,13 +73,48 @@ def test_geometry_segments_from_curvature():
         }
     )
 
-    curvature_segments = build_curvature_profile(curvature_df)
+    curvature_segments, _ = build_curvature_profile(curvature_df)
     geometry = build_geometry_segments(center, curvature_segments)
 
     assert len(geometry) == 2
     assert geometry[0]["length"] == 1.0
     assert geometry[0]["curvature"] == 0.0
     assert geometry[1]["curvature"] == 0.1
+
+
+def test_curvature_samples_use_lane_geometry_coordinates():
+    curvature_df = DataFrame(
+        {
+            "Offset[cm]": [0, 0],
+            "End Offset[cm]": [200, 200],
+            "Lane Number": [2, 2],
+            "Path Id": [1, 1],
+            "形状インデックス": [0, 1],
+            "曲率値[rad/m]": [0.01, 0.02],
+            "Is Retransmission": ["False", "False"],
+        }
+    )
+
+    lane_geometry_df = DataFrame(
+        {
+            "Path Id": [1, 1],
+            "Lane Number": [2, 2],
+            "形状インデックス": [0, 1],
+            "緯度[deg]": [35.0, 35.0001],
+            "経度[deg]": [139.0, 139.0001],
+            "Is Retransmission": ["False", "False"],
+        }
+    )
+
+    _, samples = build_curvature_profile(
+        curvature_df,
+        geo_origin=(35.0, 139.0),
+        lane_geometry_df=lane_geometry_df,
+    )
+
+    assert samples, "expected curvature samples to be generated"
+    assert all("x" in sample and "y" in sample for sample in samples)
+    assert all(math.isfinite(sample["x"]) and math.isfinite(sample["y"]) for sample in samples)
 
 
 def test_geometry_segments_respect_threshold():
@@ -98,7 +134,7 @@ def test_geometry_segments_respect_threshold():
         }
     )
 
-    curvature_segments = build_curvature_profile(curvature_df)
+    curvature_segments, _ = build_curvature_profile(curvature_df)
 
     strict_geometry = build_geometry_segments(
         center,
@@ -146,7 +182,7 @@ def test_geometry_segments_remain_continuous():
         }
     )
 
-    curvature_segments = build_curvature_profile(curvature_df)
+    curvature_segments, _ = build_curvature_profile(curvature_df)
     geometry = build_geometry_segments(
         center,
         curvature_segments,
@@ -187,6 +223,65 @@ def test_geometry_segments_remain_continuous():
             0.0,
             abs_tol=1e-9,
         )
+
+
+def test_curvature_spike_suppression_handles_short_sign_flips():
+    raw_segments = [
+        {"s0": 0.0, "s1": 5.0, "curvature": 0.02},
+        {"s0": 5.0, "s1": 5.2, "curvature": -0.12},
+        {"s0": 5.2, "s1": 10.0, "curvature": 0.021},
+    ]
+
+    simplified = _suppress_curvature_spikes(raw_segments)
+    assert len(simplified) == 2
+    assert math.isclose(simplified[0]["s0"], 0.0)
+    assert math.isclose(simplified[0]["s1"], 5.2)
+    assert simplified[0]["curvature"] > 0.0
+    assert math.isclose(simplified[1]["s0"], 5.2)
+    assert simplified[1]["curvature"] > 0.0
+
+    s_vals = [0.0]
+    x_vals = [0.0]
+    y_vals = [0.0]
+    hdg_vals = [0.0]
+
+    current_x = 0.0
+    current_y = 0.0
+    current_hdg = 0.0
+
+    for seg in simplified:
+        length = seg["s1"] - seg["s0"]
+        current_x, current_y, current_hdg = _advance_pose(
+            current_x,
+            current_y,
+            current_hdg,
+            seg["curvature"],
+            length,
+        )
+        s_vals.append(seg["s1"])
+        x_vals.append(current_x)
+        y_vals.append(current_y)
+        hdg_vals.append(current_hdg)
+
+    center = DataFrame(
+        {
+            "s": s_vals,
+            "x": x_vals,
+            "y": y_vals,
+            "hdg": hdg_vals,
+        }
+    )
+
+    geometry = build_geometry_segments(center, raw_segments)
+
+    assert geometry, "expected geometry segments to be generated"
+    assert math.isclose(
+        sum(seg["length"] for seg in geometry),
+        s_vals[-1],
+        rel_tol=1e-6,
+        abs_tol=1e-6,
+    )
+    assert all(seg.get("curvature", 0.0) >= -1e-6 for seg in geometry)
 
 
 def test_merge_geometry_segments_snaps_small_drift():
@@ -244,14 +339,25 @@ def test_geometry_segments_are_densified_for_long_spans():
 
 
 def test_curvature_profile_uses_shape_index_segments():
+    meters_to_degrees = 180.0 / (math.pi * 6378137.0)
+    coord_by_index = {
+        0: 0.0,
+        1: 1.0,
+        2: 3.0,
+        3: 6.0,
+        4: 10.0,
+    }
+
     curvature_df = DataFrame(
         {
             "Path Id": ["1"] * 7,
             "Lane Number": ["1"] * 7,
             "Offset[cm]": [0, 0, 0, 0, 0, 0, 0],
-            "End Offset[cm]": [200, 200, 200, 200, 200, 200, 200],
+            "End Offset[cm]": [1000, 1000, 1000, 1000, 1000, 1000, 1000],
             "形状インデックス": [0, 1, 2, 2, 3, 3, 4],
             "曲率値[rad/m]": [0.6, -0.6, 0.6, -0.2, -0.6, -0.6, 0.6],
+            "緯度[deg]": [0.0] * 7,
+            "経度[deg]": [coord_by_index[idx] * meters_to_degrees for idx in [0, 1, 2, 2, 3, 3, 4]],
             "Is Retransmission": [
                 "False",
                 "False",
@@ -264,17 +370,24 @@ def test_curvature_profile_uses_shape_index_segments():
         }
     )
 
-    curvature_segments = build_curvature_profile(
-        curvature_df, offset_mapper=lambda value: value
+    curvature_segments, samples = build_curvature_profile(
+        curvature_df,
+        offset_mapper=lambda value: value,
+        geo_origin=(0.0, 0.0),
     )
 
     assert len(curvature_segments) == 4
+    assert samples
+    assert len(samples) >= 5
 
     spans = [seg["s1"] - seg["s0"] for seg in curvature_segments]
-    assert all(math.isclose(span, 0.5, abs_tol=1e-9) for span in spans)
+    expected_spans = [1.0, 2.0, 3.0, 4.0]
+    assert all(math.isclose(span, exp, abs_tol=1e-9) for span, exp in zip(spans, expected_spans))
 
     curvatures = [seg["curvature"] for seg in curvature_segments]
-    assert all(math.isclose(curv, expected) for curv, expected in zip(curvatures, [0.6, -0.6, 0.2, -0.6]))
+    # Latitude/longitude points lie on a straight line, so the smoothed curvature
+    # should be essentially zero despite the raw CSV values.
+    assert all(abs(curv) <= 1e-9 for curv in curvatures)
 
     center = DataFrame(
         {
@@ -293,12 +406,7 @@ def test_curvature_profile_uses_shape_index_segments():
     )
 
     geometry_curvatures = [seg.get("curvature", 0.0) for seg in geometry]
-    transitions = sum(
-        1
-        for i in range(1, len(geometry_curvatures))
-        if geometry_curvatures[i - 1] * geometry_curvatures[i] < 0
-    )
-    assert transitions >= 2
+    assert all(abs(curv) <= 1e-9 for curv in geometry_curvatures)
 
 
 def test_curvature_profile_averages_duplicate_shape_indices():
@@ -313,7 +421,7 @@ def test_curvature_profile_averages_duplicate_shape_indices():
         }
     )
 
-    curvature_segments = build_curvature_profile(curvature_df)
+    curvature_segments, _ = build_curvature_profile(curvature_df)
 
     assert len(curvature_segments) == 2
 

@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
 
 
 from csv2xodr.csv2xodr import convert_dataset  # noqa: E402
+from pythonProject import add_shape_index, interpolate_curvature  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,35 @@ def run_pipeline(pipeline: FormatPipeline) -> Dict:
     return pipeline.runner(str(pipeline.input_dir), str(output_path), str(pipeline.config_path))
 
 
+def preprocess_csv_sources(root: Path) -> None:
+    """Run the CSV preprocessing steps prior to OpenDRIVE conversion."""
+
+    print("开始执行CSV预处理流程……")
+
+    print(" 1/2: 更新车道几何形状索引……")
+    for path in add_shape_index.default_files(root):
+        if not path.exists():
+            print(f"    [SKIP] 未找到文件: {path}")
+            continue
+
+        add_shape_index.add_shape_index_column(path, encoding=add_shape_index.DEFAULT_ENCODING)
+        print(f"    [OK] 已更新形状索引列: {path}")
+
+    print(" 2/2: 插值曲率缺失的形状索引……")
+    for path in interpolate_curvature.default_files(root):
+        if not path.exists():
+            print(f"    [SKIP] 未找到文件: {path}")
+            continue
+
+        added_rows = interpolate_curvature.process_file(
+            path, encoding=interpolate_curvature.DEFAULT_ENCODING
+        )
+        if added_rows:
+            print(f"    [OK] {path}: 新增 {added_rows} 行插值数据")
+        else:
+            print(f"    [OK] {path}: 无需插值，保持原状")
+
+
 def iter_targets(
     registry: Dict[str, FormatPipeline], selected_format: Optional[str], convert_all: bool
 ) -> Iterable[FormatPipeline]:
@@ -108,6 +138,9 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
+
+    if args.all:
+        preprocess_csv_sources(ROOT)
 
     for pipeline in iter_targets(registry, args.format, args.all):
         print(f"开始处理 {pipeline.name} 格式……")
