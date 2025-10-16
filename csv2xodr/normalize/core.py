@@ -235,6 +235,7 @@ def _resample_parametric_curve(
     y_vals: List[float],
     *,
     step: float = CURVATURE_RESAMPLE_STEP,
+    preserve_targets: Optional[Iterable[float]] = None,
 ) -> Optional[Dict[str, List[float]]]:
     if len(s_vals) < 2 or len(x_vals) < 2 or len(y_vals) < 2:
         return None
@@ -282,9 +283,13 @@ def _resample_parametric_curve(
     if not targets or abs(targets[-1] - total_length) > 1e-6:
         targets.append(total_length)
 
-    combined_targets = sorted(targets + arc_lengths)
+    if preserve_targets is not None:
+        for value in preserve_targets:
+            if math.isfinite(value) and 0.0 <= value <= total_length:
+                targets.append(float(value))
+
     dedup_targets: List[float] = []
-    for value in combined_targets:
+    for value in sorted(targets):
         if not dedup_targets or abs(value - dedup_targets[-1]) > 1e-9:
             dedup_targets.append(value)
     targets = dedup_targets
@@ -1333,6 +1338,18 @@ def build_curvature_profile(
 
         bucket_segments: List[Dict[str, float]] = []
         resampled = None
+        preserve_targets: Optional[List[float]] = None
+        if cumulative and len(cumulative) == len(ordered):
+            preserve_targets = []
+            last_shape: Optional[float] = None
+            for (shape_idx, *_), arc_val in zip(ordered, cumulative):
+                if last_shape is None or shape_idx != last_shape:
+                    preserve_targets.append(float(arc_val))
+                    last_shape = shape_idx
+            if cumulative:
+                last_arc = float(cumulative[-1])
+                if not preserve_targets or abs(preserve_targets[-1] - last_arc) > 1e-9:
+                    preserve_targets.append(last_arc)
         if (
             xs_for_samples is not None
             and ys_for_samples is not None
@@ -1344,6 +1361,7 @@ def build_curvature_profile(
                 xs_for_samples,
                 ys_for_samples,
                 step=CURVATURE_RESAMPLE_STEP,
+                preserve_targets=preserve_targets,
             )
 
         if resampled is not None and len(resampled.get("s", [])) >= 2:
