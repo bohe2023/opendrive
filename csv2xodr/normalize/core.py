@@ -289,6 +289,59 @@ def _resample_parametric_curve(
     for length in seg_lengths:
         arc_lengths.append(arc_lengths[-1] + length)
 
+    # 原始白线点位存在测量噪声时，直接拟合多项式会放大误差导致曲率
+    # 高频震荡。先对坐标序列做弧长域上的平滑与等距重采样，可以抑制
+    # 浮噪并让后续的导数运算更加稳定。
+    if len(arc_lengths) == len(x_vals) == len(y_vals) and len(x_vals) >= 3:
+        original_arc = list(arc_lengths)
+        original_s = list(s_vals)
+        smooth_window = max(step * 0.5, total_length * 0.05)
+        smooth_window = min(smooth_window, total_length)
+        if smooth_window > 0.0:
+            x_vals = _smooth_series(x_vals, arc_lengths, smooth_window)
+            y_vals = _smooth_series(y_vals, arc_lengths, smooth_window)
+
+        # 通过沿弧长的线性插值生成等距采样点，避免原始测量的稠密/稀疏
+        # 区域对多项式拟合的权重造成偏差。
+        target_spacing = max(step * 0.25, total_length / max(len(arc_lengths) * 4, 1))
+        target_spacing = min(target_spacing, max(total_length, 1e-6))
+        if target_spacing > 0.0 and target_spacing < total_length:
+            uniform_targets: List[float] = [0.0]
+            while uniform_targets[-1] + target_spacing < total_length:
+                uniform_targets.append(uniform_targets[-1] + target_spacing)
+            if abs(uniform_targets[-1] - total_length) > 1e-6:
+                uniform_targets.append(total_length)
+
+            # 在原始序列上插值，确保重采样后的点仍然沿原曲线分布。
+            x_vals = _interp_values(original_arc, x_vals, uniform_targets)
+            y_vals = _interp_values(original_arc, y_vals, uniform_targets)
+            s_vals = _interp_values(original_arc, original_s, uniform_targets)
+            arc_lengths = uniform_targets
+
+        # Savitzky–Golay 滤波可以进一步抑制高频噪声，同时保留真实曲率
+        # 变化趋势；SciPy 不一定可用，因此在运行时按需导入。
+        try:  # pragma: no cover - 依赖环境可能缺失
+            from scipy.signal import savgol_filter  # type: ignore
+        except Exception:  # pragma: no cover - 当 SciPy 不可用时静默跳过
+            savgol_filter = None  # type: ignore
+
+        if "savgol_filter" in locals() and callable(savgol_filter):  # type: ignore[name-defined]
+            max_window = len(x_vals) if len(x_vals) % 2 == 1 else len(x_vals) - 1
+            if max_window >= 5:
+                approx_points_per_step = max(1, int(round(step / max(target_spacing, 1e-6))))
+                window_length = min(max_window, approx_points_per_step * 2 + 1)
+                if window_length < 5:
+                    window_length = 5 if max_window >= 5 else max_window
+                if window_length % 2 == 0:
+                    window_length = max(5, window_length - 1)
+                poly_order = min(3, max(1, window_length - 2))
+                if window_length >= poly_order + 2 and window_length <= len(x_vals):
+                    try:  # pragma: no cover - SciPy 调用
+                        x_vals = savgol_filter(x_vals, window_length, poly_order).tolist()
+                        y_vals = savgol_filter(y_vals, window_length, poly_order).tolist()
+                    except Exception:  # pragma: no cover - 失败时回退原序列
+                        pass
+
     degree = _select_polynomial_degree(len(x_vals))
     if degree is None or degree < 1:
         return None
