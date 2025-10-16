@@ -166,6 +166,90 @@ def _polyder(coeffs: List[float], order: int = 1) -> List[float]:
     return deriv if deriv else [0.0]
 
 
+def _build_cubic_spline(knots: List[float], values: List[float]) -> Optional[Dict[str, List[float]]]:
+    count = len(knots)
+    if count < 2 or len(values) != count:
+        return None
+
+    spacing: List[float] = []
+    for idx in range(count - 1):
+        step = knots[idx + 1] - knots[idx]
+        if step <= 0.0:
+            return None
+        spacing.append(step)
+
+    alpha: List[float] = [0.0] * count
+    for idx in range(1, count - 1):
+        alpha[idx] = (
+            3.0 * (values[idx + 1] - values[idx]) / spacing[idx]
+            - 3.0 * (values[idx] - values[idx - 1]) / spacing[idx - 1]
+        )
+
+    lower: List[float] = [1.0] + [0.0] * (count - 1)
+    upper: List[float] = [0.0] * count
+    middle: List[float] = [0.0] * count
+
+    for idx in range(1, count - 1):
+        lower[idx] = (
+            2.0 * (knots[idx + 1] - knots[idx - 1]) - spacing[idx - 1] * upper[idx - 1]
+        )
+        if abs(lower[idx]) <= 1e-12:
+            return None
+        upper[idx] = spacing[idx] / lower[idx]
+        middle[idx] = (alpha[idx] - spacing[idx - 1] * middle[idx - 1]) / lower[idx]
+
+    lower[-1] = 1.0
+    middle[-1] = 0.0
+
+    second: List[float] = [0.0] * count
+    for idx in range(count - 2, -1, -1):
+        second[idx] = middle[idx] - upper[idx] * second[idx + 1]
+
+    coeff_a: List[float] = list(values[:-1])
+    coeff_b: List[float] = [0.0] * (count - 1)
+    coeff_c: List[float] = [0.0] * (count - 1)
+    coeff_d: List[float] = [0.0] * (count - 1)
+
+    for idx in range(count - 1):
+        coeff_c[idx] = second[idx] * 0.5
+        coeff_d[idx] = (second[idx + 1] - second[idx]) / (6.0 * spacing[idx])
+        coeff_b[idx] = (
+            (values[idx + 1] - values[idx]) / spacing[idx]
+            - spacing[idx] * (second[idx + 1] + 2.0 * second[idx]) / 6.0
+        )
+
+    return {
+        "knots": list(knots),
+        "a": coeff_a,
+        "b": coeff_b,
+        "c": coeff_c,
+        "d": coeff_d,
+    }
+
+
+def _eval_cubic_spline(
+    spline: Dict[str, List[float]], value: float
+) -> Tuple[float, float, float]:
+    knots = spline["knots"]
+    if value <= knots[0]:
+        idx = 0
+    elif value >= knots[-1]:
+        idx = len(knots) - 2
+    else:
+        idx = max(0, bisect.bisect_right(knots, value) - 1)
+
+    dt = value - knots[idx]
+    a = spline["a"][idx]
+    b = spline["b"][idx]
+    c = spline["c"][idx]
+    d = spline["d"][idx]
+
+    position = ((d * dt + c) * dt + b) * dt + a
+    first = (3.0 * d * dt + 2.0 * c) * dt + b
+    second = 6.0 * d * dt + 2.0 * c
+    return position, first, second
+
+
 def _solve_linear_system(matrix: List[List[float]], rhs: List[float]) -> Optional[List[float]]:
     size = len(rhs)
     augmented = [row[:] + [rhs[idx]] for idx, row in enumerate(matrix)]
@@ -342,20 +426,101 @@ def _resample_parametric_curve(
                     except Exception:  # pragma: no cover - 失败时回退原序列
                         pass
 
-    degree = _select_polynomial_degree(len(x_vals))
-    if degree is None or degree < 1:
+    filtered: List[Tuple[float, float, float, float]] = []
+    last_arc: Optional[float] = None
+    for arc_val, x_val, y_val, s_val in zip(arc_lengths, x_vals, y_vals, s_vals):
+        if not (
+            math.isfinite(arc_val)
+            and math.isfinite(x_val)
+            and math.isfinite(y_val)
+            and math.isfinite(s_val)
+        ):
+            continue
+        if last_arc is not None and abs(arc_val - last_arc) <= 1e-9:
+            continue
+        filtered.append((arc_val, x_val, y_val, s_val))
+        last_arc = arc_val
+
+    if len(filtered) < 2:
         return None
 
-    t_vals = [arc / total_length for arc in arc_lengths]
-    poly_x = _polyfit(t_vals, x_vals, degree)
-    poly_y = _polyfit(t_vals, y_vals, degree)
-    if poly_x is None or poly_y is None:
+    arc_lengths = [item[0] for item in filtered]
+    x_vals = [item[1] for item in filtered]
+    y_vals = [item[2] for item in filtered]
+    s_vals = [item[3] for item in filtered]
+
+    origin = arc_lengths[0]
+    if abs(origin) > 1e-9:
+        arc_lengths = [arc - origin for arc in arc_lengths]
+        if preserve_targets is not None:
+            adjusted_targets: List[float] = []
+            for value in preserve_targets:
+                if value is None:
+                    continue
+                shifted = float(value) - origin
+                if math.isfinite(shifted):
+                    adjusted_targets.append(shifted)
+            preserve_targets = adjusted_targets
+    total_length = arc_lengths[-1]
+    if total_length <= 0.0:
         return None
 
-    dpoly_x = _polyder(poly_x, 1)
-    ddpoly_x = _polyder(poly_x, 2)
-    dpoly_y = _polyder(poly_y, 1)
-    ddpoly_y = _polyder(poly_y, 2)
+    spline_x = _build_cubic_spline(arc_lengths, x_vals)
+    spline_y = _build_cubic_spline(arc_lengths, y_vals)
+
+    if spline_x is None or spline_y is None:
+        degree = _select_polynomial_degree(len(x_vals))
+        if degree is None or degree < 1 or total_length <= 0.0:
+            return None
+        t_vals = [arc / total_length for arc in arc_lengths]
+        poly_x = _polyfit(t_vals, x_vals, degree)
+        poly_y = _polyfit(t_vals, y_vals, degree)
+        if poly_x is None or poly_y is None:
+            return None
+        spline_targets: List[float] = []
+        current = 0.0
+        while current < total_length:
+            spline_targets.append(current)
+            current += step
+        if not spline_targets or abs(spline_targets[-1] - total_length) > 1e-6:
+            spline_targets.append(total_length)
+        if preserve_targets is not None:
+            for value in preserve_targets:
+                if math.isfinite(value) and 0.0 <= value <= total_length:
+                    spline_targets.append(float(value))
+        dedup_targets: List[float] = []
+        for value in sorted(spline_targets):
+            if not dedup_targets or abs(value - dedup_targets[-1]) > 1e-9:
+                dedup_targets.append(value)
+        spline_targets = dedup_targets
+        t_new = [target / total_length for target in spline_targets]
+        x_new = _polyval(poly_x, t_new)
+        y_new = _polyval(poly_y, t_new)
+        dpoly_x = _polyder(poly_x, 1)
+        dpoly_y = _polyder(poly_y, 1)
+        ddpoly_x = _polyder(poly_x, 2)
+        ddpoly_y = _polyder(poly_y, 2)
+        x_prime = _polyval(dpoly_x, t_new)
+        y_prime = _polyval(dpoly_y, t_new)
+        x_double = _polyval(ddpoly_x, t_new)
+        y_double = _polyval(ddpoly_y, t_new)
+        curvature: List[float] = []
+        for xp, yp, xd, yd in zip(x_prime, y_prime, x_double, y_double):
+            denom = (xp * xp + yp * yp) ** 1.5
+            if denom <= 1e-9:
+                curvature.append(0.0)
+            else:
+                curvature.append((xp * yd - yp * xd) / denom)
+        if curvature:
+            curvature = _smooth_series(curvature, spline_targets, step)
+        s_interp = _interp_values(arc_lengths, s_vals, spline_targets)
+        return {
+            "s": s_interp,
+            "curvature": curvature,
+            "x": x_new,
+            "y": y_new,
+            "arc": spline_targets,
+        }
 
     targets: List[float] = []
     current = 0.0
@@ -376,14 +541,21 @@ def _resample_parametric_curve(
             dedup_targets.append(value)
     targets = dedup_targets
 
-    t_new = [target / total_length for target in targets]
-    x_new = _polyval(poly_x, t_new)
-    y_new = _polyval(poly_y, t_new)
-
-    x_prime = _polyval(dpoly_x, t_new)
-    y_prime = _polyval(dpoly_y, t_new)
-    x_double = _polyval(ddpoly_x, t_new)
-    y_double = _polyval(ddpoly_y, t_new)
+    x_new: List[float] = []
+    y_new: List[float] = []
+    x_prime: List[float] = []
+    y_prime: List[float] = []
+    x_double: List[float] = []
+    y_double: List[float] = []
+    for target in targets:
+        x_pos, x_first, x_second = _eval_cubic_spline(spline_x, target)
+        y_pos, y_first, y_second = _eval_cubic_spline(spline_y, target)
+        x_new.append(x_pos)
+        y_new.append(y_pos)
+        x_prime.append(x_first)
+        y_prime.append(y_first)
+        x_double.append(x_second)
+        y_double.append(y_second)
 
     curvature: List[float] = []
     for xp, yp, xd, yd in zip(x_prime, y_prime, x_double, y_double):
