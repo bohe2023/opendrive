@@ -12,6 +12,35 @@ CURVATURE_RESAMPLE_STEP = 10.0
 CURVATURE_MIN_POLY_DEGREE = 3
 CURVATURE_MAX_POLY_DEGREE = 5
 
+
+def _smooth_series(values: List[float], positions: List[float], window: float) -> List[float]:
+    if len(values) <= 2 or len(values) != len(positions) or window <= 0.0:
+        return list(values)
+
+    half_window = max(window * 0.5, 1e-6)
+    smoothed: List[float] = [0.0 for _ in values]
+
+    left = 0
+    right = 0
+    running_sum = 0.0
+    running_count = 0
+
+    for idx, center in enumerate(positions):
+        while left < len(values) and positions[left] < center - half_window:
+            running_sum -= values[left]
+            running_count -= 1
+            left += 1
+        while right < len(values) and positions[right] <= center + half_window:
+            running_sum += values[right]
+            running_count += 1
+            right += 1
+        if running_count > 0:
+            smoothed[idx] = running_sum / running_count
+        else:  # pragma: no cover - defensive fallback
+            smoothed[idx] = values[idx]
+
+    return smoothed
+
 def _col_like(df: DataFrame, keyword: str):
     cols = [c for c in df.columns if keyword in c]
     return cols[0] if cols else None
@@ -310,6 +339,9 @@ def _resample_parametric_curve(
             curvature.append(0.0)
         else:
             curvature.append((xp * yd - yp * xd) / denom)
+
+    if curvature:
+        curvature = _smooth_series(curvature, targets, step)
 
     s_interp = _interp_values(arc_lengths, s_vals, targets)
 
