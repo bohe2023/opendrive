@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import bisect
 import math
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from csv2xodr.normalize.core import latlon_to_local_xy
+from csv2xodr.normalize.core import _smooth_series, latlon_to_local_xy
 from csv2xodr.simpletable import DataFrame
 from csv2xodr.topology.core import _canonical_numeric
 
@@ -62,6 +63,7 @@ def build_line_geometry_lookup(
     lat0: float,
     lon0: float,
     curvature_samples: Optional[Iterable[Dict[str, Any]]] = None,
+    centerline: Optional[DataFrame] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Return a lookup of canonical line IDs to polylines in local XY."""
 
@@ -252,6 +254,8 @@ def build_line_geometry_lookup(
     lookup: Dict[str, List[Dict[str, Any]]] = {}
 
     global_base_offset: Optional[float] = None
+    projector = _CenterlineProjector(centerline) if centerline is not None else None
+
     for entry in grouped.values():
         for raw in entry.get("offset", []) or []:
             try:
@@ -388,6 +392,45 @@ def build_line_geometry_lookup(
         for seq in sequences:
             points = list(seq)
 
+            used_centerline = False
+            if projector is not None and projector.is_valid:
+                reproj_sequences = _reproject_sequence(points, projector)
+                for reproj in reproj_sequences:
+                    resampled = _reconstruct_geometry_from_centerline(reproj, projector)
+                    if resampled is None:
+                        continue
+
+                    used_centerline = True
+                    resampled_s = [float(val) for val in resampled["s"]]
+                    resampled_x = [float(val) for val in resampled["x"]]
+                    resampled_y = [float(val) for val in resampled["y"]]
+                    resampled_z = [float(val) for val in resampled["z"]]
+                    signature = _geometry_signature(
+                        list(zip(resampled_s, resampled_x, resampled_y, resampled_z))
+                    )
+                    if any(
+                        _geometry_signature(list(zip(g["s"], g["x"], g["y"], g["z"])))
+                        == signature
+                        for g in geoms
+                    ):
+                        continue
+
+                    geom_entry = {
+                        "s": resampled_s,
+                        "x": resampled_x,
+                        "y": resampled_y,
+                        "z": resampled_z,
+                    }
+
+                    curvature_vals = resampled.get("curvature") or []
+                    if curvature_vals:
+                        geom_entry["curvature"] = [float(val) for val in curvature_vals]
+
+                    geoms.append(geom_entry)
+
+            if used_centerline:
+                continue
+
             resampled = _resample_sequence_with_polynomial(points)
             if resampled is not None:
                 resampled_s = [float(val) for val in resampled["s"]]
@@ -442,6 +485,370 @@ def build_line_geometry_lookup(
     return lookup
 
 RESAMPLE_STEP_METERS = 10.0
+CENTERLINE_RESAMPLE_STEP = 3.0
+CENTERLINE_SMOOTHING_WINDOW = 4.0
+
+
+@dataclass
+class _ProjectionResult:
+    s: float
+    x: float
+    y: float
+    tangent: Tuple[float, float]
+    segment_index: int
+
+
+class _CenterlineProjector:
+    """Helper that provides arc-length projections onto the centreline."""
+
+    def __init__(self, centerline: Optional[DataFrame]):
+        self.is_valid = False
+        self._segments: List[Dict[str, float]] = []
+        self._s_vals: List[float] = []
+
+        if centerline is None or len(centerline) < 2:
+            return
+
+        try:
+            s_raw = [float(v) for v in centerline["s"].to_list()]
+            x_raw = [float(v) for v in centerline["x"].to_list()]
+            y_raw = [float(v) for v in centerline["y"].to_list()]
+        except Exception:  # pragma: no cover - defensive
+            return
+
+        if len(s_raw) != len(x_raw) or len(s_raw) != len(y_raw):
+            return
+
+        segments: List[Dict[str, float]] = []
+        for idx in range(len(s_raw) - 1):
+            s0 = s_raw[idx]
+            s1 = s_raw[idx + 1]
+            x0 = x_raw[idx]
+            y0 = y_raw[idx]
+            x1 = x_raw[idx + 1]
+            y1 = y_raw[idx + 1]
+            span = s1 - s0
+            dx = x1 - x0
+            dy = y1 - y0
+            length_sq = dx * dx + dy * dy
+            if span <= 0.0 and length_sq <= 1e-12:
+                continue
+            tangent_len = math.hypot(dx, dy)
+            if tangent_len <= 1e-9:
+                # Degenerate segment – reuse the previous tangent if available.
+                if segments:
+                    tangent = (segments[-1]["tx"], segments[-1]["ty"])
+                else:
+                    tangent = (1.0, 0.0)
+            else:
+                tangent = (dx / tangent_len, dy / tangent_len)
+            segments.append(
+                {
+                    "s0": s0,
+                    "s1": s1,
+                    "x0": x0,
+                    "y0": y0,
+                    "dx": dx,
+                    "dy": dy,
+                    "span": span if span > 0.0 else tangent_len,
+                    "length_sq": length_sq,
+                    "tx": tangent[0],
+                    "ty": tangent[1],
+                }
+            )
+
+        if not segments:
+            return
+
+        self._segments = segments
+        self._s_vals = s_raw
+        self.is_valid = True
+
+    def _segment_index_from_s(self, target_s: float) -> int:
+        if not self._segments:
+            return 0
+        if target_s <= self._segments[0]["s0"]:
+            return 0
+        if target_s >= self._segments[-1]["s1"]:
+            return len(self._segments) - 1
+        idx = bisect.bisect_right(self._s_vals, target_s) - 1
+        return max(0, min(idx, len(self._segments) - 1))
+
+    def project(
+        self,
+        px: float,
+        py: float,
+        *,
+        approx_s: Optional[float] = None,
+        prev_index: Optional[int] = None,
+    ) -> Optional[_ProjectionResult]:
+        if not self.is_valid or not self._segments:
+            return None
+
+        if prev_index is not None:
+            start_idx = max(0, min(prev_index, len(self._segments) - 1))
+        elif approx_s is not None:
+            start_idx = self._segment_index_from_s(approx_s)
+        else:
+            start_idx = 0
+
+        best: Optional[_ProjectionResult] = None
+        best_dist: float = float("inf")
+
+        max_radius = max(len(self._segments), 1)
+        radius = 1
+        while radius <= max_radius:
+            lo = max(0, start_idx - radius)
+            hi = min(len(self._segments), start_idx + radius + 1)
+            for idx in range(lo, hi):
+                seg = self._segments[idx]
+                if seg["length_sq"] <= 1e-12:
+                    continue
+                vx = seg["dx"]
+                vy = seg["dy"]
+                rel_x = px - seg["x0"]
+                rel_y = py - seg["y0"]
+                seg_len_sq = seg["length_sq"]
+                t = (rel_x * vx + rel_y * vy) / seg_len_sq
+                if t < 0.0:
+                    t = 0.0
+                elif t > 1.0:
+                    t = 1.0
+                proj_x = seg["x0"] + vx * t
+                proj_y = seg["y0"] + vy * t
+                dist_sq = (px - proj_x) ** 2 + (py - proj_y) ** 2
+                s_val = seg["s0"] + seg["span"] * t
+                if dist_sq < best_dist - 1e-12:
+                    best_dist = dist_sq
+                    best = _ProjectionResult(
+                        s=s_val,
+                        x=proj_x,
+                        y=proj_y,
+                        tangent=(seg["tx"], seg["ty"]),
+                        segment_index=idx,
+                    )
+            if best is not None:
+                break
+            radius *= 2
+
+        if best is not None:
+            return best
+
+        # Fallback: exhaustive search to avoid missing projections due to radius limits.
+        for idx, seg in enumerate(self._segments):
+            if seg["length_sq"] <= 1e-12:
+                continue
+            vx = seg["dx"]
+            vy = seg["dy"]
+            rel_x = px - seg["x0"]
+            rel_y = py - seg["y0"]
+            seg_len_sq = seg["length_sq"]
+            t = (rel_x * vx + rel_y * vy) / seg_len_sq
+            if t < 0.0:
+                t = 0.0
+            elif t > 1.0:
+                t = 1.0
+            proj_x = seg["x0"] + vx * t
+            proj_y = seg["y0"] + vy * t
+            dist_sq = (px - proj_x) ** 2 + (py - proj_y) ** 2
+            s_val = seg["s0"] + seg["span"] * t
+            if dist_sq < best_dist - 1e-12:
+                best_dist = dist_sq
+                best = _ProjectionResult(
+                    s=s_val,
+                    x=proj_x,
+                    y=proj_y,
+                    tangent=(seg["tx"], seg["ty"]),
+                    segment_index=idx,
+                )
+
+        return best
+
+    def interpolate(
+        self, target_s: float, prev_index: Optional[int] = None
+    ) -> Optional[Tuple[float, float, Tuple[float, float], int]]:
+        if not self.is_valid or not self._segments:
+            return None
+
+        idx = self._segment_index_from_s(target_s)
+        if prev_index is not None:
+            idx = max(0, min(prev_index, len(self._segments) - 1))
+            seg = self._segments[idx]
+            if target_s < seg["s0"] - 1e-6 and idx > 0:
+                idx = self._segment_index_from_s(target_s)
+            elif target_s > seg["s1"] + 1e-6 and idx < len(self._segments) - 1:
+                idx = self._segment_index_from_s(target_s)
+
+        seg = self._segments[idx]
+        span = seg["span"]
+        if span <= 1e-9:
+            t = 0.0
+        else:
+            t = (target_s - seg["s0"]) / span
+            t = min(1.0, max(0.0, t))
+
+        x = seg["x0"] + seg["dx"] * t
+        y = seg["y0"] + seg["dy"] * t
+        tangent = (seg["tx"], seg["ty"])
+        return x, y, tangent, idx
+
+
+def _continuous_normal(
+    tangent: Tuple[float, float], prev_normal: Optional[Tuple[float, float]]
+) -> Tuple[float, float]:
+    tx, ty = tangent
+    nx = -ty
+    ny = tx
+    norm = math.hypot(nx, ny)
+    if norm <= 1e-12:
+        if prev_normal is not None:
+            return prev_normal
+        return (0.0, 1.0)
+    nx /= norm
+    ny /= norm
+    if prev_normal is not None:
+        dot = nx * prev_normal[0] + ny * prev_normal[1]
+        if dot < 0.0:
+            nx = -nx
+            ny = -ny
+    return (nx, ny)
+
+
+def _reproject_sequence(
+    points: List[Tuple[float, float, float, float, Optional[float], Optional[float]]],
+    projector: _CenterlineProjector,
+    *,
+    monotonic_tolerance: float = 1e-4,
+) -> List[List[Dict[str, float]]]:
+    sequences: List[List[Dict[str, float]]] = []
+    current: List[Dict[str, float]] = []
+    prev_s: Optional[float] = None
+    prev_index: Optional[int] = None
+    prev_normal: Optional[Tuple[float, float]] = None
+
+    for s_guess, px, py, pz, shape_idx, abs_offset in points:
+        projection = projector.project(px, py, approx_s=s_guess, prev_index=prev_index)
+        if projection is None:
+            continue
+
+        normal = _continuous_normal(projection.tangent, prev_normal)
+        prev_normal = normal
+
+        dx = px - projection.x
+        dy = py - projection.y
+        offset = dx * normal[0] + dy * normal[1]
+
+        sample = {
+            "s": projection.s,
+            "offset": offset,
+            "z": pz,
+            "shape_index": shape_idx if shape_idx is not None else None,
+            "absolute_offset": abs_offset if abs_offset is not None else None,
+        }
+
+        if prev_s is not None and sample["s"] < prev_s - monotonic_tolerance:
+            if len(current) >= 2:
+                sequences.append(current)
+            current = []
+            prev_normal = None
+        current.append(sample)
+        prev_s = sample["s"]
+        prev_index = projection.segment_index
+
+    if len(current) >= 2:
+        sequences.append(current)
+
+    return sequences
+
+
+def _reconstruct_geometry_from_centerline(
+    samples: List[Dict[str, float]],
+    projector: _CenterlineProjector,
+    *,
+    resample_step: float = CENTERLINE_RESAMPLE_STEP,
+    smooth_window: float = CENTERLINE_SMOOTHING_WINDOW,
+) -> Optional[Dict[str, List[float]]]:
+    if len(samples) < 2:
+        return None
+
+    ordered = sorted(samples, key=lambda item: item["s"])
+    dedup: List[Dict[str, float]] = []
+    for sample in ordered:
+        if dedup and abs(sample["s"] - dedup[-1]["s"]) <= 1e-6:
+            dedup[-1] = sample
+        else:
+            dedup.append(sample)
+
+    if len(dedup) < 2:
+        return None
+
+    s_vals = [float(item["s"]) for item in dedup]
+    offsets = [float(item["offset"]) for item in dedup]
+    z_vals = [float(item["z"]) for item in dedup]
+    shape_vals = [item.get("shape_index") for item in dedup]
+    abs_offsets = [item.get("absolute_offset") for item in dedup]
+
+    offsets_smoothed = _smooth_series(offsets, s_vals, smooth_window)
+    z_smoothed = _smooth_series(z_vals, s_vals, smooth_window)
+
+    start_s = s_vals[0]
+    end_s = s_vals[-1]
+    targets: List[float] = []
+    current = start_s
+    while current < end_s:
+        targets.append(current)
+        current += resample_step
+    if not targets or abs(targets[-1] - end_s) > 1e-6:
+        targets.append(end_s)
+
+    combined = sorted(s_vals + targets)
+    dedup_targets: List[float] = []
+    for value in combined:
+        if not dedup_targets or abs(value - dedup_targets[-1]) > 1e-9:
+            dedup_targets.append(value)
+    targets = dedup_targets
+
+    offset_interp = _interp_values(s_vals, offsets_smoothed, targets)
+    z_interp = _interp_values(s_vals, z_smoothed, targets)
+    shape_interp = _interp_optional_values(s_vals, shape_vals, targets)
+    abs_offset_interp = _interp_optional_values(s_vals, abs_offsets, targets)
+
+    x_vals: List[float] = []
+    y_vals: List[float] = []
+    prev_normal: Optional[Tuple[float, float]] = None
+    prev_index: Optional[int] = None
+
+    for idx, target_s in enumerate(targets):
+        interp = projector.interpolate(target_s, prev_index=prev_index)
+        if interp is None:
+            return None
+        base_x, base_y, tangent, seg_index = interp
+        normal = _continuous_normal(tangent, prev_normal)
+        prev_normal = normal
+        prev_index = seg_index
+        offset = offset_interp[idx]
+        x_vals.append(base_x + offset * normal[0])
+        y_vals.append(base_y + offset * normal[1])
+
+    geometry = {
+        "s": targets,
+        "x": x_vals,
+        "y": y_vals,
+        "z": z_interp,
+    }
+
+    curvature = _estimate_discrete_curvature(
+        [(s, x, y, z, None, None) for s, x, y, z in zip(targets, x_vals, y_vals, z_interp)]
+    )
+    if curvature:
+        geometry["curvature"] = curvature
+
+    if any(val is not None for val in shape_interp):
+        geometry["shape_index"] = shape_interp
+    if any(val is not None for val in abs_offset_interp):
+        geometry["absolute_offset"] = abs_offset_interp
+
+    return geometry
 MIN_POLY_DEGREE = 3
 MAX_POLY_DEGREE = 5
 

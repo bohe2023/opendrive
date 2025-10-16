@@ -123,6 +123,7 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
         lat0=lat0,
         lon0=lon0,
         curvature_samples=curvature_samples,
+        centerline=center,
     )
     lane_specs = build_lane_spec(
         sections,

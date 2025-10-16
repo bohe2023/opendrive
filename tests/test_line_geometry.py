@@ -299,3 +299,58 @@ def test_line_geometry_lookup_fits_curvature_from_geometry():
     expected = 1.0 / radius
     for value in geom["curvature"]:
         assert value == pytest.approx(expected, rel=0.05)
+
+
+def test_line_geometry_lookup_projects_onto_centerline():
+    meters_to_degrees = 180.0 / (math.pi * 6378137.0)
+    offsets_cm = [0.0, 250.0, 500.0, 750.0, 1000.0]
+    base_x = [0.0, 2.5, 5.0, 7.5, 10.0]
+    base_y = [0.0 for _ in base_x]
+    width = 3.0
+    jitter = [0.4, -0.3, 0.5, -0.2, 0.3]
+
+    rows = []
+    for offset, x, y, noise in zip(offsets_cm, base_x, base_y, jitter):
+        lat = (y + width + noise) * meters_to_degrees
+        lon = x * meters_to_degrees
+        rows.append(
+            {
+                "ライン型地物ID": "LEFT",
+                "Offset[cm]": f"{offset}",
+                "緯度[deg]": f"{lat}",
+                "経度[deg]": f"{lon}",
+                "高さ[m]": "0.0",
+                "ログ時刻": "proj",
+                "Type": "1",
+                "Is Retransmission": "false",
+            }
+        )
+
+    centerline = DataFrame({"s": base_x, "x": base_x, "y": base_y})
+
+    lookup = build_line_geometry_lookup(
+        DataFrame(rows),
+        offset_mapper=lambda value: value,
+        lat0=0.0,
+        lon0=0.0,
+        centerline=centerline,
+    )
+
+    geom = lookup["LEFT"][0]
+    s_vals = geom["s"]
+    assert s_vals[0] == pytest.approx(0.0)
+    assert s_vals[-1] == pytest.approx(10.0)
+    assert len(s_vals) >= len(offsets_cm)
+
+    # The reconstructed geometry should follow the centreline heading without jitter.
+    for s_val, x_val in zip(s_vals, geom["x"]):
+        assert x_val == pytest.approx(s_val, abs=1e-3)
+
+    y_vals = geom["y"]
+    avg_y = sum(y_vals) / len(y_vals)
+    assert avg_y == pytest.approx(width, abs=0.15)
+
+    diffs = [abs(y_vals[i + 1] - y_vals[i]) for i in range(len(y_vals) - 1)]
+    raw_y = [width + noise for noise in jitter]
+    raw_diffs = [abs(raw_y[i + 1] - raw_y[i]) for i in range(len(raw_y) - 1)]
+    assert sum(diffs) / len(diffs) < sum(raw_diffs) / len(raw_diffs)
