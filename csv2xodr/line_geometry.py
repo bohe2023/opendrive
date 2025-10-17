@@ -420,11 +420,10 @@ def build_line_geometry_lookup(
                         "x": resampled_x,
                         "y": resampled_y,
                         "z": resampled_z,
+                        "curvature": [float(val) for val in resampled.get("curvature", [])],
+                        "tangent_x": [float(val) for val in resampled.get("tangent_x", [])],
+                        "tangent_y": [float(val) for val in resampled.get("tangent_y", [])],
                     }
-
-                    curvature_vals = resampled.get("curvature") or []
-                    if curvature_vals:
-                        geom_entry["curvature"] = [float(val) for val in curvature_vals]
 
                     geoms.append(geom_entry)
 
@@ -448,15 +447,19 @@ def build_line_geometry_lookup(
                 ):
                     continue
 
+                tangent_x = [float(val) for val in resampled.get("tangent_x", [])]
+                tangent_y = [float(val) for val in resampled.get("tangent_y", [])]
+
                 geom_entry = {
                     "s": resampled_s,
                     "x": resampled_x,
                     "y": resampled_y,
                     "z": resampled_z,
+                    "curvature": resampled_curvature,
+                    "tangent_x": tangent_x,
+                    "tangent_y": tangent_y,
                 }
-                if any(abs(val) > 1e-12 for val in resampled_curvature):
-                    geom_entry["curvature"] = resampled_curvature
-                else:
+                if not any(abs(val) > 1e-12 for val in resampled_curvature):
                     geom_entry["curvature"] = [0.0 for _ in resampled_curvature]
                 geoms.append(geom_entry)
                 continue
@@ -468,17 +471,26 @@ def build_line_geometry_lookup(
             ):
                 continue
 
-            curvature_vals = _estimate_discrete_curvature(points)
+            s_plain = [p[0] for p in points]
+            x_plain = [p[1] for p in points]
+            y_plain = [p[2] for p in points]
+            z_plain = [p[3] for p in points]
+
+            tangent_x, tangent_y, curvature_vals = _derive_path_kinematics(
+                s_plain,
+                x_plain,
+                y_plain,
+            )
 
             geom_entry = {
-                "s": [p[0] for p in points],
-                "x": [p[1] for p in points],
-                "y": [p[2] for p in points],
-                "z": [p[3] for p in points],
+                "s": s_plain,
+                "x": x_plain,
+                "y": y_plain,
+                "z": z_plain,
+                "curvature": curvature_vals,
+                "tangent_x": tangent_x,
+                "tangent_y": tangent_y,
             }
-
-            if curvature_vals:
-                geom_entry["curvature"] = curvature_vals
 
             geoms.append(geom_entry)
 
@@ -832,18 +844,22 @@ def _reconstruct_geometry_from_centerline(
         x_vals.append(base_x + offset * normal[0])
         y_vals.append(base_y + offset * normal[1])
 
+    tangent_x, tangent_y, curvature = _derive_path_kinematics(
+        targets,
+        x_vals,
+        y_vals,
+        smooth_window=smooth_window,
+    )
+
     geometry = {
         "s": targets,
         "x": x_vals,
         "y": y_vals,
         "z": z_interp,
+        "curvature": curvature,
+        "tangent_x": tangent_x,
+        "tangent_y": tangent_y,
     }
-
-    curvature = _estimate_discrete_curvature(
-        [(s, x, y, z, None, None) for s, x, y, z in zip(targets, x_vals, y_vals, z_interp)]
-    )
-    if curvature:
-        geometry["curvature"] = curvature
 
     if any(val is not None for val in shape_interp):
         geometry["shape_index"] = shape_interp
@@ -904,6 +920,111 @@ def _interp_optional_values(
         )
         for target in targets
     ]
+
+
+def _derive_path_kinematics(
+    s_vals: List[float],
+    x_vals: List[float],
+    y_vals: List[float],
+    *,
+    reference_signs: Optional[List[Optional[float]]] = None,
+    reference_values: Optional[List[Optional[float]]] = None,
+    smooth_window: Optional[float] = None,
+) -> Tuple[List[float], List[float], List[float]]:
+    """Return unit tangents and curvature for a monotonic arc-length parameterisation."""
+
+    count = len(s_vals)
+    if count == 0:
+        return [], [], []
+
+    tangent_x: List[float] = []
+    tangent_y: List[float] = []
+
+    for idx in range(count):
+        if idx == 0:
+            idx_prev = idx
+            idx_next = min(idx + 1, count - 1)
+        elif idx == count - 1:
+            idx_prev = max(idx - 1, 0)
+            idx_next = idx
+        else:
+            idx_prev = idx - 1
+            idx_next = idx + 1
+
+        ds = s_vals[idx_next] - s_vals[idx_prev]
+        if abs(ds) <= 1e-12:
+            if idx_next != idx:
+                ds = s_vals[idx_next] - s_vals[idx]
+                dx = x_vals[idx_next] - x_vals[idx]
+                dy = y_vals[idx_next] - y_vals[idx]
+            elif idx_prev != idx:
+                ds = s_vals[idx] - s_vals[idx_prev]
+                dx = x_vals[idx] - x_vals[idx_prev]
+                dy = y_vals[idx] - y_vals[idx_prev]
+            else:
+                ds = 1.0
+                dx = 1.0
+                dy = 0.0
+        else:
+            dx = x_vals[idx_next] - x_vals[idx_prev]
+            dy = y_vals[idx_next] - y_vals[idx_prev]
+
+        if abs(ds) <= 1e-12:
+            vx, vy = 1.0, 0.0
+        else:
+            vx = dx / ds
+            vy = dy / ds
+
+        length = math.hypot(vx, vy)
+        if length <= 1e-12:
+            if tangent_x:
+                vx, vy = tangent_x[-1], tangent_y[-1]
+            else:
+                vx, vy = 1.0, 0.0
+        else:
+            vx /= length
+            vy /= length
+
+        tangent_x.append(vx)
+        tangent_y.append(vy)
+
+    curvature = _estimate_discrete_curvature(
+        [
+            (s_vals[idx], x_vals[idx], y_vals[idx], 0.0, None, None)
+            for idx in range(count)
+        ]
+    )
+
+    if smooth_window is not None and smooth_window > 0.0 and len(curvature) >= 3:
+        curvature = _smooth_series(curvature, s_vals, float(smooth_window))
+
+    if reference_values is not None and len(reference_values) == len(curvature):
+        for idx, ref in enumerate(reference_values):
+            if ref is None:
+                continue
+            try:
+                ref_val = float(ref)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(ref_val) or abs(ref_val) <= 1e-12:
+                continue
+            curvature[idx] = ref_val
+
+    if reference_signs is not None and len(reference_signs) == len(curvature):
+        for idx, sign in enumerate(reference_signs):
+            if sign is None or sign == 0.0:
+                continue
+            curv = curvature[idx]
+            if curv * sign < 0.0:
+                curvature[idx] = abs(curv) * math.copysign(1.0, sign)
+
+    if len(curvature) > 1:
+        if abs(curvature[0]) <= 1e-9:
+            curvature[0] = curvature[1]
+        if abs(curvature[-1]) <= 1e-9:
+            curvature[-1] = curvature[-2]
+
+    return tangent_x, tangent_y, curvature
 
 
 def _resample_sequence_with_polynomial(
@@ -1111,30 +1232,26 @@ def _resample_sequence_with_polynomial(
         (s_val, x_val, y_val, z_val, None, None)
         for s_val, x_val, y_val, z_val in zip(s_new, x_new, y_new, z_new)
     ]
-    curvature_series = _estimate_discrete_curvature(resampled_points)
-    curvature = _smooth_series(curvature_series, s_new, max(step, 5.0)) if curvature_series else []
-    if curvature and len(curvature) > 1:
-        if abs(curvature[0]) <= 1e-9:
-            curvature[0] = curvature[1]
-        if abs(curvature[-1]) <= 1e-9:
-            curvature[-1] = curvature[-2]
-        if curvature[0] * curvature[1] < 0.0:
-            curvature[0] = curvature[1]
-        if curvature[-1] * curvature[-2] < 0.0:
-            curvature[-1] = curvature[-2]
-        if discrete_curv_for_sign:
-            reference = _interp_values(
-                s_vals,
-                [float(val) for val in discrete_curv_for_sign],
-                s_new,
-            )
-            for idx, ref in enumerate(reference):
-                if abs(ref) <= 1e-9:
-                    continue
-                if curvature[idx] * ref < 0.0:
-                    curvature[idx] = abs(curvature[idx]) if ref > 0.0 else -abs(curvature[idx])
-                if abs(curvature[idx] - ref) > 0.05 * abs(ref):
-                    curvature[idx] = ref
+    reference_signs = _interp_optional_values(
+        arc_lengths,
+        [float(seg.get("sign", 0.0) or 0.0) for seg in segments],
+        targets,
+    )
+    reference_curvature = _interp_values(
+        s_vals,
+        [
+            float(val) if val is not None else 0.0
+            for val in discrete_curv_for_sign
+        ],
+        s_new,
+    ) if s_vals else [0.0 for _ in s_new]
+    tangent_x, tangent_y, curvature = _derive_path_kinematics(
+        s_new,
+        x_new,
+        y_new,
+        reference_signs=reference_signs,
+        reference_values=reference_curvature,
+    )
 
     return {
         "s": s_new,
@@ -1144,6 +1261,8 @@ def _resample_sequence_with_polynomial(
         "curvature": curvature,
         "shape_index": shape_new,
         "absolute_offset": offset_new,
+        "tangent_x": tangent_x,
+        "tangent_y": tangent_y,
     }
 
 

@@ -1,7 +1,7 @@
 from xml.etree.ElementTree import Element, SubElement, tostring
 import math
 import xml.dom.minidom as minidom
-from typing import Optional
+from typing import Dict, Optional
 
 
 def _format_float(value: float, precision: int = 9) -> str:
@@ -77,6 +77,109 @@ def _solve_heading_for_arc(
     if err <= 1e-4:
         return hdg
     return None
+
+
+def _build_param_poly3_segment(
+    s0: float,
+    s1: float,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    tx0: float,
+    ty0: float,
+    tx1: float,
+    ty1: float,
+) -> Optional[Dict[str, float]]:
+    length = s1 - s0
+    if not math.isfinite(length) or length <= 1e-6:
+        return None
+
+    start_len = math.hypot(tx0, ty0)
+    if start_len <= 1e-12:
+        dx = x1 - x0
+        dy = y1 - y0
+        chord = math.hypot(dx, dy)
+        if chord <= 1e-12:
+            return None
+        tx0, ty0 = dx / chord, dy / chord
+        start_len = 1.0
+    else:
+        tx0 /= start_len
+        ty0 /= start_len
+
+    end_len = math.hypot(tx1, ty1)
+    if end_len <= 1e-12:
+        dx = x1 - x0
+        dy = y1 - y0
+        chord = math.hypot(dx, dy)
+        if chord <= 1e-12:
+            return None
+        tx1, ty1 = dx / chord, dy / chord
+    else:
+        tx1 /= end_len
+        ty1 /= end_len
+
+    heading = math.atan2(ty0, tx0)
+    cos_h = math.cos(heading)
+    sin_h = math.sin(heading)
+
+    dx = x1 - x0
+    dy = y1 - y0
+    if not (math.isfinite(dx) and math.isfinite(dy)):
+        return None
+
+    # Rotate into the start-frame so the initial tangent aligns with the +x axis.
+    u1 = cos_h * dx + sin_h * dy
+    v1 = -sin_h * dx + cos_h * dy
+
+    tx1_local = cos_h * tx1 + sin_h * ty1
+    ty1_local = -sin_h * tx1 + cos_h * ty1
+
+    norm_end = math.hypot(tx1_local, ty1_local)
+    if norm_end <= 1e-12:
+        tx1_local, ty1_local = 1.0, 0.0
+    else:
+        tx1_local /= norm_end
+        ty1_local /= norm_end
+
+    cos_delta = max(-1.0, min(1.0, tx1_local))
+    sin_delta = max(-1.0, min(1.0, ty1_local))
+
+    L = float(length)
+    if not math.isfinite(L) or L <= 1e-9:
+        return None
+
+    denom = L ** 3
+    if not math.isfinite(denom) or abs(denom) <= 1e-18:
+        return None
+
+    d1 = cos_delta - 1.0
+    d2 = u1 - L
+    d_u = (d1 * L - 2.0 * d2) / denom
+    c_u = (d1 - 3.0 * d_u * L * L) / (2.0 * L)
+
+    d_v = (sin_delta * L - 2.0 * v1) / denom
+    c_v = (sin_delta - 3.0 * d_v * L * L) / (2.0 * L)
+
+    if not all(
+        math.isfinite(val)
+        for val in (heading, c_u, d_u, c_v, d_v, u1, v1, cos_delta, sin_delta)
+    ):
+        return None
+
+    return {
+        "length": L,
+        "heading": heading,
+        "aU": 0.0,
+        "bU": 1.0,
+        "cU": c_u,
+        "dU": d_u,
+        "aV": 0.0,
+        "bV": 0.0,
+        "cV": c_v,
+        "dV": d_v,
+    }
 
 def write_xodr(
     centerline,
@@ -351,7 +454,12 @@ def write_xodr(
                     y_vals = geometry.get("y") or []
                     z_vals = geometry.get("z") or []
                     curvature_vals = geometry.get("curvature") or []
+                    tangent_x_vals = geometry.get("tangent_x") or []
+                    tangent_y_vals = geometry.get("tangent_y") or []
                     has_curvature = len(curvature_vals) == len(s_vals)
+                    has_tangent = (
+                        len(tangent_x_vals) == len(s_vals) == len(tangent_y_vals)
+                    )
 
                     if (
                         len(s_vals) == len(x_vals)
@@ -389,6 +497,56 @@ def write_xodr(
                                     curvature_val = float(raw_curv) if raw_curv is not None else None
                                 except (TypeError, ValueError):
                                     curvature_val = None
+
+                            param_poly: Optional[Dict[str, float]] = None
+                            if has_tangent:
+                                try:
+                                    tx0 = float(tangent_x_vals[idx])
+                                    ty0 = float(tangent_y_vals[idx])
+                                    tx1 = float(tangent_x_vals[idx + 1])
+                                    ty1 = float(tangent_y_vals[idx + 1])
+                                    param_poly = _build_param_poly3_segment(
+                                        float(s_vals[idx]),
+                                        float(s_vals[idx + 1]),
+                                        x0,
+                                        y0,
+                                        x1,
+                                        y1,
+                                        tx0,
+                                        ty0,
+                                        tx1,
+                                        ty1,
+                                    )
+                                except (TypeError, ValueError):
+                                    param_poly = None
+
+                            if param_poly is not None:
+                                geom_attrs = {
+                                    "sOffset": _format_float(s0 - section_s0, precision=12),
+                                    "x": _format_float(x0, precision=12),
+                                    "y": _format_float(y0, precision=12),
+                                    "z": _format_float(z0, precision=12),
+                                    "hdg": _format_float(param_poly["heading"], precision=15),
+                                    "length": _format_float(param_poly["length"], precision=12),
+                                }
+
+                                geom_el = SubElement(explicit_el, "geometry", geom_attrs)
+                                SubElement(
+                                    geom_el,
+                                    "paramPoly3",
+                                    {
+                                        "aU": _format_float(param_poly["aU"], precision=12),
+                                        "bU": _format_float(param_poly["bU"], precision=12),
+                                        "cU": _format_float(param_poly["cU"], precision=12),
+                                        "dU": _format_float(param_poly["dU"], precision=12),
+                                        "aV": _format_float(param_poly["aV"], precision=12),
+                                        "bV": _format_float(param_poly["bV"], precision=12),
+                                        "cV": _format_float(param_poly["cV"], precision=12),
+                                        "dV": _format_float(param_poly["dV"], precision=12),
+                                        "pRange": "arcLength",
+                                    },
+                                )
+                                continue
 
                             arc_heading = None
                             if curvature_val is not None and abs(curvature_val) > 1e-12:
