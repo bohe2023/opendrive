@@ -6,7 +6,7 @@ import math
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Set
 
 from csv2xodr.normalize.core import _find_column, _to_float, latlon_to_local_xy
 from csv2xodr.simpletable import DataFrame
@@ -142,6 +142,84 @@ def _normalise_height(raw_value: Any, column_name: Optional[str]) -> Optional[fl
         # expressed in centimetres even if the column header lacks units.
         return height * 0.01
     return height
+
+
+def _coordinate_prefix(column_name: str, keywords: Tuple[str, ...]) -> Optional[str]:
+    lowered = column_name.strip().lower()
+    for keyword in keywords:
+        index = lowered.find(keyword)
+        if index != -1:
+            prefix = lowered[:index]
+            prefix = prefix.replace("_", " ").strip()
+            prefix = re.sub(r"[\s\(\[（【]+$", "", prefix)
+            if prefix:
+                return prefix
+    return None
+
+
+def _column_priority(column_name: str) -> int:
+    normalised = unicodedata.normalize("NFKC", column_name).lower()
+    digits = [int(token) for token in re.findall(r"\d+", normalised)]
+    if digits:
+        if 2 in digits:
+            return 0
+        if 1 in digits:
+            return 1
+        return 2
+    return 3
+
+
+def _coordinate_pairs(df_sign: DataFrame) -> List[Tuple[str, str]]:
+    lat_keywords = ("緯度", "latitude", "lat")
+    lon_keywords = ("経度", "longitude", "lon")
+
+    lat_columns: List[Tuple[str, Optional[str]]] = []
+    lon_columns: List[Tuple[str, Optional[str]]] = []
+
+    for column in df_sign.columns:
+        lowered = column.strip().lower()
+        if any(keyword in lowered for keyword in lat_keywords):
+            lat_columns.append((column, _coordinate_prefix(column, lat_keywords)))
+        if any(keyword in lowered for keyword in lon_keywords):
+            lon_columns.append((column, _coordinate_prefix(column, lon_keywords)))
+
+    if not lat_columns or not lon_columns:
+        return []
+
+    candidate_pairs: List[Tuple[str, str]] = []
+    seen: Set[Tuple[str, str]] = set()
+
+    for lat_col, lat_prefix in lat_columns:
+        matching = [lon_col for lon_col, lon_prefix in lon_columns if lon_prefix and lon_prefix == lat_prefix]
+        if not matching:
+            matching = [lon_col for lon_col, _ in lon_columns]
+        for lon_col in matching:
+            key = (lat_col, lon_col)
+            if key not in seen:
+                candidate_pairs.append(key)
+                seen.add(key)
+            break
+
+    if not candidate_pairs:
+        candidate_pairs.append((lat_columns[0][0], lon_columns[0][0]))
+
+    scored_pairs: List[Tuple[int, int, Tuple[str, str]]] = []
+    for lat_col, lon_col in candidate_pairs:
+        lat_series = df_sign[lat_col]
+        lon_series = df_sign[lon_col]
+        count = 0
+        for lat_val, lon_val in zip(lat_series.to_list(), lon_series.to_list()):
+            if _to_float(lat_val) is not None and _to_float(lon_val) is not None:
+                count += 1
+        if count > 0:
+            priority = min(_column_priority(lat_col), _column_priority(lon_col))
+            scored_pairs.append((priority, -count, (lat_col, lon_col)))
+
+    if scored_pairs:
+        scored_pairs.sort(key=lambda item: (item[0], item[1]))
+        return [pair for _, _, pair in scored_pairs]
+
+    return candidate_pairs
 
 
 def _to_int(value: Any) -> Optional[int]:
@@ -286,24 +364,7 @@ def generate_signals(
             or _find_column(df_sign, "sign", "identifier")
         )
 
-    lat_col = (
-        _find_column(df_sign, "座標2", "緯度")
-        or _find_column(df_sign, "座標２", "緯度")
-        or _find_column(df_sign, "緯度", "座標2")
-        or _find_column(df_sign, "緯度", "座標２")
-        or _find_column(df_sign, "緯度")
-        or _find_column(df_sign, "latitude")
-        or _find_column(df_sign, "lat")
-    )
-    lon_col = (
-        _find_column(df_sign, "座標2", "経度")
-        or _find_column(df_sign, "座標２", "経度")
-        or _find_column(df_sign, "経度", "座標2")
-        or _find_column(df_sign, "経度", "座標２")
-        or _find_column(df_sign, "経度")
-        or _find_column(df_sign, "longitude")
-        or _find_column(df_sign, "lon")
-    )
+    coordinate_pairs = _coordinate_pairs(df_sign)
 
     x_col = None
     y_col = None
@@ -348,14 +409,17 @@ def generate_signals(
             sample_x: Optional[float] = None
             sample_y: Optional[float] = None
 
-            if lat_col is not None and lon_col is not None and origin_lat is not None and origin_lon is not None:
-                lat_val = _to_float(row[lat_col])
-                lon_val = _to_float(row[lon_col])
-                if lat_val is not None and lon_val is not None:
+            if coordinate_pairs and origin_lat is not None and origin_lon is not None:
+                for lat_col, lon_col in coordinate_pairs:
+                    lat_val = _to_float(row[lat_col])
+                    lon_val = _to_float(row[lon_col])
+                    if lat_val is None or lon_val is None:
+                        continue
                     try:
-                        sample_x, sample_y = latlon_to_local_xy([lat_val], [lon_val], origin_lat, origin_lon)
-                        sample_x = float(sample_x[0])
-                        sample_y = float(sample_y[0])
+                        projected_x, projected_y = latlon_to_local_xy([lat_val], [lon_val], origin_lat, origin_lon)
+                        sample_x = float(projected_x[0])
+                        sample_y = float(projected_y[0])
+                        break
                     except Exception:  # pragma: no cover - defensive guard
                         sample_x = None
                         sample_y = None
