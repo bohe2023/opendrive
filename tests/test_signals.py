@@ -343,6 +343,56 @@ def test_generate_signals_prefers_coordinate2_latlon_columns():
     assert math.isclose(second["s"], 30.0, abs_tol=1e-3)
 
 
+def test_generate_signals_uses_non_empty_coordinate_pairs():
+    lat0 = 35.0
+    lon0 = 139.0
+
+    centerline = DataFrame(
+        {
+            "s": [0.0, 50.0],
+            "x": [0.0, 50.0],
+            "y": [0.0, 0.0],
+        }
+    )
+
+    def _xy_to_latlon(x_m: float, y_m: float) -> Tuple[float, float]:
+        r = 6378137.0
+        lat0_rad = math.radians(lat0)
+        lon0_rad = math.radians(lon0)
+        lat_rad = lat0_rad + y_m / r
+        lon_rad = lon0_rad + x_m / (r * math.cos((lat_rad + lat0_rad) / 2.0))
+        return math.degrees(lat_rad), math.degrees(lon_rad)
+
+    coords = [_xy_to_latlon(pos, 0.0) for pos in (0.0, 10.0, 20.0)]
+
+    df = DataFrame(
+        {
+            "Offset[cm]": ["1000", "1000", "1000"],
+            "最高速度値[km/h]": ["50", "60", "70"],
+            "座標1_緯度[deg]": [coords[0][0], "", ""],
+            "座標1_経度[deg]": [coords[0][1], "", ""],
+            "座標2_緯度[deg]": ["", coords[1][0], ""],
+            "座標2_経度[deg]": ["", coords[1][1], ""],
+            "座標3_緯度[deg]": ["", "", coords[2][0]],
+            "座標3_経度[deg]": ["", "", coords[2][1]],
+        }
+    )
+
+    result = generate_signals(
+        df,
+        country="JPN",
+        offset_mapper=lambda value: value,
+        sign_filename="PROFILETYPE_MPU_ZGM_SIGN_INFO.csv",
+        log_fn=lambda message: None,
+        centerline=centerline,
+        geo_origin=(lat0, lon0),
+    )
+
+    assert len(result.signals) == 3
+    s_values = [signal["s"] for signal in result.signals]
+    assert s_values == pytest.approx([0.0, 10.0, 20.0], abs=1e-3)
+
+
 def test_generate_signals_preserves_duplicate_s_positions():
     df = DataFrame(
         {
