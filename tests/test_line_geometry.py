@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from csv2xodr.line_geometry import build_line_geometry_lookup
+from csv2xodr.line_geometry import build_line_geometry_lookup, _resample_sequence_with_polynomial
 from csv2xodr.simpletable import DataFrame
 
 
@@ -354,3 +354,21 @@ def test_line_geometry_lookup_projects_onto_centerline():
     raw_y = [width + noise for noise in jitter]
     raw_diffs = [abs(raw_y[i + 1] - raw_y[i]) for i in range(len(raw_y) - 1)]
     assert sum(diffs) / len(diffs) < sum(raw_diffs) / len(raw_diffs)
+
+
+def test_resample_sequence_adds_points_for_tight_curves():
+    radius = 30.0
+    points = []
+    for idx in range(6):
+        angle = (math.pi / 4.0) * (idx / 5.0)
+        s_val = radius * angle
+        x_val = radius * math.cos(angle)
+        y_val = radius * math.sin(angle)
+        points.append((s_val, x_val, y_val, 0.0, None, None))
+
+    resampled = _resample_sequence_with_polynomial(points)
+    assert resampled is not None
+    s_vals = resampled["s"]
+    assert len(s_vals) > len(points)
+    gaps = [s_vals[i + 1] - s_vals[i] for i in range(len(s_vals) - 1)]
+    assert max(gaps) < 3.0
