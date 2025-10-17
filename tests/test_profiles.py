@@ -9,6 +9,7 @@ from csv2xodr.normalize.core import (
     build_superelevation_profile,
     _advance_pose,
     _merge_geometry_segments,
+    _suppress_curvature_spikes,
     _normalize_angle,
 )
 from csv2xodr.lane_spec import apply_shoulder_profile
@@ -222,6 +223,65 @@ def test_geometry_segments_remain_continuous():
             0.0,
             abs_tol=1e-9,
         )
+
+
+def test_curvature_spike_suppression_handles_short_sign_flips():
+    raw_segments = [
+        {"s0": 0.0, "s1": 5.0, "curvature": 0.02},
+        {"s0": 5.0, "s1": 5.2, "curvature": -0.12},
+        {"s0": 5.2, "s1": 10.0, "curvature": 0.021},
+    ]
+
+    simplified = _suppress_curvature_spikes(raw_segments)
+    assert len(simplified) == 2
+    assert math.isclose(simplified[0]["s0"], 0.0)
+    assert math.isclose(simplified[0]["s1"], 5.2)
+    assert simplified[0]["curvature"] > 0.0
+    assert math.isclose(simplified[1]["s0"], 5.2)
+    assert simplified[1]["curvature"] > 0.0
+
+    s_vals = [0.0]
+    x_vals = [0.0]
+    y_vals = [0.0]
+    hdg_vals = [0.0]
+
+    current_x = 0.0
+    current_y = 0.0
+    current_hdg = 0.0
+
+    for seg in simplified:
+        length = seg["s1"] - seg["s0"]
+        current_x, current_y, current_hdg = _advance_pose(
+            current_x,
+            current_y,
+            current_hdg,
+            seg["curvature"],
+            length,
+        )
+        s_vals.append(seg["s1"])
+        x_vals.append(current_x)
+        y_vals.append(current_y)
+        hdg_vals.append(current_hdg)
+
+    center = DataFrame(
+        {
+            "s": s_vals,
+            "x": x_vals,
+            "y": y_vals,
+            "hdg": hdg_vals,
+        }
+    )
+
+    geometry = build_geometry_segments(center, raw_segments)
+
+    assert geometry, "expected geometry segments to be generated"
+    assert math.isclose(
+        sum(seg["length"] for seg in geometry),
+        s_vals[-1],
+        rel_tol=1e-6,
+        abs_tol=1e-6,
+    )
+    assert all(seg.get("curvature", 0.0) >= -1e-6 for seg in geometry)
 
 
 def test_merge_geometry_segments_snaps_small_drift():

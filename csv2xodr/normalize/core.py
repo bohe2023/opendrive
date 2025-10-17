@@ -2028,6 +2028,124 @@ def _interpolate_centerline(centerline: DataFrame, target_s: float) -> Tuple[flo
     return x_vals[-1], y_vals[-1], hdg_vals[-1]
 
 
+def _suppress_curvature_spikes(
+    segments: List[Dict[str, float]],
+    *,
+    min_span: float = 0.4,
+    spike_curvature: float = 0.01,
+    curvature_similarity: float = 0.15,
+) -> List[Dict[str, float]]:
+    """Collapse very short curvature spans that oscillate in sign.
+
+    Shape-index based curvature samples occasionally encode centimetre-long
+    arcs whose curvature abruptly flips sign relative to the surrounding
+    segments.  Offsetting these spikes to generate lane boundaries amplifies
+    the oscillation and renders as visibly jagged white lines.  The source
+    geometry, however, remains smooth when the offending spikes are replaced
+    by their longer neighbours.
+
+    This helper trims suspicious spans before the planView approximation is
+    constructed so that downstream integration only sees curvature that varies
+    gradually along the reference line.
+    """
+
+    if not segments:
+        return []
+
+    # Normalise the entries to avoid mutating the caller's data while keeping
+    # track of any auxiliary metadata that may be present on each segment.
+    ordered: List[Dict[str, float]] = []
+    for raw in segments:
+        try:
+            start = float(raw["s0"])
+            end = float(raw["s1"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        if not math.isfinite(start) or not math.isfinite(end):
+            continue
+        if end - start <= 1e-9:
+            continue
+
+        entry = dict(raw)
+        entry["s0"] = start
+        entry["s1"] = end
+
+        curvature_raw = raw.get("curvature", 0.0)
+        try:
+            curvature = float(curvature_raw)
+        except (TypeError, ValueError):
+            curvature = 0.0
+        if not math.isfinite(curvature):
+            curvature = 0.0
+        entry["curvature"] = curvature
+        ordered.append(entry)
+
+    if not ordered:
+        return []
+
+    ordered.sort(key=lambda seg: seg["s0"])
+
+    def _segment_span(entry: Dict[str, float]) -> float:
+        return float(entry["s1"]) - float(entry["s0"])
+
+    def _curvature_info(entry: Optional[Dict[str, float]]) -> Tuple[Optional[float], float]:
+        if entry is None:
+            return None, 0.0
+        value = float(entry.get("curvature", 0.0))
+        if abs(value) <= 1e-12:
+            return None, value
+        return math.copysign(1.0, value), value
+
+    changed = True
+    while changed:
+        changed = False
+        for idx in range(1, len(ordered) - 1):
+            current = ordered[idx]
+            span = _segment_span(current)
+            curvature = float(current.get("curvature", 0.0))
+            if span >= min_span - 1e-9:
+                continue
+            if abs(curvature) < spike_curvature:
+                continue
+
+            prev_entry = ordered[idx - 1]
+            next_entry = ordered[idx + 1]
+            prev_sign, prev_curv = _curvature_info(prev_entry)
+            next_sign, next_curv = _curvature_info(next_entry)
+            curr_sign, _ = _curvature_info(current)
+
+            if curr_sign is None:
+                continue
+            if prev_sign is None or next_sign is None:
+                continue
+            if prev_sign != next_sign:
+                continue
+            if curr_sign == prev_sign:
+                continue
+
+            reference = max(abs(prev_curv), abs(next_curv), spike_curvature)
+            if abs(prev_curv - next_curv) > curvature_similarity * reference:
+                continue
+
+            prev_entry["s1"] = max(prev_entry["s1"], current["s1"])
+            if next_entry["s0"] < prev_entry["s1"]:
+                next_entry["s0"] = prev_entry["s1"]
+
+            del ordered[idx]
+            changed = True
+            break
+
+    cleaned: List[Dict[str, float]] = []
+    for seg in ordered:
+        span = _segment_span(seg)
+        if span <= 1e-9:
+            continue
+        cleaned.append(seg)
+
+    return cleaned
+
+
 def build_geometry_segments(
     centerline: DataFrame,
     curvature_segments: List[Dict[str, float]],
@@ -2035,6 +2153,10 @@ def build_geometry_segments(
     max_endpoint_deviation: float = 0.5,
     max_segment_length: float = 2.0,
 ) -> List[Dict[str, float]]:
+    if not curvature_segments:
+        return []
+
+    curvature_segments = _suppress_curvature_spikes(list(curvature_segments))
     if not curvature_segments:
         return []
 
