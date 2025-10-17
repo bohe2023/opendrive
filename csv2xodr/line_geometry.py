@@ -485,6 +485,8 @@ def build_line_geometry_lookup(
     return lookup
 
 RESAMPLE_STEP_METERS = 10.0
+RESAMPLE_MIN_STEP_METERS = 0.5
+RESAMPLE_ARC_ERROR_TOLERANCE = 0.02
 CENTERLINE_RESAMPLE_STEP = 3.0
 CENTERLINE_SMOOTHING_WINDOW = 4.0
 
@@ -968,16 +970,22 @@ def _resample_sequence_with_polynomial(
             dy_ds.append((y_vals[idx + 1] - y_vals[idx - 1]) / span_total)
 
     discrete_curv = _estimate_discrete_curvature(points)
+    discrete_curv_for_sign = list(discrete_curv)
+    if len(discrete_curv_for_sign) > 1:
+        discrete_curv_for_sign[0] = discrete_curv_for_sign[1]
+        discrete_curv_for_sign[-1] = discrete_curv_for_sign[-2]
 
     segments: List[Dict[str, Any]] = []
     for idx in range(len(points) - 1):
         length = arc_lengths[idx + 1] - arc_lengths[idx]
 
         segment_sign = 0.0
-        if discrete_curv:
+        if discrete_curv_for_sign:
             for candidate in (
-                discrete_curv[idx] if idx < len(discrete_curv) else None,
-                discrete_curv[idx + 1] if idx + 1 < len(discrete_curv) else None,
+                discrete_curv_for_sign[idx] if idx < len(discrete_curv_for_sign) else None,
+                discrete_curv_for_sign[idx + 1]
+                if idx + 1 < len(discrete_curv_for_sign)
+                else None,
             ):
                 if candidate is not None and abs(candidate) > 1e-12:
                     segment_sign = math.copysign(1.0, candidate)
@@ -1028,17 +1036,47 @@ def _resample_sequence_with_polynomial(
     if not segments:
         return None
 
-    targets: List[float] = []
-    current = 0.0
-    while current < total_length:
-        targets.append(current)
-        current += step
-    if not targets or abs(targets[-1] - total_length) > 1e-6:
-        targets.append(total_length)
+    curvature_magnitudes: List[float] = []
+    for idx in range(len(points)):
+        curv_val = 0.0
+        if discrete_curv_for_sign and idx < len(discrete_curv_for_sign):
+            candidate = discrete_curv_for_sign[idx]
+            if candidate is not None:
+                curv_val = abs(float(candidate))
+        curvature_magnitudes.append(curv_val)
 
-    combined = sorted(targets + arc_lengths)
+    targets: List[float] = []
+    for idx, seg in enumerate(segments):
+        start = seg["start"]
+        end = seg["end"]
+        if not targets:
+            targets.append(start)
+        local_step = float(step)
+
+        curvature_hint = 0.0
+        for candidate in (
+            curvature_magnitudes[idx] if idx < len(curvature_magnitudes) else None,
+            curvature_magnitudes[idx + 1] if idx + 1 < len(curvature_magnitudes) else None,
+        ):
+            if candidate is None:
+                continue
+            curvature_hint = max(curvature_hint, float(candidate))
+
+        if curvature_hint > 1e-9:
+            max_span = math.sqrt(max(0.0, 8.0 * RESAMPLE_ARC_ERROR_TOLERANCE / curvature_hint))
+            if max_span > 0.0:
+                local_step = min(local_step, max_span)
+
+        local_step = max(local_step, RESAMPLE_MIN_STEP_METERS)
+
+        position = start + local_step
+        while position < end - 1e-9:
+            targets.append(position)
+            position += local_step
+        targets.append(end)
+
     dedup_targets: List[float] = []
-    for value in combined:
+    for value in targets:
         if not dedup_targets or abs(value - dedup_targets[-1]) > 1e-9:
             dedup_targets.append(value)
     targets = dedup_targets
@@ -1080,6 +1118,23 @@ def _resample_sequence_with_polynomial(
             curvature[0] = curvature[1]
         if abs(curvature[-1]) <= 1e-9:
             curvature[-1] = curvature[-2]
+        if curvature[0] * curvature[1] < 0.0:
+            curvature[0] = curvature[1]
+        if curvature[-1] * curvature[-2] < 0.0:
+            curvature[-1] = curvature[-2]
+        if discrete_curv_for_sign:
+            reference = _interp_values(
+                s_vals,
+                [float(val) for val in discrete_curv_for_sign],
+                s_new,
+            )
+            for idx, ref in enumerate(reference):
+                if abs(ref) <= 1e-9:
+                    continue
+                if curvature[idx] * ref < 0.0:
+                    curvature[idx] = abs(curvature[idx]) if ref > 0.0 else -abs(curvature[idx])
+                if abs(curvature[idx] - ref) > 0.05 * abs(ref):
+                    curvature[idx] = ref
 
     return {
         "s": s_new,

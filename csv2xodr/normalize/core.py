@@ -984,6 +984,23 @@ def build_offset_mapper(centerline: DataFrame) -> Callable[[float], float]:
     if not offsets or len(offsets) != len(s_vals):
         return lambda value: float(value)
 
+    first_slope: Optional[float] = None
+    last_slope: Optional[float] = None
+    for i in range(1, len(offsets)):
+        delta_offset = offsets[i] - offsets[i - 1]
+        delta_s = s_vals[i] - s_vals[i - 1]
+        if delta_offset <= 1e-9:
+            continue
+        slope = delta_s / delta_offset
+        if first_slope is None:
+            first_slope = slope
+        last_slope = slope
+
+    if first_slope is None:
+        first_slope = 1.0
+    if last_slope is None:
+        last_slope = first_slope
+
     def mapper(value: float) -> float:
         if not isinstance(value, (int, float)):
             try:
@@ -992,7 +1009,7 @@ def build_offset_mapper(centerline: DataFrame) -> Callable[[float], float]:
                 return s_vals[0]
 
         if value <= offsets[0]:
-            return s_vals[0]
+            return float(s_vals[0] + (value - offsets[0]) * first_slope)
 
         for i in range(1, len(offsets)):
             lo = offsets[i - 1]
@@ -1003,7 +1020,7 @@ def build_offset_mapper(centerline: DataFrame) -> Callable[[float], float]:
                 t = (value - lo) / (hi - lo)
                 return s_vals[i - 1] + t * (s_vals[i] - s_vals[i - 1])
 
-        return s_vals[-1]
+        return float(s_vals[-1] + (value - offsets[-1]) * last_slope)
 
     return mapper
 
