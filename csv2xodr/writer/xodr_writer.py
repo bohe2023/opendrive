@@ -1,7 +1,7 @@
 from xml.etree.ElementTree import Element, SubElement, tostring
 import math
 import xml.dom.minidom as minidom
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Sequence, Tuple
 
 
 def _format_float(value: float, precision: int = 9) -> str:
@@ -90,6 +90,8 @@ def _build_param_poly3_segment(
     ty0: float,
     tx1: float,
     ty1: float,
+    curvature_start: Optional[float] = None,
+    curvature_end: Optional[float] = None,
 ) -> Optional[Dict[str, float]]:
     length = s1 - s0
     if not math.isfinite(length) or length <= 1e-6:
@@ -168,7 +170,35 @@ def _build_param_poly3_segment(
     ):
         return None
 
+    spiral_curvature_start: Optional[float]
+    spiral_curvature_end: Optional[float]
+    spiral_curvature_start = None
+    spiral_curvature_end = None
+    if curvature_start is not None and curvature_end is not None:
+        try:
+            spiral_curvature_start = float(curvature_start)
+            spiral_curvature_end = float(curvature_end)
+        except (TypeError, ValueError):
+            spiral_curvature_start = None
+            spiral_curvature_end = None
+
+    if (
+        spiral_curvature_start is not None
+        and spiral_curvature_end is not None
+        and math.isfinite(spiral_curvature_start)
+        and math.isfinite(spiral_curvature_end)
+    ):
+        if abs(spiral_curvature_end - spiral_curvature_start) >= 1e-4:
+            return {
+                "type": "spiral",
+                "length": L,
+                "heading": heading,
+                "curvStart": spiral_curvature_start,
+                "curvEnd": spiral_curvature_end,
+            }
+
     return {
+        "type": "paramPoly3",
         "length": L,
         "heading": heading,
         "aU": 0.0,
@@ -180,6 +210,262 @@ def _build_param_poly3_segment(
         "cV": c_v,
         "dV": d_v,
     }
+
+
+def _prepare_explicit_geometry(
+    s_vals: Sequence[float],
+    x_vals: Sequence[float],
+    y_vals: Sequence[float],
+    z_vals: Sequence[float],
+    tangent_x_vals: Sequence[float],
+    tangent_y_vals: Sequence[float],
+    curvature_vals: Sequence[float],
+) -> Tuple[
+    List[float],
+    List[float],
+    List[float],
+    List[float],
+    List[float],
+    List[float],
+    List[float],
+    bool,
+    bool,
+]:
+    def _safe_to_float_list(values: Sequence[float]) -> List[float]:
+        result: List[float] = []
+        for val in values:
+            if val is None:
+                result.append(math.nan)
+                continue
+            try:
+                result.append(float(val))
+            except (TypeError, ValueError):
+                result.append(math.nan)
+        return result
+
+    try:
+        import numpy as np  # type: ignore
+    except ImportError:
+        return (
+            _safe_to_float_list(s_vals),
+            _safe_to_float_list(x_vals),
+            _safe_to_float_list(y_vals),
+            _safe_to_float_list(z_vals),
+            _safe_to_float_list(tangent_x_vals),
+            _safe_to_float_list(tangent_y_vals),
+            _safe_to_float_list(curvature_vals),
+            len(tangent_x_vals) == len(s_vals) == len(tangent_y_vals),
+            len(curvature_vals) == len(s_vals),
+        )
+
+    try:
+        from scipy.signal import savgol_filter  # type: ignore
+    except Exception:  # pragma: no cover - optional dependency
+        savgol_filter = None  # type: ignore
+
+    try:
+        s_np = np.asarray(s_vals, dtype=float)
+        x_np = np.asarray(x_vals, dtype=float)
+        y_np = np.asarray(y_vals, dtype=float)
+        z_np = np.asarray(z_vals, dtype=float)
+    except (TypeError, ValueError):
+        return (
+            _safe_to_float_list(s_vals),
+            _safe_to_float_list(x_vals),
+            _safe_to_float_list(y_vals),
+            _safe_to_float_list(z_vals),
+            _safe_to_float_list(tangent_x_vals),
+            _safe_to_float_list(tangent_y_vals),
+            _safe_to_float_list(curvature_vals),
+            len(tangent_x_vals) == len(s_vals) == len(tangent_y_vals),
+            len(curvature_vals) == len(s_vals),
+        )
+
+    if s_np.size < 4:
+        return (
+            _safe_to_float_list(s_vals),
+            _safe_to_float_list(x_vals),
+            _safe_to_float_list(y_vals),
+            _safe_to_float_list(z_vals),
+            _safe_to_float_list(tangent_x_vals),
+            _safe_to_float_list(tangent_y_vals),
+            _safe_to_float_list(curvature_vals),
+            len(tangent_x_vals) == len(s_vals) == len(tangent_y_vals),
+            len(curvature_vals) == len(s_vals),
+        )
+
+    finite_mask = (
+        np.isfinite(s_np)
+        & np.isfinite(x_np)
+        & np.isfinite(y_np)
+        & np.isfinite(z_np)
+    )
+
+    tx_np = ty_np = None
+    has_tangent = len(tangent_x_vals) == len(s_vals) == len(tangent_y_vals)
+    if has_tangent:
+        try:
+            tx_np = np.asarray(tangent_x_vals, dtype=float)
+            ty_np = np.asarray(tangent_y_vals, dtype=float)
+            finite_mask &= np.isfinite(tx_np) & np.isfinite(ty_np)
+        except (TypeError, ValueError):
+            tx_np = ty_np = None
+            has_tangent = False
+
+    k_np = None
+    has_curvature = len(curvature_vals) == len(s_vals)
+    if has_curvature:
+        try:
+            k_np = np.asarray(curvature_vals, dtype=float)
+            finite_mask &= np.isfinite(k_np)
+        except (TypeError, ValueError):
+            k_np = None
+            has_curvature = False
+
+    if np.count_nonzero(finite_mask) < 4:
+        return (
+            _safe_to_float_list(s_vals),
+            _safe_to_float_list(x_vals),
+            _safe_to_float_list(y_vals),
+            _safe_to_float_list(z_vals),
+            _safe_to_float_list(tangent_x_vals),
+            _safe_to_float_list(tangent_y_vals),
+            _safe_to_float_list(curvature_vals),
+            has_tangent,
+            has_curvature,
+        )
+
+    s_np = s_np[finite_mask]
+    x_np = x_np[finite_mask]
+    y_np = y_np[finite_mask]
+    z_np = z_np[finite_mask]
+    if tx_np is not None and ty_np is not None:
+        tx_np = tx_np[finite_mask]
+        ty_np = ty_np[finite_mask]
+    if k_np is not None:
+        k_np = k_np[finite_mask]
+
+    diffs = np.diff(s_np)
+    keep = np.concatenate(([True], diffs > 5e-4))
+    s_np = s_np[keep]
+    x_np = x_np[keep]
+    y_np = y_np[keep]
+    z_np = z_np[keep]
+    if tx_np is not None and ty_np is not None:
+        tx_np = tx_np[keep]
+        ty_np = ty_np[keep]
+    if k_np is not None:
+        k_np = k_np[keep]
+
+    if s_np.size < 4:
+        return (
+            s_np.tolist(),
+            x_np.tolist(),
+            y_np.tolist(),
+            z_np.tolist(),
+            tx_np.tolist() if tx_np is not None else _safe_to_float_list(tangent_x_vals),
+            ty_np.tolist() if ty_np is not None else _safe_to_float_list(tangent_y_vals),
+            k_np.tolist() if k_np is not None else _safe_to_float_list(curvature_vals),
+            tx_np is not None and ty_np is not None,
+            k_np is not None,
+        )
+
+    cut_values: List[float] = []
+    if k_np is not None and k_np.size >= 3:
+        k_s = k_np
+        if savgol_filter is not None and k_s.size >= 5:
+            window = min(max(int(k_s.size // 2 * 2 + 1), 5), 15)
+            try:
+                k_s = savgol_filter(k_s, window_length=window, polyorder=3, mode="interp")
+            except ValueError:
+                pass
+        try:
+            k_diff = np.abs(np.gradient(k_s, s_np))
+        except Exception:
+            k_diff = np.zeros_like(k_s)
+        cut_mask = (k_diff > 1e-4) & (np.abs(k_s) > 1e-3)
+        cut_values = [float(s_np[idx]) for idx in np.flatnonzero(cut_mask)]
+
+    target_spacing = 5.0
+    new_s: List[float] = [float(s_np[0])]
+    anchors = sorted(set(cut_values + [float(s_np[-1])]))
+    last = new_s[0]
+    for anchor in anchors:
+        if anchor <= new_s[-1] + 1e-4:
+            continue
+        while anchor - last > target_spacing:
+            last += target_spacing
+            if anchor - last <= 1e-4:
+                break
+            new_s.append(last)
+        if anchor - new_s[-1] > 1e-4:
+            new_s.append(anchor)
+        last = new_s[-1]
+
+    if new_s[-1] < float(s_np[-1]) - 1e-4:
+        new_s.append(float(s_np[-1]))
+
+    s_new = np.asarray(new_s, dtype=float)
+    s_new.sort()
+    s_new = np.unique(s_new)
+    if s_new.size < 2:
+        return (
+            s_np.tolist(),
+            x_np.tolist(),
+            y_np.tolist(),
+            z_np.tolist(),
+            tx_np.tolist() if tx_np is not None else _safe_to_float_list(tangent_x_vals),
+            ty_np.tolist() if ty_np is not None else _safe_to_float_list(tangent_y_vals),
+            k_np.tolist() if k_np is not None else _safe_to_float_list(curvature_vals),
+            tx_np is not None and ty_np is not None,
+            k_np is not None,
+        )
+
+    x_new = np.interp(s_new, s_np, x_np)
+    y_new = np.interp(s_new, s_np, y_np)
+    z_new = np.interp(s_new, s_np, z_np)
+
+    edge_order = 2 if s_new.size > 2 else 1
+    dx_ds = np.gradient(x_new, s_new, edge_order=edge_order)
+    dy_ds = np.gradient(y_new, s_new, edge_order=edge_order)
+    tangent_norm = np.hypot(dx_ds, dy_ds)
+    tangent_norm[tangent_norm <= 1e-9] = 1.0
+    tx_new = dx_ds / tangent_norm
+    ty_new = dy_ds / tangent_norm
+
+    curvature_new = None
+    if s_new.size >= 3:
+        ddx_ds = np.gradient(dx_ds, s_new, edge_order=edge_order)
+        ddy_ds = np.gradient(dy_ds, s_new, edge_order=edge_order)
+        denom = tangent_norm ** 3
+        curvature_new = np.zeros_like(dx_ds)
+        valid = denom > 1e-9
+        curvature_new[valid] = (
+            (dx_ds[valid] * ddy_ds[valid] - dy_ds[valid] * ddx_ds[valid]) / denom[valid]
+        )
+        curvature_new[~valid] = 0.0
+        if savgol_filter is not None and curvature_new.size >= 5:
+            window = min(max(int(curvature_new.size // 2 * 2 + 1), 5), 15)
+            try:
+                curvature_new = savgol_filter(
+                    curvature_new, window_length=window, polyorder=3, mode="interp"
+                )
+            except ValueError:
+                pass
+    elif k_np is not None:
+        curvature_new = np.interp(s_new, s_np, k_np)
+
+    return (
+        s_new.tolist(),
+        x_new.tolist(),
+        y_new.tolist(),
+        z_new.tolist(),
+        tx_new.tolist(),
+        ty_new.tolist(),
+        curvature_new.tolist() if curvature_new is not None else [],
+        True,
+        curvature_new is not None,
+    )
 
 def write_xodr(
     centerline,
@@ -268,7 +554,7 @@ def write_xodr(
                     "s": _format_float(seg["s"], precision=12),
                     "x": _format_float(seg["x"], precision=12),
                     "y": _format_float(seg["y"], precision=12),
-                    "hdg": _format_float(seg["hdg"], precision=15),
+                    "hdg": _format_float(seg["hdg"], precision=17),
                     "length": _format_float(length, precision=12),
                 },
             )
@@ -321,7 +607,7 @@ def write_xodr(
                     "s": _format_float(s, precision=12),
                     "x": _format_float(x, precision=12),
                     "y": _format_float(y, precision=12),
-                    "hdg": _format_float(hdg, precision=15),
+                    "hdg": _format_float(hdg, precision=17),
                     "length": _format_float(seg_len, precision=12),
                 },
             )
@@ -469,17 +755,39 @@ def write_xodr(
                     geometry = road_mark.get("geometry")
 
                 if geometry:
-                    s_vals = geometry.get("s") or []
-                    x_vals = geometry.get("x") or []
-                    y_vals = geometry.get("y") or []
-                    z_vals = geometry.get("z") or []
-                    curvature_vals = geometry.get("curvature") or []
-                    tangent_x_vals = geometry.get("tangent_x") or []
-                    tangent_y_vals = geometry.get("tangent_y") or []
-                    has_curvature = len(curvature_vals) == len(s_vals)
-                    has_tangent = (
-                        len(tangent_x_vals) == len(s_vals) == len(tangent_y_vals)
+                    raw_s_vals = geometry.get("s") or []
+                    raw_x_vals = geometry.get("x") or []
+                    raw_y_vals = geometry.get("y") or []
+                    raw_z_vals = geometry.get("z") or []
+                    raw_curvature_vals = geometry.get("curvature") or []
+                    raw_tangent_x_vals = geometry.get("tangent_x") or []
+                    raw_tangent_y_vals = geometry.get("tangent_y") or []
+
+                    (
+                        s_vals,
+                        x_vals,
+                        y_vals,
+                        z_vals,
+                        tangent_x_vals,
+                        tangent_y_vals,
+                        curvature_vals,
+                        has_tangent,
+                        has_curvature,
+                    ) = _prepare_explicit_geometry(
+                        raw_s_vals,
+                        raw_x_vals,
+                        raw_y_vals,
+                        raw_z_vals,
+                        raw_tangent_x_vals,
+                        raw_tangent_y_vals,
+                        raw_curvature_vals,
                     )
+
+                    if has_curvature and len(curvature_vals) != len(s_vals):
+                        has_curvature = False
+
+                    if has_tangent and len(tangent_x_vals) != len(s_vals):
+                        has_tangent = False
 
                     if (
                         len(s_vals) == len(x_vals)
@@ -489,8 +797,8 @@ def write_xodr(
                     ):
                         if not explicit_geometry_written:
                             explicit_geometry_written = True
-                            header.set("revMinor", "6")
-                            header.set("version", "1.06")
+                            header.set("revMinor", "4")
+                            header.set("version", "1.4")
 
                         explicit_el = SubElement(rm_el, "explicit")
 
@@ -511,12 +819,26 @@ def write_xodr(
                                 continue
 
                             curvature_val: Optional[float] = None
+                            curvature_val_next: Optional[float] = None
                             if has_curvature:
                                 try:
                                     raw_curv = curvature_vals[idx]
                                     curvature_val = float(raw_curv) if raw_curv is not None else None
+                                    raw_curv_next = curvature_vals[idx + 1]
+                                    curvature_val_next = (
+                                        float(raw_curv_next) if raw_curv_next is not None else None
+                                    )
                                 except (TypeError, ValueError):
                                     curvature_val = None
+                                    curvature_val_next = None
+                                else:
+                                    if curvature_val is not None and not math.isfinite(curvature_val):
+                                        curvature_val = None
+                                    if (
+                                        curvature_val_next is not None
+                                        and not math.isfinite(curvature_val_next)
+                                    ):
+                                        curvature_val_next = None
 
                             param_poly: Optional[Dict[str, float]] = None
                             if has_tangent:
@@ -536,6 +858,8 @@ def write_xodr(
                                         ty0,
                                         tx1,
                                         ty1,
+                                        curvature_val,
+                                        curvature_val_next,
                                     )
                                 except (TypeError, ValueError):
                                     param_poly = None
@@ -546,26 +870,40 @@ def write_xodr(
                                     "x": _format_float(x0, precision=12),
                                     "y": _format_float(y0, precision=12),
                                     "z": _format_float(z0, precision=12),
-                                    "hdg": _format_float(param_poly["heading"], precision=15),
+                                    "hdg": _format_float(param_poly["heading"], precision=17),
                                     "length": _format_float(param_poly["length"], precision=12),
                                 }
 
                                 geom_el = SubElement(explicit_el, "geometry", geom_attrs)
-                                SubElement(
-                                    geom_el,
-                                    "paramPoly3",
-                                    {
-                                        "aU": _format_float(param_poly["aU"], precision=12),
-                                        "bU": _format_float(param_poly["bU"], precision=12),
-                                        "cU": _format_float(param_poly["cU"], precision=12),
-                                        "dU": _format_float(param_poly["dU"], precision=12),
-                                        "aV": _format_float(param_poly["aV"], precision=12),
-                                        "bV": _format_float(param_poly["bV"], precision=12),
-                                        "cV": _format_float(param_poly["cV"], precision=12),
-                                        "dV": _format_float(param_poly["dV"], precision=12),
-                                        "pRange": "arcLength",
-                                    },
-                                )
+                                if param_poly.get("type") == "spiral":
+                                    SubElement(
+                                        geom_el,
+                                        "spiral",
+                                        {
+                                            "curvStart": _format_float(
+                                                param_poly["curvStart"], precision=12
+                                            ),
+                                            "curvEnd": _format_float(
+                                                param_poly["curvEnd"], precision=12
+                                            ),
+                                        },
+                                    )
+                                else:
+                                    SubElement(
+                                        geom_el,
+                                        "paramPoly3",
+                                        {
+                                            "aU": _format_float(param_poly["aU"], precision=12),
+                                            "bU": _format_float(param_poly["bU"], precision=12),
+                                            "cU": _format_float(param_poly["cU"], precision=12),
+                                            "dU": _format_float(param_poly["dU"], precision=12),
+                                            "aV": _format_float(param_poly["aV"], precision=12),
+                                            "bV": _format_float(param_poly["bV"], precision=12),
+                                            "cV": _format_float(param_poly["cV"], precision=12),
+                                            "dV": _format_float(param_poly["dV"], precision=12),
+                                            "pRange": "arcLength",
+                                        },
+                                    )
                                 continue
 
                             arc_heading = None
@@ -580,7 +918,7 @@ def write_xodr(
                                     "x": _format_float(x0, precision=12),
                                     "y": _format_float(y0, precision=12),
                                     "z": _format_float(z0, precision=12),
-                                    "hdg": _format_float(arc_heading, precision=15),
+                                    "hdg": _format_float(arc_heading, precision=17),
                                     "length": _format_float(segment_length, precision=12),
                                 }
 
@@ -603,7 +941,7 @@ def write_xodr(
                                 "x": _format_float(x0, precision=12),
                                 "y": _format_float(y0, precision=12),
                                 "z": _format_float(z0, precision=12),
-                                "hdg": _format_float(hdg, precision=15),
+                                "hdg": _format_float(hdg, precision=17),
                                 "length": _format_float(chord_length, precision=12),
                             }
 
