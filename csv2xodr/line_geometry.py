@@ -367,6 +367,19 @@ def build_line_geometry_lookup(
 
             if current:
                 prev_s, prev_x, prev_y, prev_z, _, _ = current[-1]
+                if s_float <= prev_s + 1e-9:
+                    # The source CSV occasionally supplies the same longitudinal
+                    # offset for consecutive samples even though their
+                    # coordinates differ.  Using the offset verbatim would
+                    # produce duplicate ``<geometry s="...">`` entries with
+                    # zero length segments.  Fall back to the travelled distance
+                    # between the points to keep ``s`` strictly increasing.
+                    dx = x_float - prev_x
+                    dy = y_float - prev_y
+                    dz = z_float - prev_z
+                    fallback = math.sqrt(dx * dx + dy * dy + dz * dz)
+                    min_increment = 1e-6
+                    s_float = prev_s + max(fallback, min_increment)
                 if (
                     abs(s_float - prev_s) <= 1e-9
                     and abs(x_float - prev_x) <= 1e-9
