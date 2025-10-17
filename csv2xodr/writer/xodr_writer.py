@@ -273,10 +273,30 @@ def write_xodr(
                 },
             )
             curvature = float(seg.get("curvature", 0.0))
-            if abs(curvature) > 1e-9:
-                SubElement(geom, "arc", {"curvature": _format_float(curvature, precision=12)})
+            curvature_start = float(seg.get("curvature_start", curvature))
+            curvature_end = float(seg.get("curvature_end", curvature))
+            curvature_tol = 5e-5
+            if (
+                abs(curvature_start - curvature_end) <= curvature_tol
+                and abs(curvature - curvature_start) <= curvature_tol
+            ):
+                if abs(curvature) > 1e-9:
+                    SubElement(
+                        geom,
+                        "arc",
+                        {"curvature": _format_float(curvature, precision=12)},
+                    )
+                else:
+                    SubElement(geom, "line")
             else:
-                SubElement(geom, "line")
+                SubElement(
+                    geom,
+                    "spiral",
+                    {
+                        "curvatureStart": _format_float(curvature_start, precision=12),
+                        "curvatureEnd": _format_float(curvature_end, precision=12),
+                    },
+                )
     else:
         for i in range(len(centerline) - 1):
             s = float(centerline["s"].iloc[i])

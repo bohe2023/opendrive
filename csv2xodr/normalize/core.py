@@ -8,7 +8,7 @@ from csv2xodr.simpletable import DataFrame
 from csv2xodr.topology.core import _canonical_numeric
 
 
-CURVATURE_RESAMPLE_STEP = 10.0
+CURVATURE_RESAMPLE_STEP = 5.0
 CURVATURE_MIN_POLY_DEGREE = 3
 CURVATURE_MAX_POLY_DEGREE = 5
 
@@ -425,6 +425,54 @@ def _resample_parametric_curve(
                         y_vals = savgol_filter(y_vals, window_length, poly_order).tolist()
                     except Exception:  # pragma: no cover - 失败时回退原序列
                         pass
+        else:
+            try:  # pragma: no cover - numpy 可能缺失
+                import numpy as np  # type: ignore
+            except Exception:  # pragma: no cover - 缺少 numpy 时静默跳过
+                np = None  # type: ignore
+
+            if np is not None and len(x_vals) >= 3:  # type: ignore[truthy-bool]
+                arc_arr = np.asarray(arc_lengths, dtype=float)  # type: ignore[attr-defined]
+                x_arr = np.asarray(x_vals, dtype=float)  # type: ignore[attr-defined]
+                y_arr = np.asarray(y_vals, dtype=float)  # type: ignore[attr-defined]
+
+                window = max(3, int(max(5.0, step * 0.5) / max(target_spacing, 1e-6)))
+                window = min(window if window % 2 == 1 else window + 1, len(x_vals))
+                if window < 3:
+                    window = 3 if len(x_vals) >= 3 else len(x_vals)
+                half = max(1, window // 2)
+
+                smoothed_x: List[float] = []
+                smoothed_y: List[float] = []
+
+                for idx in range(len(x_vals)):
+                    left = max(0, idx - half)
+                    right = min(len(x_vals), idx + half + 1)
+                    if right - left < 2:
+                        smoothed_x.append(float(x_vals[idx]))
+                        smoothed_y.append(float(y_vals[idx]))
+                        continue
+
+                    slice_arc = arc_arr[left:right]
+                    slice_x = x_arr[left:right]
+                    slice_y = y_arr[left:right]
+                    degree = min(3, len(slice_arc) - 1)
+                    if degree < 1:
+                        smoothed_x.append(float(x_vals[idx]))
+                        smoothed_y.append(float(y_vals[idx]))
+                        continue
+
+                    try:
+                        coeff_x = np.polyfit(slice_arc, slice_x, degree)  # type: ignore[attr-defined]
+                        coeff_y = np.polyfit(slice_arc, slice_y, degree)  # type: ignore[attr-defined]
+                        smoothed_x.append(float(np.polyval(coeff_x, arc_arr[idx])))  # type: ignore[attr-defined]
+                        smoothed_y.append(float(np.polyval(coeff_y, arc_arr[idx])))  # type: ignore[attr-defined]
+                    except Exception:  # pragma: no cover - 防御性兜底
+                        smoothed_x.append(float(x_vals[idx]))
+                        smoothed_y.append(float(y_vals[idx]))
+
+                x_vals = smoothed_x
+                y_vals = smoothed_y
 
     filtered: List[Tuple[float, float, float, float]] = []
     last_arc: Optional[float] = None
@@ -1751,6 +1799,16 @@ def build_curvature_profile(
         if not bucket_segments:
             continue
 
+        if mapped_s:
+            bucket_segments = _merge_segments_by_breakpoints(bucket_segments, mapped_s)
+
+        bucket_segments = _merge_short_curvature_segments(
+            bucket_segments,
+            min_span=max(0.5, CURVATURE_RESAMPLE_STEP * 0.1),
+        )
+        if not bucket_segments:
+            continue
+
         if centerline is not None:
             start_s = bucket_segments[0]["s0"]
             end_s = bucket_segments[-1]["s1"]
@@ -2146,6 +2204,162 @@ def _suppress_curvature_spikes(
     return cleaned
 
 
+def _merge_short_curvature_segments(
+    segments: List[Dict[str, float]],
+    *,
+    min_span: float = 0.5,
+) -> List[Dict[str, float]]:
+    """Merge extremely short curvature spans into neighbouring segments."""
+
+    if not segments:
+        return []
+
+    ordered = [dict(seg) for seg in sorted(segments, key=lambda item: float(item.get("s0", 0.0)))]
+    changed = False
+
+    for idx, seg in enumerate(ordered):
+        if seg is None:
+            continue
+        try:
+            start = float(seg["s0"])
+            end = float(seg["s1"])
+            curvature = float(seg.get("curvature", 0.0))
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        if not math.isfinite(start) or not math.isfinite(end):
+            continue
+
+        span = end - start
+        if span <= 1e-9 or span >= min_span or len(ordered) == 1:
+            continue
+
+        prev_idx = None
+        for lookback in range(idx - 1, -1, -1):
+            candidate = ordered[lookback]
+            if candidate is None:
+                continue
+            try:
+                cand_span = float(candidate["s1"]) - float(candidate["s0"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if cand_span > 1e-9:
+                prev_idx = lookback
+                break
+
+        next_idx = None
+        for lookahead in range(idx + 1, len(ordered)):
+            candidate = ordered[lookahead]
+            if candidate is None:
+                continue
+            try:
+                cand_span = float(candidate["s1"]) - float(candidate["s0"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if cand_span > 1e-9:
+                next_idx = lookahead
+                break
+
+        if prev_idx is None and next_idx is None:
+            continue
+
+        if prev_idx is not None and next_idx is not None:
+            try:
+                prev_curv = float(ordered[prev_idx].get("curvature", 0.0))
+            except (TypeError, ValueError):
+                prev_curv = 0.0
+            try:
+                next_curv = float(ordered[next_idx].get("curvature", 0.0))
+            except (TypeError, ValueError):
+                next_curv = 0.0
+            merge_prev = abs(prev_curv - curvature) <= abs(next_curv - curvature) + 1e-12
+        else:
+            merge_prev = prev_idx is not None
+
+        if merge_prev and prev_idx is not None:
+            prev_seg = ordered[prev_idx]
+            prev_span = float(prev_seg["s1"]) - float(prev_seg["s0"])
+            total = prev_span + span
+            if total > 0:
+                prev_seg["curvature"] = (
+                    float(prev_seg.get("curvature", 0.0)) * prev_span + curvature * span
+                ) / total
+                prev_seg["s1"] = end
+                ordered[idx] = None
+                changed = True
+        elif next_idx is not None:
+            next_seg = ordered[next_idx]
+            next_span = float(next_seg["s1"]) - float(next_seg["s0"])
+            total = next_span + span
+            if total > 0:
+                next_seg["curvature"] = (
+                    float(next_seg.get("curvature", 0.0)) * next_span + curvature * span
+                ) / total
+                next_seg["s0"] = start
+                ordered[idx] = None
+                changed = True
+
+    filtered = [seg for seg in ordered if seg is not None]
+    if not changed:
+        return segments
+    return filtered
+
+
+def _merge_segments_by_breakpoints(
+    segments: List[Dict[str, float]],
+    breakpoints: Iterable[float],
+    *,
+    tol: float = 1e-6,
+) -> List[Dict[str, float]]:
+    """Collapse segments so they align with the provided breakpoints."""
+
+    ordered = sorted(segments, key=lambda seg: float(seg.get("s0", 0.0)))
+    points = sorted({float(b) for b in breakpoints if math.isfinite(float(b))})
+    if len(points) < 2 or not ordered:
+        return ordered
+
+    merged: List[Dict[str, float]] = []
+    break_idx = 0
+    current_end = points[break_idx + 1]
+    accumulator: Optional[Dict[str, float]] = None
+    acc_length = 0.0
+
+    for seg in ordered:
+        try:
+            start = float(seg["s0"])
+            end = float(seg["s1"])
+            curvature = float(seg.get("curvature", 0.0))
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        while break_idx < len(points) - 2 and start >= current_end - tol:
+            break_idx += 1
+            current_end = points[break_idx + 1]
+            accumulator = None
+            acc_length = 0.0
+
+        if accumulator is None:
+            accumulator = dict(seg)
+            acc_length = end - start
+            merged.append(accumulator)
+        else:
+            prev_len = acc_length
+            seg_len = end - start
+            total = prev_len + seg_len
+            accumulator["s1"] = end
+            if total > 0:
+                accumulator["curvature"] = (
+                    float(accumulator.get("curvature", 0.0)) * prev_len + curvature * seg_len
+                ) / total
+            acc_length = total
+
+        if end >= current_end - tol:
+            accumulator = None
+            acc_length = 0.0
+
+    return merged
+
+
 def build_geometry_segments(
     centerline: DataFrame,
     curvature_segments: List[Dict[str, float]],
@@ -2224,6 +2438,29 @@ def build_geometry_segments(
 
         ordered_points = sorted(anchor_points.keys())
         segments: List[Dict[str, float]] = []
+
+        def _curvature_at(position: float) -> float:
+            for seg in curvature_segments:
+                try:
+                    s0 = float(seg["s0"])
+                    s1 = float(seg["s1"])
+                    curv = float(seg.get("curvature", 0.0))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if s0 - 1e-9 <= position <= s1 + 1e-9:
+                    return curv
+            if curvature_segments:
+                try:
+                    first = float(curvature_segments[0].get("curvature", 0.0))
+                    last = float(curvature_segments[-1].get("curvature", 0.0))
+                except (TypeError, ValueError):
+                    first = 0.0
+                    last = 0.0
+                if position < float(curvature_segments[0].get("s0", 0.0)):
+                    return first
+                if position > float(curvature_segments[-1].get("s1", 0.0)):
+                    return last
+            return 0.0
 
         def _curvature_for_interval(start: float, end: float) -> float:
             mid = (start + end) / 2.0
@@ -2486,8 +2723,23 @@ def build_geometry_segments(
             trial_segments: List[Dict[str, float]] = []
             propagated_x, propagated_y, propagated_hdg = current_x, current_y, current_hdg
 
+            interior_offset = min(0.5, max(1e-6, length_total * 0.5))
+            start_sample = start + interior_offset
+            end_sample = end - interior_offset
+            if start_sample >= end:
+                start_sample = start
+            if end_sample <= start:
+                end_sample = end
+            dataset_start_curv = _curvature_at(start_sample)
+            dataset_end_curv = _curvature_at(end_sample)
+
             for step in range(steps):
                 seg_s = start + step * step_length
+
+                ratio_start = step / steps if steps > 0 else 0.0
+                ratio_end = (step + 1) / steps if steps > 0 else 1.0
+                seg_curv_start = dataset_start_curv + (dataset_end_curv - dataset_start_curv) * ratio_start
+                seg_curv_end = dataset_start_curv + (dataset_end_curv - dataset_start_curv) * ratio_end
 
                 trial_segments.append(
                     {
@@ -2497,6 +2749,8 @@ def build_geometry_segments(
                         "hdg": propagated_hdg,
                         "length": step_length,
                         "curvature": refined_curvature,
+                        "curvature_start": seg_curv_start,
+                        "curvature_end": seg_curv_end,
                     }
                 )
 
@@ -2627,7 +2881,18 @@ def _merge_geometry_segments(
             # 需要将其过滤掉，否则查看器会把这类节点当成新的起点，
             # 继而导致整段道路出现平移错位。
             continue
-        cleaned.append(dict(seg))
+        entry = dict(seg)
+        try:
+            entry_start = float(entry.get("curvature_start", entry.get("curvature", 0.0)))
+        except (TypeError, ValueError):
+            entry_start = float(entry.get("curvature", 0.0))
+        try:
+            entry_end = float(entry.get("curvature_end", entry.get("curvature", 0.0)))
+        except (TypeError, ValueError):
+            entry_end = float(entry.get("curvature", 0.0))
+        entry["curvature_start"] = entry_start
+        entry["curvature_end"] = entry_end
+        cleaned.append(entry)
 
     if not cleaned:
         return []
@@ -2645,7 +2910,16 @@ def _merge_geometry_segments(
         next_seg = dict(seg)
         current_curv = float(current.get("curvature", 0.0))
         seg_curv = float(next_seg.get("curvature", 0.0))
-        same_curvature = abs(seg_curv - current_curv) <= curvature_tol
+        current_start = float(current.get("curvature_start", current_curv))
+        current_end = float(current.get("curvature_end", current_curv))
+        seg_start = float(next_seg.get("curvature_start", seg_curv))
+        seg_end = float(next_seg.get("curvature_end", seg_curv))
+        same_curvature = (
+            abs(seg_curv - current_curv) <= curvature_tol
+            and abs(current_end - seg_start) <= curvature_tol
+            and abs(seg_end - seg_curv) <= curvature_tol
+            and abs(current_start - current_curv) <= curvature_tol
+        )
 
         expected_s = current["s"] + current["length"]
         end_x, end_y, end_hdg = _advance_pose(
@@ -2686,6 +2960,8 @@ def _merge_geometry_segments(
             next_seg["x"] = end_x
             next_seg["y"] = end_y
             next_seg["hdg"] = end_hdg
+            if abs(next_seg.get("curvature_start", seg_curv) - current_end) <= curvature_tol:
+                next_seg["curvature_start"] = current_end
 
         contiguous = (
             abs(next_seg["s"] - expected_s) <= 1e-8
@@ -2702,6 +2978,7 @@ def _merge_geometry_segments(
             )
         ):
             current["length"] += next_seg["length"]
+            current["curvature_end"] = seg_end
             continue
 
         merged.append(current)
