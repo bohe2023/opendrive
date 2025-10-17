@@ -8,8 +8,9 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from csv2xodr.normalize.core import _find_column, _to_float
+from csv2xodr.normalize.core import _find_column, _to_float, latlon_to_local_xy
 from csv2xodr.simpletable import DataFrame
+from csv2xodr.line_geometry import _CenterlineProjector
 
 
 @dataclass
@@ -198,6 +199,8 @@ def generate_signals(
     offset_mapper: Optional[Callable[[float], float]] = None,
     sign_filename: Optional[str] = None,
     log_fn: Optional[Callable[[str], None]] = print,
+    centerline: Optional[DataFrame] = None,
+    geo_origin: Optional[Tuple[float, float]] = None,
 ) -> SignalExport:
     """Generate OpenDRIVE signal dictionaries from a sign profile table."""
 
@@ -283,6 +286,40 @@ def generate_signals(
             or _find_column(df_sign, "sign", "identifier")
         )
 
+    lat_col = (
+        _find_column(df_sign, "緯度")
+        or _find_column(df_sign, "latitude")
+        or _find_column(df_sign, "lat")
+    )
+    lon_col = (
+        _find_column(df_sign, "経度")
+        or _find_column(df_sign, "longitude")
+        or _find_column(df_sign, "lon")
+    )
+
+    x_col = None
+    y_col = None
+    for col in df_sign.columns:
+        lowered = col.strip().lower()
+        if x_col is None and any(token in lowered for token in ("x[", "位置x", "pos x", "east")):
+            x_col = col
+        if y_col is None and any(token in lowered for token in ("y[", "位置y", "pos y", "north")):
+            y_col = col
+
+    projector: Optional[_CenterlineProjector] = None
+    if centerline is not None:
+        try:
+            candidate = _CenterlineProjector(centerline)
+        except Exception:  # pragma: no cover - defensive guard
+            candidate = None
+        if candidate is not None and candidate.is_valid:
+            projector = candidate
+
+    origin_lat: Optional[float] = None
+    origin_lon: Optional[float] = None
+    if geo_origin is not None:
+        origin_lat, origin_lon = geo_origin
+
     group_vertical_offsets: Dict[Tuple[str, float], float] = {}
 
     for idx in range(len(df_sign)):
@@ -298,6 +335,34 @@ def generate_signals(
             s_pos = float(offset_mapper(offset_m))
         else:
             s_pos = float(offset_m)
+
+        if projector is not None:
+            sample_x: Optional[float] = None
+            sample_y: Optional[float] = None
+
+            if lat_col is not None and lon_col is not None and origin_lat is not None and origin_lon is not None:
+                lat_val = _to_float(row[lat_col])
+                lon_val = _to_float(row[lon_col])
+                if lat_val is not None and lon_val is not None:
+                    try:
+                        sample_x, sample_y = latlon_to_local_xy([lat_val], [lon_val], origin_lat, origin_lon)
+                        sample_x = float(sample_x[0])
+                        sample_y = float(sample_y[0])
+                    except Exception:  # pragma: no cover - defensive guard
+                        sample_x = None
+                        sample_y = None
+
+            if sample_x is None or sample_y is None:
+                x_val = _to_float(row[x_col]) if x_col is not None else None
+                y_val = _to_float(row[y_col]) if y_col is not None else None
+                if x_val is not None and y_val is not None:
+                    sample_x = float(x_val)
+                    sample_y = float(y_val)
+
+            if sample_x is not None and sample_y is not None:
+                projection = projector.project(sample_x, sample_y, approx_s=s_pos)
+                if projection is not None:
+                    s_pos = float(projection.s)
 
         if upper_country == "JPN":
             speed_val = _format_numeric(row[speed_col_jp]) if speed_col_jp else None
