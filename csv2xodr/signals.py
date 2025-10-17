@@ -505,7 +505,15 @@ def generate_signals(
             entries.append((s_pos, attrs))
 
     entries.sort(key=lambda item: item[0])
+    last_s = None
     for idx, (s_pos, attrs) in enumerate(entries, start=1):
+        adjusted_s = float(s_pos)
+        if last_s is not None and adjusted_s <= last_s + 1e-6:
+            adjusted_s = last_s + 1.0e-3
+        if adjusted_s != attrs.get("s"):
+            attrs["s"] = adjusted_s
+        s_pos = adjusted_s
+        last_s = s_pos
         attrs.setdefault("id", f"sig_main_{idx}")
         attrs.setdefault("orientation", "+")
         attrs.setdefault("name", attrs.get("supplementary", ""))
