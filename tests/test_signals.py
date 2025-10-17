@@ -1,6 +1,8 @@
 import math
 from typing import List, Tuple
 
+import pytest
+
 from csv2xodr import signals as signals_mod
 from csv2xodr.signals import generate_signals
 from csv2xodr.simpletable import DataFrame
@@ -285,7 +287,7 @@ def test_generate_signals_projects_latlon_to_centerline():
     assert math.isclose(second["s"], 30.0, abs_tol=1e-3)
 
 
-def test_generate_signals_enforces_strictly_increasing_s_positions():
+def test_generate_signals_preserves_duplicate_s_positions():
     df = DataFrame(
         {
             "Offset[cm]": ["1000", "2000", "3000"],
@@ -306,6 +308,4 @@ def test_generate_signals_enforces_strictly_increasing_s_positions():
 
     s_values = [signal["s"] for signal in result.signals]
     assert len(result.signals) == 3
-    assert s_values[0] == 0.0
-    assert s_values[1] > s_values[0]
-    assert s_values[2] > s_values[1]
+    assert s_values == pytest.approx([0.0, 0.0, 0.0], abs=1e-9)
