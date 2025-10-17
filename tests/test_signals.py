@@ -283,3 +283,29 @@ def test_generate_signals_projects_latlon_to_centerline():
 
     assert math.isclose(first["s"], 10.0, abs_tol=1e-3)
     assert math.isclose(second["s"], 30.0, abs_tol=1e-3)
+
+
+def test_generate_signals_enforces_strictly_increasing_s_positions():
+    df = DataFrame(
+        {
+            "Offset[cm]": ["1000", "2000", "3000"],
+            "最高速度値[km/h]": ["30", "40", "50"],
+        }
+    )
+
+    # Force the offset mapper to return the same arc-length for all entries to
+    # simulate real-world datasets with duplicated offsets despite distinct
+    # geographic coordinates.
+    result = generate_signals(
+        df,
+        country="JPN",
+        offset_mapper=lambda value: 0.0,
+        sign_filename="PROFILETYPE_MPU_ZGM_SIGN_INFO.csv",
+        log_fn=lambda message: None,
+    )
+
+    s_values = [signal["s"] for signal in result.signals]
+    assert len(result.signals) == 3
+    assert s_values[0] == 0.0
+    assert s_values[1] > s_values[0]
+    assert s_values[2] > s_values[1]
