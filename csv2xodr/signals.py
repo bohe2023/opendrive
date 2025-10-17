@@ -287,12 +287,20 @@ def generate_signals(
         )
 
     lat_col = (
-        _find_column(df_sign, "緯度")
+        _find_column(df_sign, "座標2", "緯度")
+        or _find_column(df_sign, "座標２", "緯度")
+        or _find_column(df_sign, "緯度", "座標2")
+        or _find_column(df_sign, "緯度", "座標２")
+        or _find_column(df_sign, "緯度")
         or _find_column(df_sign, "latitude")
         or _find_column(df_sign, "lat")
     )
     lon_col = (
-        _find_column(df_sign, "経度")
+        _find_column(df_sign, "座標2", "経度")
+        or _find_column(df_sign, "座標２", "経度")
+        or _find_column(df_sign, "経度", "座標2")
+        or _find_column(df_sign, "経度", "座標２")
+        or _find_column(df_sign, "経度")
         or _find_column(df_sign, "longitude")
         or _find_column(df_sign, "lon")
     )
