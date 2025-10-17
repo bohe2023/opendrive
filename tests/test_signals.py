@@ -1,4 +1,5 @@
 import math
+from typing import List, Tuple
 
 from csv2xodr import signals as signals_mod
 from csv2xodr.signals import generate_signals
@@ -229,3 +230,56 @@ def test_generate_signals_us_stacks_signs_for_same_support():
     assert math.isclose(first["zOffset"], base)
     assert math.isclose(second["zOffset"], base + 1.0 + gap)
     assert math.isclose(third["zOffset"], base + 1.0 + gap + 0.8 + gap)
+
+
+def test_generate_signals_projects_latlon_to_centerline():
+    lat0 = 35.0
+    lon0 = 139.0
+
+    centerline = DataFrame(
+        {
+            "s": [0.0, 50.0],
+            "x": [0.0, 50.0],
+            "y": [0.0, 0.0],
+        }
+    )
+
+    def _xy_to_latlon(x_m: float, y_m: float) -> Tuple[float, float]:
+        r = 6378137.0
+        lat0_rad = math.radians(lat0)
+        lon0_rad = math.radians(lon0)
+        lat_rad = lat0_rad + y_m / r
+        lon_rad = lon0_rad + x_m / (r * math.cos((lat_rad + lat0_rad) / 2.0))
+        return math.degrees(lat_rad), math.degrees(lon_rad)
+
+    latitudes: List[float] = []
+    longitudes: List[float] = []
+    for x_pos in (10.0, 30.0):
+        lat, lon = _xy_to_latlon(x_pos, 0.0)
+        latitudes.append(lat)
+        longitudes.append(lon)
+
+    df = DataFrame(
+        {
+            "Offset[cm]": ["1000", "1000"],
+            "最高速度値[km/h]": ["50", "60"],
+            "緯度": latitudes,
+            "経度": longitudes,
+        }
+    )
+
+    result = generate_signals(
+        df,
+        country="JPN",
+        offset_mapper=lambda value: value,
+        sign_filename="PROFILETYPE_MPU_ZGM_SIGN_INFO.csv",
+        log_fn=lambda message: None,
+        centerline=centerline,
+        geo_origin=(lat0, lon0),
+    )
+
+    assert len(result.signals) == 2
+    first, second = result.signals
+
+    assert math.isclose(first["s"], 10.0, abs_tol=1e-3)
+    assert math.isclose(second["s"], 30.0, abs_tol=1e-3)

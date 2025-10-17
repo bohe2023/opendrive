@@ -179,6 +179,8 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
         country=_detect_country(sign_filename),
         offset_mapper=offset_mapper,
         sign_filename=sign_filename,
+        centerline=center,
+        geo_origin=(lat0, lon0),
     )
     signals = signal_export.signals
     signal_objects = signal_export.objects

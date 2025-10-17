@@ -849,84 +849,6 @@ def _reconstruct_geometry_from_centerline(
         geometry["absolute_offset"] = abs_offset_interp
 
     return geometry
-MIN_POLY_DEGREE = 3
-MAX_POLY_DEGREE = 5
-
-
-def _polyval(coeffs: List[float], values: Iterable[float]) -> List[float]:
-    result: List[float] = []
-    for val in values:
-        acc = 0.0
-        for coeff in coeffs:
-            acc = acc * val + coeff
-        result.append(float(acc))
-    return result
-
-
-def _polyder(coeffs: List[float], order: int = 1) -> List[float]:
-    deriv = list(coeffs)
-    for _ in range(order):
-        if len(deriv) <= 1:
-            return [0.0]
-        next_deriv: List[float] = []
-        degree = len(deriv) - 1
-        for idx, coeff in enumerate(deriv[:-1]):
-            power = degree - idx
-            next_deriv.append(coeff * power)
-        deriv = next_deriv
-    return deriv if deriv else [0.0]
-
-
-def _solve_linear_system(matrix: List[List[float]], rhs: List[float]) -> Optional[List[float]]:
-    size = len(rhs)
-    augmented = [row[:] + [rhs[idx]] for idx, row in enumerate(matrix)]
-
-    for col in range(size):
-        pivot_row = max(range(col, size), key=lambda r: abs(augmented[r][col]))
-        pivot_val = augmented[pivot_row][col]
-        if abs(pivot_val) <= 1e-12:
-            return None
-        if pivot_row != col:
-            augmented[col], augmented[pivot_row] = augmented[pivot_row], augmented[col]
-
-        pivot_val = augmented[col][col]
-        for j in range(col, size + 1):
-            augmented[col][j] /= pivot_val
-
-        for row in range(size):
-            if row == col:
-                continue
-            factor = augmented[row][col]
-            if abs(factor) <= 1e-12:
-                continue
-            for j in range(col, size + 1):
-                augmented[row][j] -= factor * augmented[col][j]
-
-    return [augmented[i][size] for i in range(size)]
-
-
-def _polyfit(ts: List[float], values: List[float], degree: int) -> Optional[List[float]]:
-    if degree < 0:
-        return None
-    count = len(ts)
-    cols = degree + 1
-    vandermonde = [[t ** (degree - idx) for idx in range(cols)] for t in ts]
-
-    normal: List[List[float]] = [[0.0 for _ in range(cols)] for _ in range(cols)]
-    rhs: List[float] = [0.0 for _ in range(cols)]
-
-    for row_idx in range(count):
-        row = vandermonde[row_idx]
-        value = values[row_idx]
-        for i in range(cols):
-            rhs[i] += row[i] * value
-            for j in range(cols):
-                normal[i][j] += row[i] * row[j]
-
-    solution = _solve_linear_system(normal, rhs)
-    return solution
-
-
 def _interp_values(xs: List[float], ys: List[float], targets: List[float]) -> List[float]:
     if not xs:
         return [0.0 for _ in targets]
@@ -982,26 +904,12 @@ def _interp_optional_values(
     ]
 
 
-def _select_polynomial_degree(sample_count: int) -> Optional[int]:
-    """Return an appropriate polynomial degree for ``sample_count`` points."""
-
-    if sample_count < 2:
-        return None
-
-    max_supported = min(MAX_POLY_DEGREE, sample_count - 1)
-    if max_supported < 1:
-        return None
-    if max_supported < MIN_POLY_DEGREE:
-        return max_supported
-    return max(MIN_POLY_DEGREE, min(MAX_POLY_DEGREE, max_supported))
-
-
 def _resample_sequence_with_polynomial(
     points: List[Tuple[float, float, float, float, Optional[float], Optional[float]]],
     *,
     step: float = RESAMPLE_STEP_METERS,
 ) -> Optional[Dict[str, List[float] | List[Optional[float]]]]:
-    """Fit a parametric polynomial to ``points`` and resample curvature."""
+    """Approximate ``points`` with cubic Bézier arcs and resample curvature."""
 
     if len(points) < 2:
         return None
@@ -1019,27 +927,106 @@ def _resample_sequence_with_polynomial(
         length = math.hypot(dx, dy)
         seg_lengths.append(length)
         total_length += length
+
     if not math.isfinite(total_length) or total_length <= 0.0:
         return None
 
     arc_lengths: List[float] = [0.0]
     for length in seg_lengths:
         arc_lengths.append(arc_lengths[-1] + length)
-    degree = _select_polynomial_degree(len(points))
-    if degree is None or degree < 1:
+
+    # Derivatives w.r.t. arc length for each sample point.  Endpoints fall back to
+    # one-sided differences while interior points use the average slope from the
+    # adjacent segments to keep the tangents C1-continuous.
+    dx_ds: List[float] = []
+    dy_ds: List[float] = []
+    last_idx = len(points) - 1
+    for idx in range(len(points)):
+        if idx == 0:
+            span = max(arc_lengths[1] - arc_lengths[0], 1e-9)
+            dx_ds.append((x_vals[1] - x_vals[0]) / span)
+            dy_ds.append((y_vals[1] - y_vals[0]) / span)
+            continue
+        if idx == last_idx:
+            span = max(arc_lengths[-1] - arc_lengths[-2], 1e-9)
+            dx_ds.append((x_vals[-1] - x_vals[-2]) / span)
+            dy_ds.append((y_vals[-1] - y_vals[-2]) / span)
+            continue
+
+        span_total = arc_lengths[idx + 1] - arc_lengths[idx - 1]
+        if span_total <= 1e-9:
+            span_prev = arc_lengths[idx] - arc_lengths[idx - 1]
+            span_next = arc_lengths[idx + 1] - arc_lengths[idx]
+            dx_prev = (x_vals[idx] - x_vals[idx - 1]) / max(span_prev, 1e-9)
+            dx_next = (x_vals[idx + 1] - x_vals[idx]) / max(span_next, 1e-9)
+            dy_prev = (y_vals[idx] - y_vals[idx - 1]) / max(span_prev, 1e-9)
+            dy_next = (y_vals[idx + 1] - y_vals[idx]) / max(span_next, 1e-9)
+            dx_ds.append(0.5 * (dx_prev + dx_next))
+            dy_ds.append(0.5 * (dy_prev + dy_next))
+        else:
+            dx_ds.append((x_vals[idx + 1] - x_vals[idx - 1]) / span_total)
+            dy_ds.append((y_vals[idx + 1] - y_vals[idx - 1]) / span_total)
+
+    discrete_curv = _estimate_discrete_curvature(points)
+
+    segments: List[Dict[str, Any]] = []
+    for idx in range(len(points) - 1):
+        length = arc_lengths[idx + 1] - arc_lengths[idx]
+
+        segment_sign = 0.0
+        if discrete_curv:
+            for candidate in (
+                discrete_curv[idx] if idx < len(discrete_curv) else None,
+                discrete_curv[idx + 1] if idx + 1 < len(discrete_curv) else None,
+            ):
+                if candidate is not None and abs(candidate) > 1e-12:
+                    segment_sign = math.copysign(1.0, candidate)
+                    break
+        if segment_sign == 0.0 and idx + 2 < len(points):
+            v1x = x_vals[idx + 1] - x_vals[idx]
+            v1y = y_vals[idx + 1] - y_vals[idx]
+            v2x = x_vals[idx + 2] - x_vals[idx + 1]
+            v2y = y_vals[idx + 2] - y_vals[idx + 1]
+            cross = v1x * v2y - v1y * v2x
+            if abs(cross) > 1e-12:
+                segment_sign = math.copysign(1.0, cross)
+        if segment_sign == 0.0 and idx > 0:
+            v0x = x_vals[idx] - x_vals[idx - 1]
+            v0y = y_vals[idx] - y_vals[idx - 1]
+            v1x = x_vals[idx + 1] - x_vals[idx]
+            v1y = y_vals[idx + 1] - y_vals[idx]
+            cross = v0x * v1y - v0y * v1x
+            if abs(cross) > 1e-12:
+                segment_sign = math.copysign(1.0, cross)
+
+        if length <= 1e-9:
+            continue
+        x0 = x_vals[idx]
+        y0 = y_vals[idx]
+        x3 = x_vals[idx + 1]
+        y3 = y_vals[idx + 1]
+        control1 = (
+            x0 + dx_ds[idx] * length / 3.0,
+            y0 + dy_ds[idx] * length / 3.0,
+        )
+        control2 = (
+            x3 - dx_ds[idx + 1] * length / 3.0,
+            y3 - dy_ds[idx + 1] * length / 3.0,
+        )
+        segments.append(
+            {
+                "start": arc_lengths[idx],
+                "end": arc_lengths[idx + 1],
+                "p0": (x0, y0),
+                "p1": control1,
+                "p2": control2,
+                "p3": (x3, y3),
+                "sign": segment_sign,
+            }
+        )
+
+    if not segments:
         return None
-
-    t_vals = [arc / total_length for arc in arc_lengths]
-
-    poly_x = _polyfit(t_vals, x_vals, degree)
-    poly_y = _polyfit(t_vals, y_vals, degree)
-    if poly_x is None or poly_y is None:
-        return None
-
-    dpoly_x = _polyder(poly_x, 1)
-    ddpoly_x = _polyder(poly_x, 2)
-    dpoly_y = _polyder(poly_y, 1)
-    ddpoly_y = _polyder(poly_y, 2)
 
     targets: List[float] = []
     current = 0.0
@@ -1056,9 +1043,6 @@ def _resample_sequence_with_polynomial(
             dedup_targets.append(value)
     targets = dedup_targets
 
-    t_new = [target / total_length for target in targets]
-    x_new = _polyval(poly_x, t_new)
-    y_new = _polyval(poly_y, t_new)
     z_new = _interp_values(arc_lengths, z_vals, targets)
     s_new = _interp_values(arc_lengths, s_vals, targets)
     shape_vals = [p[4] if p[4] is not None else None for p in points]
@@ -1066,18 +1050,36 @@ def _resample_sequence_with_polynomial(
     shape_new = _interp_optional_values(arc_lengths, shape_vals, targets)
     offset_new = _interp_optional_values(arc_lengths, abs_offsets, targets)
 
-    x_prime = _polyval(dpoly_x, t_new)
-    y_prime = _polyval(dpoly_y, t_new)
-    x_double = _polyval(ddpoly_x, t_new)
-    y_double = _polyval(ddpoly_y, t_new)
+    x_new: List[float] = []
+    y_new: List[float] = []
 
-    curvature: List[float] = []
-    for xp, yp, xd, yd in zip(x_prime, y_prime, x_double, y_double):
-        denom = (xp * xp + yp * yp) ** 1.5
-        if denom <= 1e-9:
-            curvature.append(0.0)
-        else:
-            curvature.append((xp * yd - yp * xd) / denom)
+    for idx_target, target in enumerate(targets):
+        seg_idx = bisect.bisect_right(arc_lengths, target) - 1
+        seg_idx = max(0, min(seg_idx, len(segments) - 1))
+        seg = segments[seg_idx]
+        length = max(seg["end"] - seg["start"], 1e-9)
+        u = 0.0 if length <= 1e-9 else (target - seg["start"]) / length
+        u = max(0.0, min(u, 1.0))
+
+        px, py, dx_du, dy_du, ddx_duu, ddy_duu = _evaluate_bezier(seg, u)
+        x_new.append(px)
+        y_new.append(py)
+
+        # Keep derivative evaluations available for potential future tuning.
+        # Currently curvature is derived from the resampled polyline instead.
+        _ = dx_du, dy_du, ddx_duu, ddy_duu
+
+    resampled_points = [
+        (s_val, x_val, y_val, z_val, None, None)
+        for s_val, x_val, y_val, z_val in zip(s_new, x_new, y_new, z_new)
+    ]
+    curvature_series = _estimate_discrete_curvature(resampled_points)
+    curvature = _smooth_series(curvature_series, s_new, max(step, 5.0)) if curvature_series else []
+    if curvature and len(curvature) > 1:
+        if abs(curvature[0]) <= 1e-9:
+            curvature[0] = curvature[1]
+        if abs(curvature[-1]) <= 1e-9:
+            curvature[-1] = curvature[-2]
 
     return {
         "s": s_new,
@@ -1088,6 +1090,54 @@ def _resample_sequence_with_polynomial(
         "shape_index": shape_new,
         "absolute_offset": offset_new,
     }
+
+
+def _evaluate_bezier(segment: Dict[str, Any], u: float) -> Tuple[float, float, float, float, float, float]:
+    """Return position and derivatives for the cubic Bézier ``segment``."""
+
+    p0x, p0y = segment["p0"]
+    p1x, p1y = segment["p1"]
+    p2x, p2y = segment["p2"]
+    p3x, p3y = segment["p3"]
+
+    om = 1.0 - u
+    om2 = om * om
+    u2 = u * u
+
+    px = (
+        om2 * om * p0x
+        + 3.0 * om2 * u * p1x
+        + 3.0 * om * u2 * p2x
+        + u2 * u * p3x
+    )
+    py = (
+        om2 * om * p0y
+        + 3.0 * om2 * u * p1y
+        + 3.0 * om * u2 * p2y
+        + u2 * u * p3y
+    )
+
+    dx_du = 3.0 * (
+        om2 * (p1x - p0x)
+        + 2.0 * om * u * (p2x - p1x)
+        + u2 * (p3x - p2x)
+    )
+    dy_du = 3.0 * (
+        om2 * (p1y - p0y)
+        + 2.0 * om * u * (p2y - p1y)
+        + u2 * (p3y - p2y)
+    )
+
+    ddx_duu = 6.0 * (
+        om * (p2x - 2.0 * p1x + p0x)
+        + u * (p3x - 2.0 * p2x + p1x)
+    )
+    ddy_duu = 6.0 * (
+        om * (p2y - 2.0 * p1y + p0y)
+        + u * (p3y - 2.0 * p2y + p1y)
+    )
+
+    return px, py, dx_du, dy_du, ddx_duu, ddy_duu
 
 
 def _estimate_discrete_curvature(
