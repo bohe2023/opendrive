@@ -371,7 +371,7 @@ def test_lane_offset_respects_central_lane_bias():
 
     offset = _compute_lane_offset(section_left, section_right, lane_info, geometry_bias)
 
-    assert offset is None
+    assert offset == pytest.approx(-0.8)
 
 
 def test_lane_offset_uses_bias_closest_to_reference_when_numbers_positive():
