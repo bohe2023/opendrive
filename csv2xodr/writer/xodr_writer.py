@@ -1034,7 +1034,23 @@ def write_xodr(
             promoted["successors"] = []
             _write_lane(center_el, promoted)
         else:
-            SubElement(center_el, "lane", {"id": "0", "type": "none", "level": "false"})
+            fallback_lane = SubElement(
+                center_el, "lane", {"id": "0", "type": "none", "level": "false"}
+            )
+            # MATLAB 的 Driving Scenario Designer 需要中心车道提供宽度信息来推导道路截面。
+            # 当源数据缺少中心车道时，为导入器写入一条零宽度的占位 lane，避免报出
+            # “找不到道路定义”的错误。
+            SubElement(
+                fallback_lane,
+                "width",
+                {
+                    "sOffset": "0.0",
+                    "a": _format_float(0.0, precision=3),
+                    "b": "0",
+                    "c": "0",
+                    "d": "0",
+                },
+            )
 
         left_el = SubElement(ls, "left") if has_left else None
         right_el = SubElement(ls, "right") if has_right else None
