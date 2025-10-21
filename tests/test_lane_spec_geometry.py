@@ -245,7 +245,7 @@ def test_geometry_hint_recenters_common_bias():
 
     lanes_geometry = DataFrame(rows)
 
-    side_map, strength_map = _estimate_lane_side_from_geometry(
+    side_map, strength_map, bias_map = _estimate_lane_side_from_geometry(
         lanes_geometry,
         centerline,
         offset_mapper=lambda value: float(value),
@@ -255,6 +255,7 @@ def test_geometry_hint_recenters_common_bias():
     assert side_map["L"] == "left"
     assert side_map["R"] == "right"
     assert "M" not in side_map or abs(strength_map.get("M", 0.0)) <= 1e-9
+    assert bias_map["M"] == pytest.approx(0.0, abs=1e-6)
 
 
 def test_positive_lanes_stay_on_single_side():
