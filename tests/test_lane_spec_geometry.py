@@ -251,6 +251,7 @@ def test_geometry_hint_recenters_common_bias():
         centerline,
         offset_mapper=lambda value: float(value),
         geo_origin=(0.0, 0.0),
+        expected_side_counts=(1, 1),
     )
 
     assert side_map["L"] == "left"
