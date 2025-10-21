@@ -769,6 +769,115 @@ def filter_dataframe_by_path(df: Optional[DataFrame], path_id: Optional[str]) ->
     filtered = df.loc[keep_mask]
     return filtered.reset_index(drop=True)
 
+def _select_base_origin(
+    df_base: DataFrame,
+    *,
+    path_id: Optional[str],
+    offsets: Optional[Iterable[Any]],
+) -> Optional[Tuple[float, float]]:
+    """Pick the most appropriate base point for the requested path."""
+
+    if df_base is None or len(df_base) == 0:
+        return None
+
+    lat_col = _find_column(df_base, "緯度") or _find_column(df_base, "latitude")
+    lon_col = _find_column(df_base, "経度") or _find_column(df_base, "longitude")
+
+    if lat_col is None or lon_col is None:
+        return None
+
+    path_col = _col_like(df_base, "Path")
+    offset_col = _col_like(df_base, "Offset")
+    end_offset_col = _find_column(df_base, "end", "offset")
+
+    target_canonical = (
+        _canonical_numeric(path_id, allow_negative=True) if path_id is not None else None
+    )
+    target_text = str(path_id).strip() if path_id is not None else None
+
+    offset_values: List[float] = []
+    if offsets is not None:
+        for raw in offsets:
+            value = _to_float(raw)
+            if value is not None and math.isfinite(value):
+                offset_values.append(value)
+    first_offset = min(offset_values) if offset_values else None
+
+    best: Optional[Tuple[Tuple[int, int, float, int], float, float]] = None
+
+    for idx in range(len(df_base)):
+        row = df_base.iloc[idx]
+
+        try:
+            lat_val = _to_float(row[lat_col])
+            lon_val = _to_float(row[lon_col])
+        except KeyError:  # pragma: no cover - defensive, for unexpected layouts
+            continue
+
+        if lat_val is None or lon_val is None:
+            continue
+
+        path_match = True
+        if path_id is not None and path_col is not None:
+            raw_path = row[path_col]
+            raw_canonical = _canonical_numeric(raw_path, allow_negative=True)
+            path_match = False
+            if target_canonical is not None and raw_canonical is not None:
+                path_match = raw_canonical == target_canonical
+            else:
+                raw_text = str(raw_path).strip() if raw_path is not None else None
+                if raw_text and target_text:
+                    path_match = raw_text == target_text
+
+        range_match = False
+        distance = 0.0
+        if first_offset is not None and offset_col is not None:
+            start_raw = row[offset_col]
+            end_raw = row[end_offset_col] if end_offset_col is not None else None
+            start_val = _to_float(start_raw)
+            end_val = _to_float(end_raw)
+
+            if start_val is None and end_val is not None:
+                start_val = end_val
+            if end_val is None and start_val is not None:
+                end_val = start_val
+
+            if start_val is not None and end_val is not None:
+                lo = min(start_val, end_val)
+                hi = max(start_val, end_val)
+                if lo - 1e-6 <= first_offset <= hi + 1e-6:
+                    range_match = True
+                    distance = 0.0
+                elif first_offset < lo:
+                    distance = lo - first_offset
+                else:
+                    distance = first_offset - hi
+            elif start_val is not None:
+                distance = abs(first_offset - start_val)
+            else:
+                distance = float("inf")
+        elif first_offset is not None:
+            distance = 0.0
+        else:
+            distance = 0.0
+
+        priority = (
+            0 if path_match else 1,
+            0 if range_match else 1,
+            distance,
+            idx,
+        )
+
+        if best is None or priority < best[0]:
+            best = (priority, float(lat_val), float(lon_val))
+
+    if best is None:
+        return None
+
+    _, lat0, lon0 = best
+    return lat0, lon0
+
+
 def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
     """
     Build centerline planView from PROFILETYPE_MPU_LINE_GEOMETRY (lat/lon series).
@@ -932,9 +1041,12 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
             offsets = [offsets[idx] for idx in order]
 
     # choose origin
+    origin = None
     if df_base is not None and len(df_base) > 0:
-        lat0 = float(df_base.filter(like="緯度").iloc[0, 0])
-        lon0 = float(df_base.filter(like="経度").iloc[0, 0])
+        origin = _select_base_origin(df_base, path_id=best_path_id, offsets=offsets)
+
+    if origin is not None:
+        lat0, lon0 = origin
     else:
         lat0 = sum(lat) / len(lat)
         lon0 = sum(lon) / len(lon)
