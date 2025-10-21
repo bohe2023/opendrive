@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 from csv2xodr.lane_spec import (
     build_lane_spec,
     _build_division_lookup,
+    _compute_lane_offset,
     _estimate_lane_side_from_geometry,
 )
 from csv2xodr.simpletable import DataFrame
@@ -318,6 +319,37 @@ def test_positive_lanes_stay_on_single_side():
 
     assert specs[0]["right"] == [], "positive-only lanes should not be inferred as right-side lanes"
     assert [lane["uid"] for lane in specs[0]["left"]] == ["A:1", "B:1", "C:1"]
+
+
+def test_lane_offset_prefers_innermost_edges():
+    lane_info = {
+        "L:1": {"base_id": "L"},
+        "R:1": {"base_id": "R1"},
+        "R:2": {"base_id": "R2"},
+    }
+
+    section_left = [
+        {
+            "uid": "L:1",
+            "width": 3.6,
+        }
+    ]
+    section_right = [
+        {
+            "uid": "R:1",
+            "width": 3.6,
+        },
+        {
+            "uid": "R:2",
+            "width": 3.6,
+        },
+    ]
+
+    geometry_bias = {"L": 5.0, "R1": -3.0, "R2": -7.0}
+
+    offset = _compute_lane_offset(section_left, section_right, lane_info, geometry_bias)
+
+    assert offset == pytest.approx(-1.0)
 
 
 def test_write_xodr_emits_explicit_lane_mark_geometry(tmp_path):
