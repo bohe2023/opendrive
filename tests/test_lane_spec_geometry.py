@@ -260,6 +260,49 @@ def test_geometry_hint_recenters_common_bias():
     assert bias_map["M"] == pytest.approx(0.0, abs=1e-6)
 
 
+def test_geometry_hint_respects_single_sided_stack():
+    meters_to_degrees = 180.0 / (math.pi * 6378137.0)
+
+    centerline = DataFrame(
+        {
+            "s": [0.0, 10.0],
+            "x": [0.0, 0.0],
+            "y": [0.0, 10.0],
+            "hdg": [math.pi / 2, math.pi / 2],
+        }
+    )
+
+    rows = []
+    for lane_id, lateral in (("shoulder", 1.0), ("lane-1", -3.0), ("lane-2", -6.0)):
+        for offset_m in (0.0, 10.0):
+            rows.append(
+                {
+                    "Lane ID": lane_id,
+                    "Offset[cm]": str(offset_m * 100.0),
+                    "緯度[deg]": offset_m * meters_to_degrees,
+                    "経度[deg]": lateral * meters_to_degrees,
+                }
+            )
+
+    lanes_geometry = DataFrame(rows)
+
+    side_map, strength_map, bias_map = _estimate_lane_side_from_geometry(
+        lanes_geometry,
+        centerline,
+        offset_mapper=lambda value: float(value),
+        geo_origin=(0.0, 0.0),
+        expected_side_counts=(1, 2),
+    )
+
+    # 几何数据表示：左侧只有一个路肩，其余车道都位于参考线同一侧。
+    # 新的逻辑应避免整体平移，而是保持原始偏差，让“lane-1”与"lane-2"
+    # 仍然出现在参考线同一侧。
+    assert side_map["lane-1"] == "left"
+    assert side_map["lane-2"] == "left"
+    assert bias_map["lane-1"] == pytest.approx(3.0, abs=1e-6)
+    assert bias_map["lane-2"] == pytest.approx(6.0, abs=1e-6)
+
+
 def test_positive_lanes_stay_on_single_side():
     sections = [{"s0": 0.0, "s1": 10.0}]
 

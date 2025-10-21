@@ -296,15 +296,27 @@ def _estimate_lane_side_from_geometry(
         values = list(lane_bias.values())
         min_val = min(values)
         max_val = max(values)
-        if min_val * max_val > 0:
-            # 所有车道的几何提示都在参考线同一侧，说明这是单侧道路
-            # 或者参考线本身已经处于道路边缘。此时如果再做整体偏移，
-            # 会把参考线拉到完全没有路面的区域。
-            #
-            # 将这种情况视为“无需整体校正”，保持原始偏差，让后续的
-            # 车道堆栈仍然围绕现有参考线构建。
-            pass
-        elif max_val - min_val > 1e-3:
+        skip_recentering = False
+        single_sided_geometry = min_val * max_val > 0
+        if single_sided_geometry:
+            allow_balanced_recenter = False
+            if (
+                left_expected is not None
+                and right_expected is not None
+                and left_expected > 0
+                and right_expected > 0
+                and abs(left_expected - right_expected) <= 1
+            ):
+                allow_balanced_recenter = True
+            if not allow_balanced_recenter:
+                # 所有车道的几何提示都在参考线同一侧，说明这是单侧道路
+                # 或者参考线本身已经处于道路边缘。此时如果再做整体偏移，
+                # 会把参考线拉到完全没有路面的区域。
+                #
+                # 将这种情况视为“无需整体校正”，保持原始偏差，让后续的
+                # 车道堆栈仍然围绕现有参考线构建。
+                skip_recentering = True
+        if not skip_recentering and max_val - min_val > 1e-3:
             try:
                 candidate = statistics.median(values)
             except statistics.StatisticsError:  # pragma: no cover - defensive
@@ -324,13 +336,29 @@ def _estimate_lane_side_from_geometry(
                 # 样全部位于同一侧的道路，会因为 median 位于车道堆栈内部
                 # 而被强行拉到路肩之外。
                 allow_shift = bool(positive and negative)
-                if allow_shift and not (positive_pre and negative_pre):
-                    allow_shift = (
-                        left_expected is not None
-                        and right_expected is not None
-                        and left_expected > 0
-                        and right_expected > 0
-                    )
+                if allow_shift:
+                    if not (positive_pre and negative_pre):
+                        allow_shift = (
+                            left_expected is not None
+                            and right_expected is not None
+                            and left_expected > 0
+                            and right_expected > 0
+                        )
+                if allow_shift and left_expected is not None and right_expected is not None:
+                    left_after = sum(1 for val in adjusted if val > 5e-2)
+                    right_after = sum(1 for val in adjusted if val < -5e-2)
+                    if left_after > left_expected or right_after > right_expected:
+                        allow_shift = False
+                    if allow_shift:
+                        left_before = len([val for val in values if val > 5e-2])
+                        right_before = len([val for val in values if val < -5e-2])
+                        expected_diff = left_expected - right_expected
+                        if expected_diff > 0:
+                            if left_after <= right_after:
+                                allow_shift = False
+                        elif expected_diff < 0:
+                            if right_after <= left_after:
+                                allow_shift = False
                 if allow_shift:
                     global_shift = candidate
                     apply_shift = True
