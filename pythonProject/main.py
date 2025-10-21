@@ -22,7 +22,7 @@ if str(ROOT) not in sys.path:
 
 
 from csv2xodr.csv2xodr import convert_dataset  # noqa: E402
-from pythonProject import add_shape_index, interpolate_curvature  # noqa: E402
+from pythonProject import add_shape_index, interpolate_curvature, postprocess_xodr  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -154,6 +154,10 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
             continue
 
         print(json.dumps(stats, ensure_ascii=False, indent=2))
+
+        xodr_path = stats.get("xodr_file", {}).get("path")
+        if xodr_path:
+            postprocess_xodr.patch_file(Path(xodr_path), verbose=True)
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
