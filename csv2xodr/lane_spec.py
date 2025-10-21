@@ -1,6 +1,7 @@
 """Helpers for building per-section lane specifications."""
 
 import math
+import statistics
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from csv2xodr.mapping.core import mark_type_from_division_row
@@ -271,14 +272,37 @@ def _estimate_lane_side_from_geometry(
 
     side_map: Dict[str, str] = {}
     strength_map: Dict[str, float] = {}
+
+    lane_bias: Dict[str, float] = {}
     for lane_id, values in side_samples.items():
         if not values:
             continue
-        avg = sum(values) / len(values)
+        lane_bias[lane_id] = sum(values) / len(values)
+
+    global_shift = 0.0
+    apply_shift = False
+    if len(lane_bias) >= 2:
+        values = list(lane_bias.values())
+        min_val = min(values)
+        max_val = max(values)
+        if max_val - min_val > 1e-3:
+            try:
+                candidate = statistics.median(values)
+            except statistics.StatisticsError:  # pragma: no cover - defensive
+                candidate = 0.0
+            if math.isfinite(candidate) and abs(candidate) > 0.05:
+                global_shift = candidate
+                apply_shift = True
+
+    for lane_id, values in side_samples.items():
+        if not values:
+            continue
+        shift = global_shift if apply_shift else 0.0
+        avg = lane_bias.get(lane_id, 0.0) - shift
         if abs(avg) <= 0.05:
             continue
         side_map[lane_id] = "left" if avg > 0.0 else "right"
-        strength_map[lane_id] = sum(abs(v) for v in values) / len(values)
+        strength_map[lane_id] = sum(abs(v - shift) for v in values) / len(values)
 
     return side_map, strength_map
 
