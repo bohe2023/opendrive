@@ -503,6 +503,28 @@ def build_lane_spec(
 
     sections_list = list(sections)
     lane_info = (lane_topo or {}).get("lanes") or {}
+    expected_bias_sign: Dict[str, int] = {}
+    for data in lane_info.values():
+        base_id = data.get("base_id")
+        lane_no = data.get("lane_no")
+        if base_id is None or lane_no is None:
+            continue
+        try:
+            lane_no_val = float(lane_no)
+        except (TypeError, ValueError):
+            continue
+        sign = 0
+        if lane_no_val > 0:
+            sign = 1
+        elif lane_no_val < 0:
+            sign = -1
+        if sign == 0:
+            continue
+        previous = expected_bias_sign.get(base_id)
+        if previous is None or previous == 0:
+            expected_bias_sign[base_id] = sign
+        elif previous != sign:
+            expected_bias_sign[base_id] = 0
     raw_lane_groups = (lane_topo or {}).get("groups") or {}
     lane_count = (lane_topo or {}).get("lane_count") or 0
 
@@ -646,6 +668,18 @@ def build_lane_spec(
         for key, value in (raw_geometry_bias or {}).items()
         if value is not None and math.isfinite(value)
     }
+    for base_id, sign in expected_bias_sign.items():
+        if sign == 0:
+            continue
+        bias = geometry_bias.get(base_id)
+        if bias is None:
+            continue
+        if not math.isfinite(bias) or bias == 0.0:
+            continue
+        if sign > 0 and bias < 0.0:
+            geometry_bias[base_id] = abs(bias)
+        elif sign < 0 and bias > 0.0:
+            geometry_bias[base_id] = -abs(bias)
     for alias, parent in group_parent_map.items():
         hint = derived_side_hints.get(alias)
         parent_hint = raw_geometry_side_hint.get(parent)
