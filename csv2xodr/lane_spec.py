@@ -179,14 +179,14 @@ def _estimate_lane_side_from_geometry(
     *,
     offset_mapper=None,
     geo_origin: Optional[Tuple[float, float]] = None,
-) -> Tuple[Dict[str, str], Dict[str, float]]:
+) -> Tuple[Dict[str, str], Dict[str, float], Dict[str, float]]:
     if (
         lanes_geom_df is None
         or len(lanes_geom_df) == 0
         or centerline is None
         or len(centerline) == 0
     ):
-        return {}, {}
+        return {}, {}, {}
 
     cols = list(lanes_geom_df.columns)
 
@@ -203,14 +203,14 @@ def _estimate_lane_side_from_geometry(
     offset_col = find_col("Offset")
 
     if lane_id_col is None or lat_col is None or lon_col is None or offset_col is None:
-        return {}, {}
+        return {}, {}, {}
 
     try:
         lat_vals = [float(v) for v in lanes_geom_df[lat_col].astype(float).to_list()]
         lon_vals = [float(v) for v in lanes_geom_df[lon_col].astype(float).to_list()]
         offsets_cm = [float(v) for v in lanes_geom_df[offset_col].astype(float).to_list()]
     except Exception:
-        return {}, {}
+        return {}, {}, {}
 
     # ``Offset`` values in the raw CSV are absolute centimetre positions measured from
     # a global reference.  The centreline normalisation logic rebases them so that the
@@ -235,7 +235,7 @@ def _estimate_lane_side_from_geometry(
     ]
 
     if not lane_ids or len(lane_ids) != len(offsets_m):
-        return {}, {}
+        return {}, {}, {}
 
     if geo_origin is not None:
         lat0, lon0 = geo_origin
@@ -272,6 +272,7 @@ def _estimate_lane_side_from_geometry(
 
     side_map: Dict[str, str] = {}
     strength_map: Dict[str, float] = {}
+    bias_map: Dict[str, float] = {}
 
     lane_bias: Dict[str, float] = {}
     for lane_id, values in side_samples.items():
@@ -299,12 +300,14 @@ def _estimate_lane_side_from_geometry(
             continue
         shift = global_shift if apply_shift else 0.0
         avg = lane_bias.get(lane_id, 0.0) - shift
+        if math.isfinite(avg):
+            bias_map[lane_id] = avg
         if abs(avg) <= 0.05:
             continue
         side_map[lane_id] = "left" if avg > 0.0 else "right"
         strength_map[lane_id] = sum(abs(v - shift) for v in values) / len(values)
 
-    return side_map, strength_map
+    return side_map, strength_map, bias_map
 
 
 def _build_division_lookup(
@@ -610,7 +613,11 @@ def build_lane_spec(
         lane_div_df, line_geometry_lookup=line_geometry_lookup, offset_mapper=offset_mapper
     )
 
-    raw_geometry_side_hint, raw_geometry_strength = _estimate_lane_side_from_geometry(
+    (
+        raw_geometry_side_hint,
+        raw_geometry_strength,
+        raw_geometry_bias,
+    ) = _estimate_lane_side_from_geometry(
         lanes_geometry_df,
         centerline,
         offset_mapper=offset_mapper,
@@ -634,6 +641,11 @@ def build_lane_spec(
 
     geometry_side_hint: Dict[str, str] = {}
     geometry_hint_strength: Dict[str, float] = {}
+    geometry_bias: Dict[str, float] = {
+        key: float(value)
+        for key, value in (raw_geometry_bias or {}).items()
+        if value is not None and math.isfinite(value)
+    }
     for alias, parent in group_parent_map.items():
         hint = derived_side_hints.get(alias)
         parent_hint = raw_geometry_side_hint.get(parent)
@@ -1292,7 +1304,46 @@ def build_lane_spec(
         section_left.sort(key=lambda item: item["id"])
         section_right.sort(key=lambda item: item["id"], reverse=True)
 
-        out.append({"s0": s0, "s1": s1, "left": section_left, "right": section_right})
+        lane_offset: Optional[float] = None
+        left_bounds: List[float] = []
+        right_bounds: List[float] = []
+
+        if geometry_bias:
+            for lane in section_left:
+                info = lane_info.get(lane.get("uid"), {})
+                base_id = info.get("base_id")
+                bias = geometry_bias.get(base_id)
+                if bias is None:
+                    continue
+                try:
+                    width_val = float(lane.get("width", 0.0))
+                except (TypeError, ValueError):
+                    continue
+                left_bounds.append(bias + width_val * 0.5)
+            for lane in section_right:
+                info = lane_info.get(lane.get("uid"), {})
+                base_id = info.get("base_id")
+                bias = geometry_bias.get(base_id)
+                if bias is None:
+                    continue
+                try:
+                    width_val = float(lane.get("width", 0.0))
+                except (TypeError, ValueError):
+                    continue
+                right_bounds.append(bias - width_val * 0.5)
+
+        if left_bounds and right_bounds:
+            max_left = max(left_bounds)
+            min_right = min(right_bounds)
+            center_bias = 0.5 * (max_left + min_right)
+            if math.isfinite(center_bias) and abs(center_bias) > 1e-3:
+                lane_offset = -center_bias
+
+        section_entry = {"s0": s0, "s1": s1, "left": section_left, "right": section_right}
+        if lane_offset is not None:
+            section_entry["laneOffset"] = lane_offset
+
+        out.append(section_entry)
 
     return out
 

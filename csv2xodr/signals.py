@@ -615,3 +615,72 @@ def generate_signals(
         log_fn(f"[signals] {len(signals)} entries from {source}")
 
     return SignalExport(signals=signals, objects=objects)
+
+
+def shift_signs_to_left_shoulder(
+    lane_sections: List[Dict[str, Any]],
+    signals: List[Dict[str, Any]],
+    objects: List[Dict[str, Any]],
+    *,
+    margin: float = 0.3,
+) -> None:
+    """Move generated signals/objects onto the left shoulder edge."""
+
+    if not lane_sections:
+        return
+    if not signals and not objects:
+        return
+
+    sections: List[Tuple[float, float, float]] = []
+    for section in lane_sections:
+        try:
+            s0 = float(section.get("s0", 0.0))
+            s1 = float(section.get("s1", s0))
+        except (TypeError, ValueError):
+            continue
+        if s1 <= s0:
+            continue
+        try:
+            lane_offset = float(section.get("laneOffset", 0.0))
+        except (TypeError, ValueError):
+            lane_offset = 0.0
+
+        total_left = 0.0
+        for lane in section.get("left", []) or []:
+            try:
+                total_left += float(lane.get("width", 0.0))
+            except (TypeError, ValueError):
+                continue
+
+        if total_left <= 0.0:
+            continue
+
+        target_t = lane_offset + total_left + max(0.0, margin)
+        sections.append((s0, s1, target_t))
+
+    if not sections:
+        return
+
+    sections.sort(key=lambda item: item[0])
+
+    def _find_target(s_val: float) -> Optional[float]:
+        for idx, (start, end, target) in enumerate(sections):
+            if start <= s_val < end:
+                return target
+            if idx == len(sections) - 1 and abs(s_val - end) <= 1e-6:
+                return target
+        return None
+
+    def _apply(entries: List[Dict[str, Any]]) -> None:
+        for entry in entries:
+            try:
+                s_val = float(entry.get("s", 0.0))
+            except (TypeError, ValueError):
+                continue
+            target = _find_target(s_val)
+            if target is None:
+                continue
+            entry["t"] = target
+
+    _apply(signals)
+    _apply(objects)

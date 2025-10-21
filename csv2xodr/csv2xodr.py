@@ -27,7 +27,7 @@ from csv2xodr.normalize.core import (
 from csv2xodr.line_geometry import build_line_geometry_lookup
 from csv2xodr.topology.core import make_sections, build_lane_topology
 from csv2xodr.writer.xodr_writer import write_xodr
-from csv2xodr.signals import generate_signals
+from csv2xodr.signals import generate_signals, shift_signs_to_left_shoulder
 from csv2xodr.lane_spec import build_lane_spec, normalize_lane_ids
 
 
@@ -186,6 +186,7 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
     signal_objects = signal_export.objects
 
     apply_shoulder_profile(lane_specs, shoulder_profile, defaults=cfg.get("defaults", {}))
+    shift_signs_to_left_shoulder(lane_specs, signals, signal_objects)
     normalize_lane_ids(lane_specs)
 
     # write xodr

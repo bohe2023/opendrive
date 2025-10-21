@@ -703,6 +703,43 @@ def write_xodr(
 
     # lanes
     lanes = SubElement(road, "lanes")
+
+    lane_offsets: List[Tuple[float, float]] = []
+    for sec in lane_spec_per_section:
+        offset_val = sec.get("laneOffset")
+        if offset_val is None:
+            continue
+        try:
+            offset_float = float(offset_val)
+        except (TypeError, ValueError):
+            continue
+        if abs(offset_float) <= 1e-6:
+            continue
+        try:
+            s_pos = float(sec.get("s0", 0.0))
+        except (TypeError, ValueError):
+            s_pos = 0.0
+        lane_offsets.append((s_pos, offset_float))
+
+    if lane_offsets:
+        lane_offsets.sort(key=lambda item: item[0])
+        last_written: Optional[float] = None
+        for s_pos, offset_float in lane_offsets:
+            if last_written is not None and abs(offset_float - last_written) <= 1e-6:
+                continue
+            SubElement(
+                lanes,
+                "laneOffset",
+                {
+                    "s": _format_float(s_pos, precision=9),
+                    "a": _format_float(offset_float),
+                    "b": "0",
+                    "c": "0",
+                    "d": "0",
+                },
+            )
+            last_written = offset_float
+
     for sec in lane_spec_per_section:
         attrs = {"s": _format_float(sec["s0"], precision=9)}
         has_left = bool(sec.get("left"))
