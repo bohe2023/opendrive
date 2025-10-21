@@ -294,10 +294,16 @@ def _estimate_lane_side_from_geometry(
             # ``candidate`` 表示大多数车道共享的整体横向偏移量。以前只有当
             # 它超过 5cm 时才会校正，这会让像日本数据那样本身已经较整齐的
             # 数据残留明显的小错位。放宽阈值，让几何提示可以对整个车道堆栈
-            # 进行轻微的整体纠偏，同时仍然忽略毫米级的浮点误差。
+            # 进行轻微的整体纠偏，同时仍然忽略毫米级的浮点误差。与此同时，
+            # 只有在几何样本同时覆盖参考线两侧时才尝试全局纠偏，避免只有一侧
+            # 车道的情况下把整个堆栈强行拉到参考线附近，造成道路整体错位。
             if math.isfinite(candidate) and abs(candidate) > 1e-3:
-                global_shift = candidate
-                apply_shift = True
+                adjusted = [val - candidate for val in values]
+                positive = [val for val in adjusted if val > 5e-2]
+                negative = [val for val in adjusted if val < -5e-2]
+                if positive and negative:
+                    global_shift = candidate
+                    apply_shift = True
 
     for lane_id, values in side_samples.items():
         if not values:
