@@ -3,12 +3,13 @@
 This module currently focuses on ensuring that each ``laneSection``
 has a usable centre lane definition.  MATLAB 的 Driving Scenario Designer
 在导入 OpenDRIVE 时会将中心车道作为参考线向两侧外推。当中心车道
-缺失 ``<width>`` 元素时，导入器无法推导截面宽度，进而报错。
+缺失 ``<width>`` 元素或被标记为 ``type="none"`` 时，导入器无法推导
+截面宽度，进而报错。
 
 为了提高兼容性，我们在导出的 ``.xodr`` 中遍历每个 ``laneSection``，
 若发现中心车道缺少宽度定义，就补上一段零宽度曲线，并在需要时
-调整 ``type`` 属性。这样即使原始数据未提供中心车道宽度，导入器也
-能够识别到有效的截面信息。
+将其 ``type`` 属性强制设置为 ``driving``。这样即使原始数据未提供
+中心车道宽度，导入器也能够识别到有效的截面信息。
 """
 
 from __future__ import annotations
@@ -65,35 +66,32 @@ def ensure_center_lane_width(
         necessary.
     """
 
-    if width_attrs is None:
-        width_attrs = DEFAULT_WIDTH_ATTRS
-
     tree = ET.parse(path)
     updated = False
 
     for lane in _iter_center_lanes(tree):
-        has_width = any(child.tag == "width" for child in lane)
-        if has_width:
-            continue
+        lane_updated = False
 
-        # Inject an explicit width segment so downstream tools can infer the
-        # cross section.  The default values describe a constant zero width,
-        # which is sufficient for defining the reference line.
-        width_element = ET.Element("width", width_attrs)
-
-        # Place the new ``<width>`` element after ``<link>`` if present to
-        # mirror the usual OpenDRIVE ordering, otherwise append at the end.
-        link = lane.find("link")
-        if link is not None:
-            index = list(lane).index(link) + 1
-            lane.insert(index, width_element)
-        else:
-            lane.append(width_element)
-
-        if force_lane_type is not None:
+        if force_lane_type is not None and lane.get("type") != force_lane_type:
             lane.set("type", force_lane_type)
+            lane_updated = True
 
-        updated = True
+        has_width = any(child.tag == "width" for child in lane)
+        if not has_width:
+            attrs = dict(width_attrs or DEFAULT_WIDTH_ATTRS)
+            width_element = ET.Element("width", attrs)
+
+            link = lane.find("link")
+            if link is not None:
+                index = list(lane).index(link) + 1
+                lane.insert(index, width_element)
+            else:
+                lane.append(width_element)
+
+            lane_updated = True
+
+        if lane_updated:
+            updated = True
 
     if not updated:
         return False
@@ -106,16 +104,16 @@ def patch_file(path: Path, *, verbose: bool = True) -> bool:
     """Public helper used by CLI/automation hooks to patch a single file."""
 
     try:
-        changed = ensure_center_lane_width(path, force_lane_type=None)
+        changed = ensure_center_lane_width(path, force_lane_type="driving")
     except FileNotFoundError:
         if verbose:
             print(f"[SKIP] 未找到XODR文件: {path}")
         return False
 
     if changed and verbose:
-        print(f"[OK] 已为中心车道补写宽度: {path}")
+        print(f"[OK] 已更新中心车道定义: {path}")
     elif verbose:
-        print(f"[OK] 中心车道宽度已存在，无需修改: {path}")
+        print(f"[OK] 中心车道定义已满足要求: {path}")
     return changed
 
 
