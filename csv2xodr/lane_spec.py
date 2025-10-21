@@ -306,13 +306,24 @@ def _estimate_lane_side_from_geometry(
             # 数据残留明显的小错位。放宽阈值，让几何提示可以对整个车道堆栈
             # 进行轻微的整体纠偏，同时仍然忽略毫米级的浮点误差。
             if not single_sided_hint and math.isfinite(candidate) and abs(candidate) > 1e-3:
+                positive_pre = [val for val in values if val > 5e-2]
+                negative_pre = [val for val in values if val < -5e-2]
                 adjusted = [val - candidate for val in values]
                 positive = [val for val in adjusted if val > 5e-2]
                 negative = [val for val in adjusted if val < -5e-2]
-                # 只有在几何样本在调整后仍然覆盖参考线两侧时才执行全局
-                # 纠偏；当拓扑信息已经表明道路只位于单侧时，则完全跳过
-                # 这种纠偏，以免把整条道路拖到路肩之外。
-                if positive and negative:
+                # 只有在调整前后都能观察到车道跨越参考线两侧时，才说明
+                # 参考线确实偏离了道路中心，应当做整体纠偏。否则像日本那
+                # 样全部位于同一侧的道路，会因为 median 位于车道堆栈内部
+                # 而被强行拉到路肩之外。
+                allow_shift = bool(positive and negative)
+                if allow_shift and not (positive_pre and negative_pre):
+                    allow_shift = (
+                        left_expected is not None
+                        and right_expected is not None
+                        and left_expected > 0
+                        and right_expected > 0
+                    )
+                if allow_shift:
                     global_shift = candidate
                     apply_shift = True
 
