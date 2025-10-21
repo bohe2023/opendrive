@@ -179,6 +179,7 @@ def _estimate_lane_side_from_geometry(
     *,
     offset_mapper=None,
     geo_origin: Optional[Tuple[float, float]] = None,
+    expected_side_counts: Optional[Tuple[int, int]] = None,
 ) -> Tuple[Dict[str, str], Dict[str, float], Dict[str, float]]:
     if (
         lanes_geom_df is None
@@ -282,6 +283,15 @@ def _estimate_lane_side_from_geometry(
 
     global_shift = 0.0
     apply_shift = False
+    left_expected = None
+    right_expected = None
+    if expected_side_counts is not None:
+        left_expected, right_expected = expected_side_counts
+
+    single_sided_hint = False
+    if left_expected is not None and right_expected is not None:
+        single_sided_hint = left_expected == 0 or right_expected == 0
+
     if len(lane_bias) >= 2:
         values = list(lane_bias.values())
         min_val = min(values)
@@ -295,9 +305,16 @@ def _estimate_lane_side_from_geometry(
             # 它超过 5cm 时才会校正，这会让像日本数据那样本身已经较整齐的
             # 数据残留明显的小错位。放宽阈值，让几何提示可以对整个车道堆栈
             # 进行轻微的整体纠偏，同时仍然忽略毫米级的浮点误差。
-            if math.isfinite(candidate) and abs(candidate) > 1e-3:
-                global_shift = candidate
-                apply_shift = True
+            if not single_sided_hint and math.isfinite(candidate) and abs(candidate) > 1e-3:
+                adjusted = [val - candidate for val in values]
+                positive = [val for val in adjusted if val > 5e-2]
+                negative = [val for val in adjusted if val < -5e-2]
+                # 只有在几何样本在调整后仍然覆盖参考线两侧时才执行全局
+                # 纠偏；当拓扑信息已经表明道路只位于单侧时，则完全跳过
+                # 这种纠偏，以免把整条道路拖到路肩之外。
+                if positive and negative:
+                    global_shift = candidate
+                    apply_shift = True
 
     for lane_id, values in side_samples.items():
         if not values:
@@ -635,6 +652,24 @@ def build_lane_spec(
 
     lane_groups, group_parent_map, derived_side_hints = _split_lane_groups(raw_lane_groups, lane_info)
 
+    expected_side_counts: Optional[Tuple[int, int]] = None
+    if lane_info:
+        expected_left_lanes = 0
+        expected_right_lanes = 0
+        for info in lane_info.values():
+            lane_no = info.get("lane_no")
+            if lane_no is None:
+                continue
+            try:
+                lane_no_val = float(lane_no)
+            except (TypeError, ValueError):
+                continue
+            if lane_no_val > 0:
+                expected_left_lanes += 1
+            elif lane_no_val < 0:
+                expected_right_lanes += 1
+        expected_side_counts = (expected_left_lanes, expected_right_lanes)
+
     division_lookup = _build_division_lookup(
         lane_div_df, line_geometry_lookup=line_geometry_lookup, offset_mapper=offset_mapper
     )
@@ -648,6 +683,7 @@ def build_lane_spec(
         centerline,
         offset_mapper=offset_mapper,
         geo_origin=geo_origin,
+        expected_side_counts=expected_side_counts,
     )
 
     parent_lane_signs: Dict[str, Tuple[bool, bool]] = {}
