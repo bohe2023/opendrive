@@ -1,7 +1,7 @@
 from xml.etree.ElementTree import Element, SubElement, tostring
 import math
 import xml.dom.minidom as minidom
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
 def _format_float(value: float, precision: int = 9) -> str:
@@ -742,18 +742,37 @@ def write_xodr(
 
     for sec in lane_spec_per_section:
         attrs = {"s": _format_float(sec["s0"], precision=9)}
-        has_left = bool(sec.get("left"))
-        has_right = bool(sec.get("right"))
+
+        raw_left = list(sec.get("left") or [])
+        raw_right = list(sec.get("right") or [])
+
+        center_lanes: List[Dict[str, Any]] = []
+
+        def _partition_center(lanes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            filtered: List[Dict[str, Any]] = []
+            for lane in lanes:
+                lane_no = lane.get("lane_no")
+                lane_no_val: Optional[float] = None
+                if lane_no is not None:
+                    try:
+                        lane_no_val = float(lane_no)
+                    except (TypeError, ValueError):
+                        lane_no_val = None
+                if lane_no_val is not None and abs(lane_no_val) <= 0.5:
+                    center_lanes.append(lane)
+                else:
+                    filtered.append(lane)
+            return filtered
+
+        section_left_lanes = _partition_center(raw_left)
+        section_right_lanes = _partition_center(raw_right)
+
+        has_left = bool(section_left_lanes)
+        has_right = bool(section_right_lanes)
         if has_left != has_right:
             attrs["singleSide"] = "true"
 
         ls = SubElement(lanes, "laneSection", attrs)
-
-        center_el = SubElement(ls, "center")
-        SubElement(center_el, "lane", {"id": "0", "type": "none", "level": "false"})
-
-        left_el = SubElement(ls, "left") if has_left else None
-        right_el = SubElement(ls, "right") if has_right else None
 
         section_s0 = float(sec["s0"])
 
@@ -996,12 +1015,36 @@ def write_xodr(
                 for sid in successors:
                     SubElement(link, "successor", {"id": str(sid)})
 
-        for lane_data in sec.get("left", []):
+        center_el = SubElement(ls, "center")
+
+        center_lane_data: Optional[Dict[str, Any]] = None
+        if center_lanes:
+            # Prefer a central lane that carries an explicit width definition.
+            center_lane_data = max(
+                center_lanes,
+                key=lambda item: float(item.get("width", 0.0) or 0.0),
+            )
+
+        if center_lane_data is not None:
+            promoted = dict(center_lane_data)
+            promoted["id"] = 0
+            promoted.setdefault("type", "driving")
+            promoted["lane_no"] = 0
+            promoted["predecessors"] = []
+            promoted["successors"] = []
+            _write_lane(center_el, promoted)
+        else:
+            SubElement(center_el, "lane", {"id": "0", "type": "none", "level": "false"})
+
+        left_el = SubElement(ls, "left") if has_left else None
+        right_el = SubElement(ls, "right") if has_right else None
+
+        for lane_data in section_left_lanes:
             if left_el is None:
                 left_el = SubElement(ls, "left")
             _write_lane(left_el, lane_data)
 
-        for lane_data in sec.get("right", []):
+        for lane_data in section_right_lanes:
             if right_el is None:
                 right_el = SubElement(ls, "right")
             _write_lane(right_el, lane_data)

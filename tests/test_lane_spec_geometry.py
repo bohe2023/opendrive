@@ -515,3 +515,76 @@ def test_write_xodr_emits_explicit_lane_mark_geometry(tmp_path):
     assert float(last_geoms[0].attrib["sOffset"]) == pytest.approx(0.0)
     assert float(last_geoms[0].attrib["x"]) == pytest.approx(4.0)
     assert float(last_geoms[-1].attrib["x"]) == pytest.approx(5.0)
+
+
+def test_write_xodr_promotes_central_lane_to_reference(tmp_path):
+    centerline = DataFrame(
+        {
+            "s": [0.0, 10.0],
+            "x": [0.0, 10.0],
+            "y": [0.0, 0.0],
+            "hdg": [0.0, 0.0],
+        }
+    )
+
+    sections = [{"s0": 0.0, "s1": 10.0}]
+
+    shared_mark = {"type": "solid", "width": 0.12, "laneChange": "none"}
+
+    lane_specs = [
+        {
+            "s0": 0.0,
+            "s1": 10.0,
+            "left": [
+                {
+                    "id": 1,
+                    "lane_no": 1,
+                    "width": 3.5,
+                    "roadMark": shared_mark,
+                    "predecessors": [],
+                    "successors": [],
+                    "type": "driving",
+                },
+                {
+                    "id": 2,
+                    "lane_no": 0,
+                    "width": 3.5,
+                    "roadMark": shared_mark,
+                    "predecessors": [],
+                    "successors": [],
+                    "type": "driving",
+                },
+            ],
+            "right": [
+                {
+                    "id": -1,
+                    "lane_no": -1,
+                    "width": 3.5,
+                    "roadMark": shared_mark,
+                    "predecessors": [],
+                    "successors": [],
+                    "type": "driving",
+                }
+            ],
+        }
+    ]
+
+    out_file = Path(tmp_path) / "center_lane_promoted.xodr"
+    write_xodr(centerline, sections, lane_specs, out_file)
+
+    root = ET.parse(out_file).getroot()
+    center_lane = root.find(".//laneSection/center/lane")
+    assert center_lane is not None
+    assert center_lane.get("type") == "driving"
+
+    widths = center_lane.findall("width")
+    assert len(widths) == 1
+    assert float(widths[0].attrib["a"]) == pytest.approx(3.5)
+
+    road_mark = center_lane.find("roadMark")
+    assert road_mark is not None
+    assert road_mark.get("type") == "solid"
+
+    left_lanes = root.findall(".//laneSection/left/lane")
+    assert len(left_lanes) == 1
+    assert left_lanes[0].get("id") == "1"
