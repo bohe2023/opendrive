@@ -1,7 +1,6 @@
 """Helpers for building per-section lane specifications."""
 
 import math
-import statistics
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from csv2xodr.mapping.core import mark_type_from_division_row
@@ -179,15 +178,14 @@ def _estimate_lane_side_from_geometry(
     *,
     offset_mapper=None,
     geo_origin: Optional[Tuple[float, float]] = None,
-    expected_side_counts: Optional[Tuple[int, int]] = None,
-) -> Tuple[Dict[str, str], Dict[str, float], Dict[str, float]]:
+) -> Tuple[Dict[str, str], Dict[str, float]]:
     if (
         lanes_geom_df is None
         or len(lanes_geom_df) == 0
         or centerline is None
         or len(centerline) == 0
     ):
-        return {}, {}, {}
+        return {}, {}
 
     cols = list(lanes_geom_df.columns)
 
@@ -204,14 +202,14 @@ def _estimate_lane_side_from_geometry(
     offset_col = find_col("Offset")
 
     if lane_id_col is None or lat_col is None or lon_col is None or offset_col is None:
-        return {}, {}, {}
+        return {}, {}
 
     try:
         lat_vals = [float(v) for v in lanes_geom_df[lat_col].astype(float).to_list()]
         lon_vals = [float(v) for v in lanes_geom_df[lon_col].astype(float).to_list()]
         offsets_cm = [float(v) for v in lanes_geom_df[offset_col].astype(float).to_list()]
     except Exception:
-        return {}, {}, {}
+        return {}, {}
 
     # ``Offset`` values in the raw CSV are absolute centimetre positions measured from
     # a global reference.  The centreline normalisation logic rebases them so that the
@@ -236,7 +234,7 @@ def _estimate_lane_side_from_geometry(
     ]
 
     if not lane_ids or len(lane_ids) != len(offsets_m):
-        return {}, {}, {}
+        return {}, {}
 
     if geo_origin is not None:
         lat0, lon0 = geo_origin
@@ -273,109 +271,16 @@ def _estimate_lane_side_from_geometry(
 
     side_map: Dict[str, str] = {}
     strength_map: Dict[str, float] = {}
-    bias_map: Dict[str, float] = {}
-
-    lane_bias: Dict[str, float] = {}
     for lane_id, values in side_samples.items():
         if not values:
             continue
-        lane_bias[lane_id] = sum(values) / len(values)
-
-    global_shift = 0.0
-    apply_shift = False
-    left_expected = None
-    right_expected = None
-    if expected_side_counts is not None:
-        left_expected, right_expected = expected_side_counts
-
-    single_sided_hint = False
-    if left_expected is not None and right_expected is not None:
-        single_sided_hint = left_expected == 0 or right_expected == 0
-
-    if len(lane_bias) >= 2:
-        values = list(lane_bias.values())
-        min_val = min(values)
-        max_val = max(values)
-        skip_recentering = False
-        single_sided_geometry = min_val * max_val > 0
-        if single_sided_geometry:
-            allow_balanced_recenter = False
-            if (
-                left_expected is not None
-                and right_expected is not None
-                and left_expected > 0
-                and right_expected > 0
-                and abs(left_expected - right_expected) <= 1
-            ):
-                allow_balanced_recenter = True
-            if not allow_balanced_recenter:
-                # 所有车道的几何提示都在参考线同一侧，说明这是单侧道路
-                # 或者参考线本身已经处于道路边缘。此时如果再做整体偏移，
-                # 会把参考线拉到完全没有路面的区域。
-                #
-                # 将这种情况视为“无需整体校正”，保持原始偏差，让后续的
-                # 车道堆栈仍然围绕现有参考线构建。
-                skip_recentering = True
-        if not skip_recentering and max_val - min_val > 1e-3:
-            try:
-                candidate = statistics.median(values)
-            except statistics.StatisticsError:  # pragma: no cover - defensive
-                candidate = 0.0
-            # ``candidate`` 表示大多数车道共享的整体横向偏移量。以前只有当
-            # 它超过 5cm 时才会校正，这会让像日本数据那样本身已经较整齐的
-            # 数据残留明显的小错位。放宽阈值，让几何提示可以对整个车道堆栈
-            # 进行轻微的整体纠偏，同时仍然忽略毫米级的浮点误差。
-            if not single_sided_hint and math.isfinite(candidate) and abs(candidate) > 1e-3:
-                positive_pre = [val for val in values if val > 5e-2]
-                negative_pre = [val for val in values if val < -5e-2]
-                adjusted = [val - candidate for val in values]
-                positive = [val for val in adjusted if val > 5e-2]
-                negative = [val for val in adjusted if val < -5e-2]
-                # 只有在调整前后都能观察到车道跨越参考线两侧时，才说明
-                # 参考线确实偏离了道路中心，应当做整体纠偏。否则像日本那
-                # 样全部位于同一侧的道路，会因为 median 位于车道堆栈内部
-                # 而被强行拉到路肩之外。
-                allow_shift = bool(positive and negative)
-                if allow_shift:
-                    if not (positive_pre and negative_pre):
-                        allow_shift = (
-                            left_expected is not None
-                            and right_expected is not None
-                            and left_expected > 0
-                            and right_expected > 0
-                        )
-                if allow_shift and left_expected is not None and right_expected is not None:
-                    left_after = sum(1 for val in adjusted if val > 5e-2)
-                    right_after = sum(1 for val in adjusted if val < -5e-2)
-                    if left_after > left_expected or right_after > right_expected:
-                        allow_shift = False
-                    if allow_shift:
-                        left_before = len([val for val in values if val > 5e-2])
-                        right_before = len([val for val in values if val < -5e-2])
-                        expected_diff = left_expected - right_expected
-                        if expected_diff > 0:
-                            if left_after <= right_after:
-                                allow_shift = False
-                        elif expected_diff < 0:
-                            if right_after <= left_after:
-                                allow_shift = False
-                if allow_shift:
-                    global_shift = candidate
-                    apply_shift = True
-
-    for lane_id, values in side_samples.items():
-        if not values:
-            continue
-        shift = global_shift if apply_shift else 0.0
-        avg = lane_bias.get(lane_id, 0.0) - shift
-        if math.isfinite(avg):
-            bias_map[lane_id] = avg
+        avg = sum(values) / len(values)
         if abs(avg) <= 0.05:
             continue
         side_map[lane_id] = "left" if avg > 0.0 else "right"
-        strength_map[lane_id] = sum(abs(v - shift) for v in values) / len(values)
+        strength_map[lane_id] = sum(abs(v) for v in values) / len(values)
 
-    return side_map, strength_map, bias_map
+    return side_map, strength_map
 
 
 def _build_division_lookup(
@@ -571,28 +476,6 @@ def build_lane_spec(
 
     sections_list = list(sections)
     lane_info = (lane_topo or {}).get("lanes") or {}
-    expected_bias_sign: Dict[str, int] = {}
-    for data in lane_info.values():
-        base_id = data.get("base_id")
-        lane_no = data.get("lane_no")
-        if base_id is None or lane_no is None:
-            continue
-        try:
-            lane_no_val = float(lane_no)
-        except (TypeError, ValueError):
-            continue
-        sign = 0
-        if lane_no_val > 0:
-            sign = 1
-        elif lane_no_val < 0:
-            sign = -1
-        if sign == 0:
-            continue
-        previous = expected_bias_sign.get(base_id)
-        if previous is None or previous == 0:
-            expected_bias_sign[base_id] = sign
-        elif previous != sign:
-            expected_bias_sign[base_id] = 0
     raw_lane_groups = (lane_topo or {}).get("groups") or {}
     lane_count = (lane_topo or {}).get("lane_count") or 0
 
@@ -699,38 +582,15 @@ def build_lane_spec(
 
     lane_groups, group_parent_map, derived_side_hints = _split_lane_groups(raw_lane_groups, lane_info)
 
-    expected_side_counts: Optional[Tuple[int, int]] = None
-    if lane_info:
-        expected_left_lanes = 0
-        expected_right_lanes = 0
-        for info in lane_info.values():
-            lane_no = info.get("lane_no")
-            if lane_no is None:
-                continue
-            try:
-                lane_no_val = float(lane_no)
-            except (TypeError, ValueError):
-                continue
-            if lane_no_val > 0:
-                expected_left_lanes += 1
-            elif lane_no_val < 0:
-                expected_right_lanes += 1
-        expected_side_counts = (expected_left_lanes, expected_right_lanes)
-
     division_lookup = _build_division_lookup(
         lane_div_df, line_geometry_lookup=line_geometry_lookup, offset_mapper=offset_mapper
     )
 
-    (
-        raw_geometry_side_hint,
-        raw_geometry_strength,
-        raw_geometry_bias,
-    ) = _estimate_lane_side_from_geometry(
+    raw_geometry_side_hint, raw_geometry_strength = _estimate_lane_side_from_geometry(
         lanes_geometry_df,
         centerline,
         offset_mapper=offset_mapper,
         geo_origin=geo_origin,
-        expected_side_counts=expected_side_counts,
     )
 
     parent_lane_signs: Dict[str, Tuple[bool, bool]] = {}
@@ -750,23 +610,6 @@ def build_lane_spec(
 
     geometry_side_hint: Dict[str, str] = {}
     geometry_hint_strength: Dict[str, float] = {}
-    geometry_bias: Dict[str, float] = {
-        key: float(value)
-        for key, value in (raw_geometry_bias or {}).items()
-        if value is not None and math.isfinite(value)
-    }
-    for base_id, sign in expected_bias_sign.items():
-        if sign == 0:
-            continue
-        bias = geometry_bias.get(base_id)
-        if bias is None:
-            continue
-        if not math.isfinite(bias) or bias == 0.0:
-            continue
-        if sign > 0 and bias < 0.0:
-            geometry_bias[base_id] = abs(bias)
-        elif sign < 0 and bias > 0.0:
-            geometry_bias[base_id] = -abs(bias)
     for alias, parent in group_parent_map.items():
         hint = derived_side_hints.get(alias)
         parent_hint = raw_geometry_side_hint.get(parent)
@@ -1425,156 +1268,9 @@ def build_lane_spec(
         section_left.sort(key=lambda item: item["id"])
         section_right.sort(key=lambda item: item["id"], reverse=True)
 
-        lane_offset = _compute_lane_offset(section_left, section_right, lane_info, geometry_bias)
-
-        section_entry = {"s0": s0, "s1": s1, "left": section_left, "right": section_right}
-        if lane_offset is not None:
-            section_entry["laneOffset"] = lane_offset
-
-        out.append(section_entry)
+        out.append({"s0": s0, "s1": s1, "left": section_left, "right": section_right})
 
     return out
-
-
-def _compute_lane_offset(
-    section_left: List[Dict[str, Any]],
-    section_right: List[Dict[str, Any]],
-    lane_info: Dict[str, Dict[str, Any]],
-    geometry_bias: Dict[str, float],
-) -> Optional[float]:
-    """Estimate the lateral shift that recentres the lane stack."""
-
-    if not geometry_bias:
-        return None
-
-    def _lane_center_bias(lane: Dict[str, Any]) -> Optional[float]:
-        uid = lane.get("uid")
-        info = lane_info.get(uid, {})
-        base_id = info.get("base_id")
-        if base_id is None:
-            return None
-        bias = geometry_bias.get(base_id)
-        if bias is None or not math.isfinite(bias):
-            return None
-        return float(bias)
-
-    center_biases: List[float] = []
-    all_biases: List[float] = []
-    has_left_bias = False
-    has_right_bias = False
-
-    for lane in section_left + section_right:
-        lane_no = lane.get("lane_no")
-        if lane_no is None:
-            lane_no = lane_info.get(lane.get("uid"), {}).get("lane_no")
-        if lane_no is None:
-            continue
-        try:
-            lane_no_val = float(lane_no)
-        except (TypeError, ValueError):
-            continue
-        bias = _lane_center_bias(lane)
-        if bias is None:
-            continue
-
-        all_biases.append(bias)
-        if bias > 0:
-            has_left_bias = True
-        elif bias < 0:
-            has_right_bias = True
-
-        if abs(lane_no_val) <= 0.5:
-            center_biases.append(bias)
-
-    if center_biases:
-        finite_biases = [bias for bias in center_biases if math.isfinite(bias)]
-        if not finite_biases:
-            return None
-
-        center_bias = statistics.fmean(finite_biases)
-        if abs(center_bias) <= 1e-3:
-            return None
-
-        return -center_bias
-
-    if all_biases and has_left_bias and has_right_bias:
-        candidate = min(all_biases, key=lambda value: abs(value))
-        if math.isfinite(candidate) and abs(candidate) > 1e-3:
-            return -candidate
-
-    left_outer: List[float] = []
-    right_outer: List[float] = []
-    left_inner: List[float] = []
-    right_inner: List[float] = []
-
-    def _append(target: List[float], value: float) -> None:
-        if math.isfinite(value):
-            target.append(value)
-
-    for lane in section_left:
-        info = lane_info.get(lane.get("uid"), {})
-        base_id = info.get("base_id")
-        bias = geometry_bias.get(base_id)
-        if bias is None:
-            continue
-        try:
-            width_val = float(lane.get("width", 0.0))
-        except (TypeError, ValueError):
-            continue
-        half = width_val * 0.5
-        _append(left_outer, bias + half)
-        _append(left_inner, bias - half)
-
-    for lane in section_right:
-        info = lane_info.get(lane.get("uid"), {})
-        base_id = info.get("base_id")
-        bias = geometry_bias.get(base_id)
-        if bias is None:
-            continue
-        try:
-            width_val = float(lane.get("width", 0.0))
-        except (TypeError, ValueError):
-            continue
-        half = width_val * 0.5
-        _append(right_outer, bias - half)
-        _append(right_inner, bias + half)
-
-    def _closest(values: List[float], *, prefer_positive: Optional[bool]) -> Optional[float]:
-        if not values:
-            return None
-        filtered: List[float] = []
-        if prefer_positive is True:
-            filtered = [val for val in values if val >= 0.0]
-        elif prefer_positive is False:
-            filtered = [val for val in values if val <= 0.0]
-        if filtered:
-            values = filtered
-        return min(values, key=lambda val: abs(val))
-
-    left_edge = _closest(left_inner, prefer_positive=True)
-    right_edge = _closest(right_inner, prefer_positive=False)
-
-    center_bias: Optional[float] = None
-    if left_edge is not None and right_edge is not None:
-        center_bias = 0.5 * (left_edge + right_edge)
-    elif left_outer and right_outer:
-        center_bias = 0.5 * (max(left_outer) + min(right_outer))
-    elif left_inner and left_outer:
-        inner = _closest(left_inner, prefer_positive=True)
-        if inner is not None:
-            center_bias = 0.5 * (inner + max(left_outer))
-    elif right_inner and right_outer:
-        inner = _closest(right_inner, prefer_positive=False)
-        if inner is not None:
-            center_bias = 0.5 * (inner + min(right_outer))
-
-    if center_bias is None:
-        return None
-
-    if not math.isfinite(center_bias) or abs(center_bias) <= 1e-3:
-        return None
-
-    return -center_bias
 
 
 def apply_shoulder_profile(
