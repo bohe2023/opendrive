@@ -1304,40 +1304,7 @@ def build_lane_spec(
         section_left.sort(key=lambda item: item["id"])
         section_right.sort(key=lambda item: item["id"], reverse=True)
 
-        lane_offset: Optional[float] = None
-        left_bounds: List[float] = []
-        right_bounds: List[float] = []
-
-        if geometry_bias:
-            for lane in section_left:
-                info = lane_info.get(lane.get("uid"), {})
-                base_id = info.get("base_id")
-                bias = geometry_bias.get(base_id)
-                if bias is None:
-                    continue
-                try:
-                    width_val = float(lane.get("width", 0.0))
-                except (TypeError, ValueError):
-                    continue
-                left_bounds.append(bias + width_val * 0.5)
-            for lane in section_right:
-                info = lane_info.get(lane.get("uid"), {})
-                base_id = info.get("base_id")
-                bias = geometry_bias.get(base_id)
-                if bias is None:
-                    continue
-                try:
-                    width_val = float(lane.get("width", 0.0))
-                except (TypeError, ValueError):
-                    continue
-                right_bounds.append(bias - width_val * 0.5)
-
-        if left_bounds and right_bounds:
-            max_left = max(left_bounds)
-            min_right = min(right_bounds)
-            center_bias = 0.5 * (max_left + min_right)
-            if math.isfinite(center_bias) and abs(center_bias) > 1e-3:
-                lane_offset = -center_bias
+        lane_offset = _compute_lane_offset(section_left, section_right, lane_info, geometry_bias)
 
         section_entry = {"s0": s0, "s1": s1, "left": section_left, "right": section_right}
         if lane_offset is not None:
@@ -1346,6 +1313,84 @@ def build_lane_spec(
         out.append(section_entry)
 
     return out
+
+
+def _compute_lane_offset(
+    section_left: List[Dict[str, Any]],
+    section_right: List[Dict[str, Any]],
+    lane_info: Dict[str, Dict[str, Any]],
+    geometry_bias: Dict[str, float],
+) -> Optional[float]:
+    """Estimate the lateral shift that recentres the lane stack."""
+
+    if not geometry_bias:
+        return None
+
+    left_outer: List[float] = []
+    right_outer: List[float] = []
+    left_inner: List[float] = []
+    right_inner: List[float] = []
+
+    def _append(target: List[float], value: float) -> None:
+        if math.isfinite(value):
+            target.append(value)
+
+    for lane in section_left:
+        info = lane_info.get(lane.get("uid"), {})
+        base_id = info.get("base_id")
+        bias = geometry_bias.get(base_id)
+        if bias is None:
+            continue
+        try:
+            width_val = float(lane.get("width", 0.0))
+        except (TypeError, ValueError):
+            continue
+        half = width_val * 0.5
+        _append(left_outer, bias + half)
+        _append(left_inner, bias - half)
+
+    for lane in section_right:
+        info = lane_info.get(lane.get("uid"), {})
+        base_id = info.get("base_id")
+        bias = geometry_bias.get(base_id)
+        if bias is None:
+            continue
+        try:
+            width_val = float(lane.get("width", 0.0))
+        except (TypeError, ValueError):
+            continue
+        half = width_val * 0.5
+        _append(right_outer, bias - half)
+        _append(right_inner, bias + half)
+
+    def _closest(values: List[float], *, prefer_positive: Optional[bool]) -> Optional[float]:
+        if not values:
+            return None
+        filtered: List[float] = []
+        if prefer_positive is True:
+            filtered = [val for val in values if val >= 0.0]
+        elif prefer_positive is False:
+            filtered = [val for val in values if val <= 0.0]
+        if filtered:
+            values = filtered
+        return min(values, key=lambda val: abs(val))
+
+    left_edge = _closest(left_inner, prefer_positive=True)
+    right_edge = _closest(right_inner, prefer_positive=False)
+
+    center_bias: Optional[float] = None
+    if left_edge is not None and right_edge is not None:
+        center_bias = 0.5 * (left_edge + right_edge)
+    elif left_outer and right_outer:
+        center_bias = 0.5 * (max(left_outer) + min(right_outer))
+
+    if center_bias is None:
+        return None
+
+    if not math.isfinite(center_bias) or abs(center_bias) <= 1e-3:
+        return None
+
+    return -center_bias
 
 
 def apply_shoulder_profile(
