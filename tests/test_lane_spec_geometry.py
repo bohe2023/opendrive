@@ -352,6 +352,68 @@ def test_lane_offset_prefers_innermost_edges():
     assert offset == pytest.approx(-1.0)
 
 
+def test_lane_offset_respects_central_lane_bias():
+    lane_info = {
+        "C:0": {"base_id": "C", "lane_no": 0},
+        "L:1": {"base_id": "L", "lane_no": 1},
+        "R:-1": {"base_id": "R", "lane_no": -1},
+    }
+
+    section_left = [
+        {"uid": "L:1", "width": 3.5, "lane_no": 1},
+        {"uid": "C:0", "width": 3.5, "lane_no": 0},
+    ]
+    section_right = [
+        {"uid": "R:-1", "width": 3.5, "lane_no": -1},
+    ]
+
+    geometry_bias = {"L": 3.5, "C": 0.8, "R": -3.5}
+
+    offset = _compute_lane_offset(section_left, section_right, lane_info, geometry_bias)
+
+    assert offset == pytest.approx(-0.8)
+
+
+def test_lane_offset_recenters_single_right_side_stack():
+    lane_info = {
+        "R:1": {"base_id": "R1"},
+        "R:2": {"base_id": "R2"},
+        "R:3": {"base_id": "R3"},
+    }
+
+    section_right = [
+        {"uid": "R:1", "width": 3.5},
+        {"uid": "R:2", "width": 3.5},
+        {"uid": "R:3", "width": 3.5},
+    ]
+
+    geometry_bias = {"R1": -3.5, "R2": -7.0, "R3": -10.5}
+
+    offset = _compute_lane_offset([], section_right, lane_info, geometry_bias)
+
+    assert offset == pytest.approx(7.0)
+
+
+def test_lane_offset_recenters_single_left_side_stack():
+    lane_info = {
+        "L:1": {"base_id": "L1"},
+        "L:2": {"base_id": "L2"},
+        "L:3": {"base_id": "L3"},
+    }
+
+    section_left = [
+        {"uid": "L:1", "width": 3.5},
+        {"uid": "L:2", "width": 3.5},
+        {"uid": "L:3", "width": 3.5},
+    ]
+
+    geometry_bias = {"L1": 3.5, "L2": 7.0, "L3": 10.5}
+
+    offset = _compute_lane_offset(section_left, [], lane_info, geometry_bias)
+
+    assert offset == pytest.approx(-7.0)
+
+
 def test_write_xodr_emits_explicit_lane_mark_geometry(tmp_path):
     sections = [{"s0": 0.0, "s1": 4.0}, {"s0": 4.0, "s1": 10.0}]
 
