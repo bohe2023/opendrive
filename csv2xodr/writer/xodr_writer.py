@@ -780,6 +780,7 @@ def write_xodr(
             nonlocal explicit_geometry_written
             lane_id = lane_data["id"]
             lane_type = lane_data.get("type", "driving")
+            lane_type_lower = str(lane_type).lower()
             ln = SubElement(
                 parent,
                 "lane",
@@ -789,10 +790,14 @@ def write_xodr(
                     "level": str(lane_data.get("level", "false")).lower(),
                 },
             )
-            width = float(lane_data.get("width", 3.5))
+            width_raw = lane_data.get("width", 3.5)
+            try:
+                width = float(width_raw)
+            except (TypeError, ValueError):
+                width = float(3.5)
             SubElement(ln, "width", {"sOffset": "0.0", "a": f"{width:.3f}", "b": "0", "c": "0", "d": "0"})
             road_mark = lane_data.get("roadMark")
-            if road_mark is None and lane_type != "shoulder":
+            if road_mark is None and lane_type_lower not in ("shoulder", "none"):
                 road_mark = {"type": "solid", "width": 0.12, "laneChange": "both"}
 
             if road_mark is not None:
@@ -1032,9 +1037,23 @@ def write_xodr(
             promoted["lane_no"] = 0
             promoted["predecessors"] = []
             promoted["successors"] = []
+            width_raw = promoted.get("width")
+            try:
+                promoted["width"] = float(width_raw) if width_raw not in (None, "") else 0.0
+            except (TypeError, ValueError):
+                promoted["width"] = 0.0
             _write_lane(center_el, promoted)
         else:
-            SubElement(center_el, "lane", {"id": "0", "type": "none", "level": "false"})
+            placeholder_lane = {
+                "id": 0,
+                "type": "none",
+                "level": False,
+                "width": 0.0,
+                "predecessors": [],
+                "successors": [],
+                "roadMark": None,
+            }
+            _write_lane(center_el, placeholder_lane)
 
         left_el = SubElement(ls, "left") if has_left else None
         right_el = SubElement(ls, "right") if has_right else None
