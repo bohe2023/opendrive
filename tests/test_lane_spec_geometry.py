@@ -10,7 +10,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from csv2xodr.lane_spec import build_lane_spec, _build_division_lookup
+from csv2xodr.lane_spec import (
+    build_lane_spec,
+    _build_division_lookup,
+    _estimate_lane_side_from_geometry,
+)
 from csv2xodr.simpletable import DataFrame
 from csv2xodr.writer.xodr_writer import write_xodr
 
@@ -213,6 +217,44 @@ def test_strong_geometry_hint_overrides_lane_numbers():
 
     assert not specs[0]["left"], "strong right-side geometry should prevent left assignment"
     assert len(specs[0]["right"]) == 1
+
+
+def test_geometry_hint_recenters_common_bias():
+    meters_to_degrees = 180.0 / (math.pi * 6378137.0)
+
+    centerline = DataFrame(
+        {
+            "s": [0.0, 10.0],
+            "x": [0.0, 0.0],
+            "y": [0.0, 10.0],
+            "hdg": [math.pi / 2, math.pi / 2],
+        }
+    )
+
+    rows = []
+    for lane_id, lateral in (("L", 1.0), ("M", 4.0), ("R", 7.0)):
+        for offset_m in (0.0, 10.0):
+            rows.append(
+                {
+                    "Lane ID": lane_id,
+                    "Offset[cm]": str(offset_m * 100.0),
+                    "緯度[deg]": offset_m * meters_to_degrees,
+                    "経度[deg]": lateral * meters_to_degrees,
+                }
+            )
+
+    lanes_geometry = DataFrame(rows)
+
+    side_map, strength_map = _estimate_lane_side_from_geometry(
+        lanes_geometry,
+        centerline,
+        offset_mapper=lambda value: float(value),
+        geo_origin=(0.0, 0.0),
+    )
+
+    assert side_map["L"] == "left"
+    assert side_map["R"] == "right"
+    assert "M" not in side_map or abs(strength_map.get("M", 0.0)) <= 1e-9
 
 
 def test_positive_lanes_stay_on_single_side():
