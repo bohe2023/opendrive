@@ -1326,6 +1326,39 @@ def _compute_lane_offset(
     if not geometry_bias:
         return None
 
+    def _lane_center_bias(lane: Dict[str, Any]) -> Optional[float]:
+        uid = lane.get("uid")
+        info = lane_info.get(uid, {})
+        base_id = info.get("base_id")
+        if base_id is None:
+            return None
+        bias = geometry_bias.get(base_id)
+        if bias is None or not math.isfinite(bias):
+            return None
+        return float(bias)
+
+    center_biases: List[float] = []
+
+    for lane in section_left + section_right:
+        lane_no = lane.get("lane_no")
+        if lane_no is None:
+            lane_no = lane_info.get(lane.get("uid"), {}).get("lane_no")
+        if lane_no is None:
+            continue
+        try:
+            lane_no_val = float(lane_no)
+        except (TypeError, ValueError):
+            continue
+        if abs(lane_no_val) <= 0.5:
+            bias = _lane_center_bias(lane)
+            if bias is not None:
+                center_biases.append(bias)
+
+    if center_biases:
+        center_bias = sum(center_biases) / len(center_biases)
+        if math.isfinite(center_bias) and abs(center_bias) > 1e-3:
+            return -center_bias
+
     left_outer: List[float] = []
     right_outer: List[float] = []
     left_inner: List[float] = []
