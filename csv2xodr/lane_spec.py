@@ -291,7 +291,11 @@ def _estimate_lane_side_from_geometry(
                 candidate = statistics.median(values)
             except statistics.StatisticsError:  # pragma: no cover - defensive
                 candidate = 0.0
-            if math.isfinite(candidate) and abs(candidate) > 0.05:
+            # ``candidate`` 表示大多数车道共享的整体横向偏移量。以前只有当
+            # 它超过 5cm 时才会校正，这会让像日本数据那样本身已经较整齐的
+            # 数据残留明显的小错位。放宽阈值，让几何提示可以对整个车道堆栈
+            # 进行轻微的整体纠偏，同时仍然忽略毫米级的浮点误差。
+            if math.isfinite(candidate) and abs(candidate) > 1e-3:
                 global_shift = candidate
                 apply_shift = True
 
