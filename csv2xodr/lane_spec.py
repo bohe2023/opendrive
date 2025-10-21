@@ -296,7 +296,15 @@ def _estimate_lane_side_from_geometry(
         values = list(lane_bias.values())
         min_val = min(values)
         max_val = max(values)
-        if max_val - min_val > 1e-3:
+        if min_val * max_val > 0:
+            # 所有车道的几何提示都在参考线同一侧，说明这是单侧道路
+            # 或者参考线本身已经处于道路边缘。此时如果再做整体偏移，
+            # 会把参考线拉到完全没有路面的区域。
+            #
+            # 将这种情况视为“无需整体校正”，保持原始偏差，让后续的
+            # 车道堆栈仍然围绕现有参考线构建。
+            pass
+        elif max_val - min_val > 1e-3:
             try:
                 candidate = statistics.median(values)
             except statistics.StatisticsError:  # pragma: no cover - defensive
