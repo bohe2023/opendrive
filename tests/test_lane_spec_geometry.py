@@ -374,6 +374,28 @@ def test_lane_offset_respects_central_lane_bias():
     assert offset == pytest.approx(-0.8)
 
 
+def test_lane_offset_uses_bias_closest_to_reference_when_numbers_positive():
+    lane_info = {
+        "L:1": {"base_id": "L", "lane_no": 1},
+        "M:2": {"base_id": "M", "lane_no": 2},
+        "R:3": {"base_id": "R", "lane_no": 3},
+    }
+
+    section_left = [
+        {"uid": "L:1", "width": 3.5, "lane_no": 1},
+        {"uid": "M:2", "width": 3.5, "lane_no": 2},
+    ]
+    section_right = [
+        {"uid": "R:3", "width": 3.5, "lane_no": 3},
+    ]
+
+    geometry_bias = {"L": 3.5, "M": 0.6, "R": -3.5}
+
+    offset = _compute_lane_offset(section_left, section_right, lane_info, geometry_bias)
+
+    assert offset == pytest.approx(-0.6)
+
+
 def test_lane_offset_recenters_single_right_side_stack():
     lane_info = {
         "R:1": {"base_id": "R1"},

@@ -1338,6 +1338,9 @@ def _compute_lane_offset(
         return float(bias)
 
     center_biases: List[float] = []
+    all_biases: List[float] = []
+    has_left_bias = False
+    has_right_bias = False
 
     for lane in section_left + section_right:
         lane_no = lane.get("lane_no")
@@ -1349,15 +1352,28 @@ def _compute_lane_offset(
             lane_no_val = float(lane_no)
         except (TypeError, ValueError):
             continue
+        bias = _lane_center_bias(lane)
+        if bias is None:
+            continue
+
+        all_biases.append(bias)
+        if bias > 0:
+            has_left_bias = True
+        elif bias < 0:
+            has_right_bias = True
+
         if abs(lane_no_val) <= 0.5:
-            bias = _lane_center_bias(lane)
-            if bias is not None:
-                center_biases.append(bias)
+            center_biases.append(bias)
 
     if center_biases:
         center_bias = sum(center_biases) / len(center_biases)
         if math.isfinite(center_bias) and abs(center_bias) > 1e-3:
             return -center_bias
+
+    if all_biases and has_left_bias and has_right_bias:
+        candidate = min(all_biases, key=lambda value: abs(value))
+        if math.isfinite(candidate) and abs(candidate) > 1e-3:
+            return -candidate
 
     left_outer: List[float] = []
     right_outer: List[float] = []
