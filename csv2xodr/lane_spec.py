@@ -1366,9 +1366,10 @@ def _compute_lane_offset(
             center_biases.append(bias)
 
     if center_biases:
-        center_bias = sum(center_biases) / len(center_biases)
-        if math.isfinite(center_bias) and abs(center_bias) > 1e-3:
-            return -center_bias
+        # 中央车道已经直接采用 CSV 中的几何作为参考线，因此一旦识别到
+        # lane_no ≈ 0 的车道，就不再尝试平移 lane stack。否则会把导出的
+        # 车道整体挪离实测白线，引发用户报告的错位现象。
+        return None
 
     if all_biases and has_left_bias and has_right_bias:
         candidate = min(all_biases, key=lambda value: abs(value))
