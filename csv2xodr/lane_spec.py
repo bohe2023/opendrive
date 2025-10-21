@@ -1326,6 +1326,61 @@ def _compute_lane_offset(
     if not geometry_bias:
         return None
 
+    def _lane_center_bias(lane: Dict[str, Any]) -> Optional[float]:
+        uid = lane.get("uid")
+        info = lane_info.get(uid, {})
+        base_id = info.get("base_id")
+        if base_id is None:
+            return None
+        bias = geometry_bias.get(base_id)
+        if bias is None or not math.isfinite(bias):
+            return None
+        return float(bias)
+
+    center_biases: List[float] = []
+    all_biases: List[float] = []
+    has_left_bias = False
+    has_right_bias = False
+
+    for lane in section_left + section_right:
+        lane_no = lane.get("lane_no")
+        if lane_no is None:
+            lane_no = lane_info.get(lane.get("uid"), {}).get("lane_no")
+        if lane_no is None:
+            continue
+        try:
+            lane_no_val = float(lane_no)
+        except (TypeError, ValueError):
+            continue
+        bias = _lane_center_bias(lane)
+        if bias is None:
+            continue
+
+        all_biases.append(bias)
+        if bias > 0:
+            has_left_bias = True
+        elif bias < 0:
+            has_right_bias = True
+
+        if abs(lane_no_val) <= 0.5:
+            center_biases.append(bias)
+
+    if center_biases:
+        finite_biases = [bias for bias in center_biases if math.isfinite(bias)]
+        if not finite_biases:
+            return None
+
+        center_bias = statistics.fmean(finite_biases)
+        if abs(center_bias) <= 1e-3:
+            return None
+
+        return -center_bias
+
+    if all_biases and has_left_bias and has_right_bias:
+        candidate = min(all_biases, key=lambda value: abs(value))
+        if math.isfinite(candidate) and abs(candidate) > 1e-3:
+            return -candidate
+
     left_outer: List[float] = []
     right_outer: List[float] = []
     left_inner: List[float] = []
@@ -1383,6 +1438,14 @@ def _compute_lane_offset(
         center_bias = 0.5 * (left_edge + right_edge)
     elif left_outer and right_outer:
         center_bias = 0.5 * (max(left_outer) + min(right_outer))
+    elif left_inner and left_outer:
+        inner = _closest(left_inner, prefer_positive=True)
+        if inner is not None:
+            center_bias = 0.5 * (inner + max(left_outer))
+    elif right_inner and right_outer:
+        inner = _closest(right_inner, prefer_positive=False)
+        if inner is not None:
+            center_bias = 0.5 * (inner + min(right_outer))
 
     if center_bias is None:
         return None

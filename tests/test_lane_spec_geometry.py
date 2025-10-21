@@ -352,6 +352,90 @@ def test_lane_offset_prefers_innermost_edges():
     assert offset == pytest.approx(-1.0)
 
 
+def test_lane_offset_respects_central_lane_bias():
+    lane_info = {
+        "C:0": {"base_id": "C", "lane_no": 0},
+        "L:1": {"base_id": "L", "lane_no": 1},
+        "R:-1": {"base_id": "R", "lane_no": -1},
+    }
+
+    section_left = [
+        {"uid": "L:1", "width": 3.5, "lane_no": 1},
+        {"uid": "C:0", "width": 3.5, "lane_no": 0},
+    ]
+    section_right = [
+        {"uid": "R:-1", "width": 3.5, "lane_no": -1},
+    ]
+
+    geometry_bias = {"L": 3.5, "C": 0.8, "R": -3.5}
+
+    offset = _compute_lane_offset(section_left, section_right, lane_info, geometry_bias)
+
+    assert offset == pytest.approx(-0.8)
+
+
+def test_lane_offset_uses_bias_closest_to_reference_when_numbers_positive():
+    lane_info = {
+        "L:1": {"base_id": "L", "lane_no": 1},
+        "M:2": {"base_id": "M", "lane_no": 2},
+        "R:3": {"base_id": "R", "lane_no": 3},
+    }
+
+    section_left = [
+        {"uid": "L:1", "width": 3.5, "lane_no": 1},
+        {"uid": "M:2", "width": 3.5, "lane_no": 2},
+    ]
+    section_right = [
+        {"uid": "R:3", "width": 3.5, "lane_no": 3},
+    ]
+
+    geometry_bias = {"L": 3.5, "M": 0.6, "R": -3.5}
+
+    offset = _compute_lane_offset(section_left, section_right, lane_info, geometry_bias)
+
+    assert offset == pytest.approx(-0.6)
+
+
+def test_lane_offset_recenters_single_right_side_stack():
+    lane_info = {
+        "R:1": {"base_id": "R1"},
+        "R:2": {"base_id": "R2"},
+        "R:3": {"base_id": "R3"},
+    }
+
+    section_right = [
+        {"uid": "R:1", "width": 3.5},
+        {"uid": "R:2", "width": 3.5},
+        {"uid": "R:3", "width": 3.5},
+    ]
+
+    geometry_bias = {"R1": -3.5, "R2": -7.0, "R3": -10.5}
+
+    offset = _compute_lane_offset([], section_right, lane_info, geometry_bias)
+
+    assert offset == pytest.approx(7.0)
+
+
+def test_lane_offset_recenters_single_left_side_stack():
+    lane_info = {
+        "L:1": {"base_id": "L1"},
+        "L:2": {"base_id": "L2"},
+        "L:3": {"base_id": "L3"},
+    }
+
+    section_left = [
+        {"uid": "L:1", "width": 3.5},
+        {"uid": "L:2", "width": 3.5},
+        {"uid": "L:3", "width": 3.5},
+    ]
+
+    geometry_bias = {"L1": 3.5, "L2": 7.0, "L3": 10.5}
+
+    offset = _compute_lane_offset(section_left, [], lane_info, geometry_bias)
+
+    assert offset == pytest.approx(-7.0)
+
+
 def test_write_xodr_emits_explicit_lane_mark_geometry(tmp_path):
     sections = [{"s0": 0.0, "s1": 4.0}, {"s0": 4.0, "s1": 10.0}]
 
@@ -431,3 +515,76 @@ def test_write_xodr_emits_explicit_lane_mark_geometry(tmp_path):
     assert float(last_geoms[0].attrib["sOffset"]) == pytest.approx(0.0)
     assert float(last_geoms[0].attrib["x"]) == pytest.approx(4.0)
     assert float(last_geoms[-1].attrib["x"]) == pytest.approx(5.0)
+
+
+def test_write_xodr_promotes_central_lane_to_reference(tmp_path):
+    centerline = DataFrame(
+        {
+            "s": [0.0, 10.0],
+            "x": [0.0, 10.0],
+            "y": [0.0, 0.0],
+            "hdg": [0.0, 0.0],
+        }
+    )
+
+    sections = [{"s0": 0.0, "s1": 10.0}]
+
+    shared_mark = {"type": "solid", "width": 0.12, "laneChange": "none"}
+
+    lane_specs = [
+        {
+            "s0": 0.0,
+            "s1": 10.0,
+            "left": [
+                {
+                    "id": 1,
+                    "lane_no": 1,
+                    "width": 3.5,
+                    "roadMark": shared_mark,
+                    "predecessors": [],
+                    "successors": [],
+                    "type": "driving",
+                },
+                {
+                    "id": 2,
+                    "lane_no": 0,
+                    "width": 3.5,
+                    "roadMark": shared_mark,
+                    "predecessors": [],
+                    "successors": [],
+                    "type": "driving",
+                },
+            ],
+            "right": [
+                {
+                    "id": -1,
+                    "lane_no": -1,
+                    "width": 3.5,
+                    "roadMark": shared_mark,
+                    "predecessors": [],
+                    "successors": [],
+                    "type": "driving",
+                }
+            ],
+        }
+    ]
+
+    out_file = Path(tmp_path) / "center_lane_promoted.xodr"
+    write_xodr(centerline, sections, lane_specs, out_file)
+
+    root = ET.parse(out_file).getroot()
+    center_lane = root.find(".//laneSection/center/lane")
+    assert center_lane is not None
+    assert center_lane.get("type") == "driving"
+
+    widths = center_lane.findall("width")
+    assert len(widths) == 1
+    assert float(widths[0].attrib["a"]) == pytest.approx(3.5)
+
+    road_mark = center_lane.find("roadMark")
+    assert road_mark is not None
+    assert road_mark.get("type") == "solid"
+
+    left_lanes = root.findall(".//laneSection/left/lane")
+    assert len(left_lanes) == 1
+    assert left_lanes[0].get("id") == "1"
