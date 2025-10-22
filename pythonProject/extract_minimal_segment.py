@@ -211,8 +211,8 @@ def extract_segment(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="裁剪 OpenDRIVE 文件，保留最简单片段")
-    parser.add_argument("input", help="原始 xodr 文件路径")
-    parser.add_argument("output", help="输出 xodr 文件路径")
+    parser.add_argument("input", nargs="?", help="原始 xodr 文件路径")
+    parser.add_argument("output", nargs="?", help="输出 xodr 文件路径")
     parser.add_argument("--road-id", help="需要保留的 road id，如果不指定则使用第一条", default=None)
     parser.add_argument(
         "--max-geometries",
@@ -229,8 +229,29 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _indent_element(element: ET.Element, level: int = 0) -> None:
+    indent_text = "\n" + "  " * level
+    children = list(element)
+    if children:
+        if not element.text or not element.text.strip():
+            element.text = indent_text + "  "
+        for child in children:
+            _indent_element(child, level + 1)
+            if not child.tail or not child.tail.strip():
+                child.tail = indent_text + "  "
+        if not children[-1].tail or not children[-1].tail.strip():
+            children[-1].tail = indent_text
+    elif level and (not element.tail or not element.tail.strip()):
+        element.tail = indent_text
+
+
 def main() -> None:
     args = parse_args()
+    if args.input is None:
+        args.input = input("请输入原始 xodr 文件路径: ").strip()
+    if args.output is None:
+        args.output = input("请输入输出 xodr 文件路径: ").strip()
+
     tree = ET.parse(args.input)
     tree = extract_segment(
         tree,
@@ -238,7 +259,7 @@ def main() -> None:
         args.max_geometries,
         args.max_lane_sections,
     )
-    ET.indent(tree, space="  ")
+    _indent_element(tree.getroot())
     tree.write(args.output, encoding="utf-8", xml_declaration=True)
     print(f"已写入：{args.output}")
 
