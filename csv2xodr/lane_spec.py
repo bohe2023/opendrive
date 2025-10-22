@@ -1156,6 +1156,24 @@ def build_lane_spec(
             left_base_set = set(left_bases)
             right_base_set = set(right_bases)
 
+    if center_bases:
+        if not left_bases and not right_bases:
+            left_bases = [base for base in center_bases]
+            left_base_set = set(left_bases)
+            center_bases = []
+        elif not right_bases:
+            for base in center_bases:
+                if base not in left_base_set:
+                    left_bases.append(base)
+                    left_base_set.add(base)
+            center_bases = []
+        elif not left_bases:
+            for base in center_bases:
+                if base not in right_base_set:
+                    right_bases.append(base)
+                    right_base_set.add(base)
+            center_bases = []
+
     lane_id_map: Dict[str, int] = {}
     lane_side_map: Dict[str, str] = {}
 
@@ -1538,6 +1556,62 @@ def normalize_lane_ids(lane_sections: List[Dict[str, Any]]) -> None:
 
     if not lane_sections:
         return
+
+    for section in lane_sections:
+        center_lanes = list(section.get("center") or [])
+        if not center_lanes:
+            continue
+
+        left_lanes = section.get("left")
+        if left_lanes is None:
+            left_lanes = []
+            section["left"] = left_lanes
+
+        right_lanes = section.get("right")
+        if right_lanes is None:
+            right_lanes = []
+            section["right"] = right_lanes
+
+        remaining_center: List[Dict[str, Any]] = []
+
+        for lane in center_lanes:
+            width_raw = lane.get("width")
+            try:
+                width_val = float(width_raw)
+            except (TypeError, ValueError):
+                width_val = 0.0
+
+            lane_type = str(lane.get("type", "")).lower()
+
+            if width_val > 0.0 and lane_type not in ("none", "shoulder"):
+                lane_no_raw = lane.get("lane_no")
+                try:
+                    lane_no_val = float(lane_no_raw)
+                except (TypeError, ValueError):
+                    lane_no_val = None
+
+                target_side = "left"
+                if lane_no_val is not None and lane_no_val < 0:
+                    target_side = "right"
+
+                lane["__side"] = target_side
+                if target_side == "right":
+                    right_lanes.append(lane)
+                else:
+                    left_lanes.append(lane)
+            else:
+                remaining_center.append(lane)
+
+        section["center"] = remaining_center
+
+        def _lane_no_value(entry: Dict[str, Any]) -> float:
+            try:
+                return float(entry.get("lane_no"))
+            except (TypeError, ValueError):
+                return float("inf")
+
+        left_lanes.sort(key=_lane_no_value)
+        right_lanes.sort(key=lambda entry: _lane_no_value(entry))
 
     occurrence: Dict[Tuple[int, int], int] = {}
 

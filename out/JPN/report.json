@@ -14,14 +14,14 @@
   "output_counts": {
     "roads": 1,
     "laneSections": 19,
-    "lanes_total": 95,
+    "lanes_total": 114,
     "signals": 8,
     "signalObjects": 8
   },
   "road_length_m": 1476.3343669898945,
   "xodr_file": {
     "path": "/workspace/opendrive/out/JPN/map.xodr",
-    "size_bytes": 568812,
-    "line_count": 8334
+    "size_bytes": 573302,
+    "line_count": 8465
   }
 }
