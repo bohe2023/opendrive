@@ -745,12 +745,14 @@ def write_xodr(
 
         raw_left = list(sec.get("left") or [])
         raw_right = list(sec.get("right") or [])
-
-        center_lanes: List[Dict[str, Any]] = []
+        center_lanes: List[Dict[str, Any]] = list(sec.get("center") or [])
 
         def _partition_center(lanes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             filtered: List[Dict[str, Any]] = []
             for lane in lanes:
+                if lane.get("__side") == "center":
+                    center_lanes.append(lane)
+                    continue
                 lane_no = lane.get("lane_no")
                 lane_no_val: Optional[float] = None
                 if lane_no is not None:

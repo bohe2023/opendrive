@@ -923,6 +923,131 @@ def build_lane_spec(
         base for base in derived_right if base not in hinted_left and base not in hinted_right
     ]
 
+    def _split_by_neighbours(
+        base_candidates: List[str],
+    ) -> Optional[Tuple[List[str], List[str], List[str]]]:
+        if len(base_candidates) <= 1:
+            return None
+
+        base_set = set(base_candidates)
+
+        base_left: Dict[str, set] = {base: set() for base in base_candidates}
+        base_right: Dict[str, set] = {base: set() for base in base_candidates}
+
+        for uid, info in lane_info.items():
+            base = info.get("base_id")
+            if base not in base_set:
+                continue
+            for seg in info.get("segments", []):
+                left_neighbour = seg.get("left_neighbor")
+                right_neighbour = seg.get("right_neighbor")
+                if left_neighbour in base_set:
+                    base_left[base].add(left_neighbour)
+                if right_neighbour in base_set:
+                    base_right[base].add(right_neighbour)
+
+        has_left_edge = any(not base_left[base] and base_right[base] for base in base_candidates)
+        has_right_edge = any(not base_right[base] and base_left[base] for base in base_candidates)
+        has_center_candidate = any(base_left[base] and base_right[base] for base in base_candidates)
+
+        if not (has_left_edge and has_right_edge):
+            return None
+        if len(base_candidates) > 2 and not has_center_candidate:
+            return None
+
+        adjacency: Dict[str, set] = {base: set() for base in base_candidates}
+        for base in base_candidates:
+            for neighbour in base_left[base] | base_right[base]:
+                adjacency[base].add(neighbour)
+                adjacency.setdefault(neighbour, set()).add(base)
+
+        ordered_components: List[Tuple[List[str], set]] = []
+        seen: set = set()
+
+        for base in base_candidates:
+            if base in seen:
+                continue
+            stack = [base]
+            component: set = set()
+            while stack:
+                current = stack.pop()
+                if current in component:
+                    continue
+                component.add(current)
+                seen.add(current)
+                stack.extend(adjacency.get(current, set()))
+
+            if not component:
+                continue
+
+            comp_list = sorted(component, key=_base_sort_key)
+
+            comp_left = {item: base_left[item] & component for item in component}
+            comp_right = {item: base_right[item] & component for item in component}
+
+            starts = [item for item in comp_list if not comp_left[item] and comp_right[item]]
+            if not starts:
+                starts = comp_list[:]
+
+            order: List[str] = []
+            visited: set = set()
+
+            for start in starts:
+                order = []
+                visited = set()
+                current = start
+                previous: Optional[str] = None
+                while current is not None and current not in visited:
+                    order.append(current)
+                    visited.add(current)
+                    rights = sorted(
+                        comp_right.get(current, set()),
+                        key=_base_sort_key,
+                    )
+                    next_base: Optional[str] = None
+                    for candidate in rights:
+                        if candidate == previous:
+                            continue
+                        if current in comp_left.get(candidate, set()):
+                            next_base = candidate
+                            break
+                    previous, current = current, next_base
+
+                if len(order) == len(component):
+                    break
+
+            if len(order) != len(component):
+                return None
+
+            ordered_components.append((order, component))
+
+        left_split: List[str] = []
+        centre_split: List[str] = []
+        right_split: List[str] = []
+
+        for order, component in ordered_components:
+            length = len(order)
+            if length == 0:
+                continue
+
+            centre_index = length // 2 if length % 2 == 1 else None
+            left_count = length // 2
+            right_start = left_count if centre_index is None else centre_index + 1
+
+            left_part = [order[idx] for idx in range(left_count)]
+            right_part = [order[idx] for idx in range(right_start, length)]
+
+            if centre_index is not None:
+                centre_split.append(order[centre_index])
+
+            left_split.extend(reversed(left_part))
+            right_split.extend(right_part)
+
+        if not left_split or not right_split:
+            return None
+
+        return left_split, centre_split, right_split
+
     force_all_default_side = False
     skip_unassigned_assignment = False
 
@@ -1006,6 +1131,8 @@ def build_lane_spec(
                 right_bases.append(base)
                 right_base_set.add(base)
 
+    center_bases: List[str] = []
+
     if not left_bases and not right_bases and base_ids:
         if not negative_bases and not hinted_right and not derived_right:
             left_bases = [base for base in base_ids]
@@ -1015,6 +1142,19 @@ def build_lane_spec(
             right_bases = [base for base in base_ids if base not in left_bases]
         left_base_set = set(left_bases)
         right_base_set = set(right_bases)
+
+    if left_bases and not right_bases:
+        split_result = _split_by_neighbours(left_bases)
+        if split_result is not None:
+            left_bases, center_bases, right_bases = split_result
+            left_base_set = set(left_bases)
+            right_base_set = set(right_bases)
+    elif right_bases and not left_bases:
+        split_result = _split_by_neighbours(right_bases)
+        if split_result is not None:
+            left_bases, center_bases, right_bases = split_result
+            left_base_set = set(left_bases)
+            right_base_set = set(right_bases)
 
     lane_id_map: Dict[str, int] = {}
     lane_side_map: Dict[str, str] = {}
@@ -1098,6 +1238,12 @@ def build_lane_spec(
             if spans:
                 assigned_spans_right.setdefault(assigned, []).extend(spans)
 
+    for base in center_bases:
+        ordered = sorted(lane_groups.get(base, []), key=lambda x: lane_info[x]["lane_no"])
+        for uid in ordered:
+            lane_id_map[uid] = 0
+            lane_side_map[uid] = "center"
+
     lane_section_map: Dict[Tuple[str, int], Dict[str, Any]] = {}
     lane_section_indices: Dict[str, List[int]] = {uid: [] for uid in lane_id_map}
     for idx, sec in enumerate(sections_list):
@@ -1141,6 +1287,7 @@ def build_lane_spec(
     for idx, sec in enumerate(sections_list):
         section_left: List[Dict[str, Any]] = []
         section_right: List[Dict[str, Any]] = []
+        section_center: List[Dict[str, Any]] = []
         s0 = sec["s0"]
         s1 = sec["s1"]
 
@@ -1258,17 +1405,23 @@ def build_lane_spec(
                 "predecessors": predecessors,
                 "successors": successors,
                 "type": lane_info[uid].get("type", "driving"),
+                "__side": side,
             }
 
             if side == "left":
                 section_left.append(lane_entry)
-            else:
+            elif side == "right":
                 section_right.append(lane_entry)
+            else:
+                section_center.append(lane_entry)
 
         section_left.sort(key=lambda item: item["id"])
         section_right.sort(key=lambda item: item["id"], reverse=True)
+        section_center.sort(key=lambda item: item["id"])
 
-        out.append({"s0": s0, "s1": s1, "left": section_left, "right": section_right})
+        out.append(
+            {"s0": s0, "s1": s1, "left": section_left, "right": section_right, "center": section_center}
+        )
 
     return out
 

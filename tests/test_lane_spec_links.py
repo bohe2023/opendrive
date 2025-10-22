@@ -422,6 +422,79 @@ def test_lane_spec_uses_lane_count_when_only_positive_lane_numbers():
     assert section["right"] == []
 
 
+def test_lane_spec_splits_positive_lanes_when_neighbours_form_chain():
+    """Left/right neighbours should reveal both sides even without negative lane numbers."""
+
+    sections = [{"s0": 0.0, "s1": 10.0}]
+
+    lane_topology = {
+        "lane_count": 3,
+        "groups": {
+            "A": ["A:1"],
+            "B": ["B:2"],
+            "C": ["C:3"],
+        },
+        "lanes": {
+            "A:1": {
+                "base_id": "A",
+                "lane_no": 1,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 10.0,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                        "left_neighbor": None,
+                        "right_neighbor": "B",
+                    }
+                ],
+            },
+            "B:2": {
+                "base_id": "B",
+                "lane_no": 2,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 10.0,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                        "left_neighbor": "A",
+                        "right_neighbor": "C",
+                    }
+                ],
+            },
+            "C:3": {
+                "base_id": "C",
+                "lane_no": 3,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 10.0,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                        "left_neighbor": "B",
+                        "right_neighbor": None,
+                    }
+                ],
+            },
+        },
+    }
+
+    specs = build_lane_spec(sections, lane_topology, defaults={}, lane_div_df=None)
+
+    assert len(specs) == 1
+    section = specs[0]
+    assert [lane["id"] for lane in section["left"]] == [1]
+    assert [lane["id"] for lane in section["right"]] == [-1]
+    assert [lane["id"] for lane in section.get("center", [])] == [0]
+
+
 def test_lane_spec_splits_positive_and_negative_lane_numbers_with_lane_count():
     """When both sides have evidence, lanes are split across left/right lists."""
 
