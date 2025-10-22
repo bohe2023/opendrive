@@ -15,6 +15,38 @@ from csv2xodr.simpletable import DataFrame
 from csv2xodr.writer.xodr_writer import write_xodr
 
 
+class _Series:
+    def __init__(self, values):
+        self._values = list(values)
+        self.iloc = self
+
+    def __getitem__(self, idx):
+        return self._values[idx]
+
+
+class _SimpleCenterline:
+    def __init__(self, columns):
+        self._columns = {k: list(v) for k, v in columns.items()}
+        lengths = {len(v) for v in self._columns.values()}
+        if len(lengths) != 1:
+            raise ValueError("All columns must have the same length")
+
+    def __len__(self):
+        return len(next(iter(self._columns.values())))
+
+    def __getitem__(self, item):
+        return _Series(self._columns[item])
+
+
+def _make_centerline():
+    return _SimpleCenterline({
+        "s": [0.0, 10.0],
+        "x": [0.0, 10.0],
+        "y": [0.0, 0.0],
+        "hdg": [0.0, 0.0],
+    })
+
+
 def _make_lane_topology(line_id: str):
     return {
         "lane_count": 1,
@@ -275,6 +307,82 @@ def test_positive_lanes_stay_on_single_side():
 
     assert specs[0]["right"] == [], "positive-only lanes should not be inferred as right-side lanes"
     assert [lane["uid"] for lane in specs[0]["left"]] == ["A:1", "B:1", "C:1"]
+
+
+def test_write_xodr_uses_neighbour_chain_for_center_lane(tmp_path):
+    sections = [{"s0": 0.0, "s1": 10.0}]
+
+    lane_topology = {
+        "lane_count": 3,
+        "groups": {
+            "L1": ["L1:1"],
+            "C": ["C:2"],
+            "R1": ["R1:3"],
+        },
+        "lanes": {
+            "L1:1": {
+                "base_id": "L1",
+                "lane_no": 1,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 10.0,
+                        "width": 3.4,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                        "left_neighbor": None,
+                        "right_neighbor": "C",
+                    }
+                ],
+            },
+            "C:2": {
+                "base_id": "C",
+                "lane_no": 2,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 10.0,
+                        "width": 3.5,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                        "left_neighbor": "L1",
+                        "right_neighbor": "R1",
+                    }
+                ],
+            },
+            "R1:3": {
+                "base_id": "R1",
+                "lane_no": 3,
+                "segments": [
+                    {
+                        "start": 0.0,
+                        "end": 10.0,
+                        "width": 3.6,
+                        "successors": [],
+                        "predecessors": [],
+                        "line_positions": {},
+                        "left_neighbor": "C",
+                        "right_neighbor": None,
+                    }
+                ],
+            },
+        },
+    }
+
+    specs = build_lane_spec(sections, lane_topology, defaults={}, lane_div_df=None)
+    out_path = tmp_path / "neighbour_center.xodr"
+    write_xodr(_make_centerline(), sections, specs, out_path)
+
+    tree = ET.parse(out_path)
+    lane_section = tree.find(".//laneSection")
+    assert lane_section is not None
+    center_lane = lane_section.find("center/lane")
+    assert center_lane is not None
+    width_el = center_lane.find("width")
+    assert width_el is not None
+    assert float(width_el.get("a")) == pytest.approx(3.5)
 
 
 def test_write_xodr_emits_explicit_lane_mark_geometry(tmp_path):
