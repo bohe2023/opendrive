@@ -35,7 +35,7 @@ def test_build_centerline_chooses_longest_path():
 
     center, _ = build_centerline(df, None)
 
-    # Only the four points from path A should remain.
+    # Path A の4点だけが残るはず。
     assert len(center) == len(path_a)
 
     lat0 = np.mean([lat for lat, _ in path_a])
@@ -88,10 +88,10 @@ def test_build_centerline_averages_duplicate_offsets():
 
     center, _ = build_centerline(df, None)
 
-    # Only unique offsets should remain.
+    # オフセットは一意な値だけが残るべき。
     assert len(center) == 2
 
-    # Offsets are reported in centimetres, so "s" should use metres.
+    # オフセット列はセンチメートルなので "s" はメートルへ換算する。
     assert center["s"].to_list() == pytest.approx([0.0, 1.0], rel=1e-6)
 
     lat_avg0 = np.mean([35.0, 35.000001])
@@ -122,6 +122,32 @@ def test_build_centerline_discards_repeated_samples():
 
     center, _ = build_centerline(df, None)
 
-    # Duplicate offsets should be collapsed so that the resulting ``s`` values
-    # remain strictly increasing, preventing zero-length geometry segments.
+    # 重複するオフセットはまとめ、生成される ``s`` が厳密に単調増加となるようにし
+    # ゼロ長のジオメトリ区間を避ける。
     assert center["s"].to_list() == pytest.approx([0.0, 1.0, 2.0], rel=1e-6)
+
+
+def test_build_centerline_prefers_matching_base_point():
+    df_geo = pd.DataFrame(
+        {
+            "Path Id": ["B", "B", "B"],
+            "Offset[cm]": [0, 50, 100],
+            "緯度[deg]": [35.0, 35.0, 35.0005],
+            "経度[deg]": [135.0, 135.0001, 135.0002],
+        }
+    )
+
+    df_base = pd.DataFrame(
+        {
+            "Path Id": ["A", "B"],
+            "Offset[cm]": [0, 0],
+            "End Offset[cm]": [100, 100],
+            "緯度[deg]": [10.0, 20.0],
+            "経度[deg]": [30.0, 40.0],
+        }
+    )
+
+    _, origin = build_centerline(df_geo, df_base)
+
+    assert origin[0] == pytest.approx(20.0)
+    assert origin[1] == pytest.approx(40.0)

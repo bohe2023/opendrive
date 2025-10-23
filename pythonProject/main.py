@@ -1,10 +1,4 @@
-"""Command line helper to convert CSV datasets into OpenDRIVE files.
-
-This script understands different CSV layouts (currently JPN and US) and
-dispatches them to their dedicated conversion pipeline.  Both formats reuse
-the conversion machinery in ``csv2xodr.csv2xodr`` while supplying their
-format-specific configuration files.
-"""
+"""CSV変換フローを実行する簡易CLIユーティリティ。"""
 
 from __future__ import annotations
 
@@ -22,12 +16,12 @@ if str(ROOT) not in sys.path:
 
 
 from csv2xodr.csv2xodr import convert_dataset  # noqa: E402
-from pythonProject import add_shape_index, interpolate_curvature  # noqa: E402
+from pythonProject import add_shape_index, interpolate_curvature, postprocess_xodr  # noqa: E402
 
 
 @dataclass(frozen=True)
 class FormatPipeline:
-    """Description of a conversion pipeline for a specific CSV flavour."""
+    """各フォーマットに対応する処理パイプラインの定義。"""
 
     name: str
     input_dir: Path
@@ -38,7 +32,7 @@ class FormatPipeline:
 
 
 def build_pipeline_registry() -> Dict[str, FormatPipeline]:
-    """Create the registry that maps format identifiers to pipelines."""
+    """フォーマット識別子とパイプラインの対応表を構築する。"""
 
     input_root = ROOT / "input_csv"
     output_root = ROOT / "out"
@@ -65,76 +59,78 @@ def build_pipeline_registry() -> Dict[str, FormatPipeline]:
 
 
 def _run_us_pipeline(input_dir: str, output_path: str, config_path: str) -> Dict:
-    """Execute the US-specific CSV → OpenDRIVE workflow."""
+    """米国向けデータの変換を実行する薄いラッパー。"""
 
     return convert_dataset(input_dir, output_path, config_path)
 
 
 def run_pipeline(pipeline: FormatPipeline) -> Dict:
-    """Execute a pipeline and return the conversion statistics."""
+    """指定パイプラインを実行して統計情報を返す。"""
 
     if not pipeline.input_dir.exists():
-        raise FileNotFoundError(f"未找到输入目录: {pipeline.input_dir}")
+        raise FileNotFoundError(f"入力ディレクトリが見つかりません: {pipeline.input_dir}")
 
+    # 出力ディレクトリを整備してから処理を開始する
     pipeline.output_dir.mkdir(parents=True, exist_ok=True)
     output_path = pipeline.output_dir / pipeline.output_filename
     return pipeline.runner(str(pipeline.input_dir), str(output_path), str(pipeline.config_path))
 
 
 def preprocess_csv_sources(root: Path) -> None:
-    """Run the CSV preprocessing steps prior to OpenDRIVE conversion."""
+    """OpenDRIVE生成前にCSV側の前処理を行う。"""
 
-    print("开始执行CSV预处理流程……")
+    print("CSV前処理フローを開始します……")
 
-    print(" 1/2: 更新车道几何形状索引……")
+    print(" 1/2: レーン幾何の形状インデックスを更新中……")
     for path in add_shape_index.default_files(root):
         if not path.exists():
-            print(f"    [SKIP] 未找到文件: {path}")
+            print(f"    [SKIP] ファイルが見つかりません: {path}")
             continue
 
+        # 元データへ形状インデックス列を付加
         add_shape_index.add_shape_index_column(path, encoding=add_shape_index.DEFAULT_ENCODING)
-        print(f"    [OK] 已更新形状索引列: {path}")
+        print(f"    [OK] 形状インデックス列を更新しました: {path}")
 
-    print(" 2/2: 插值曲率缺失的形状索引……")
+    print(" 2/2: 曲率CSVの欠損インデックスを補間中……")
     for path in interpolate_curvature.default_files(root):
         if not path.exists():
-            print(f"    [SKIP] 未找到文件: {path}")
+            print(f"    [SKIP] ファイルが見つかりません: {path}")
             continue
 
         added_rows = interpolate_curvature.process_file(
             path, encoding=interpolate_curvature.DEFAULT_ENCODING
         )
         if added_rows:
-            print(f"    [OK] {path}: 新增 {added_rows} 行插值数据")
+            print(f"    [OK] {path}: {added_rows} 行の補間データを追加しました")
         else:
-            print(f"    [OK] {path}: 无需插值，保持原状")
+            print(f"    [OK] {path}: 補間は不要でした")
 
 
 def iter_targets(
     registry: Dict[str, FormatPipeline], selected_format: Optional[str], convert_all: bool
 ) -> Iterable[FormatPipeline]:
-    """Return the pipelines that should be executed based on CLI arguments."""
+    """CLI引数に応じて実行対象となるパイプラインを返す。"""
 
     if convert_all:
         return registry.values()
     if selected_format is not None:
         return (registry[selected_format],)
-    # 默认仅处理日规（JPN）格式
+    # 明示指定がなければ日規（JPN）のみ処理する
     return (registry["JPN"],)
 
 
 def main(argv: Optional[Iterable[str]] = None) -> None:
     registry = build_pipeline_registry()
-    parser = argparse.ArgumentParser(description="根据CSV格式转换为OpenDRIVE。")
+    parser = argparse.ArgumentParser(description="CSV仕様に基づきOpenDRIVEへ変換します。")
     parser.add_argument(
         "--format",
         choices=sorted(registry.keys()),
-        help="需要转换的CSV格式标识（默认JPN）",
+        help="変換対象のCSVフォーマット（省略時はJPN）",
     )
     parser.add_argument(
         "--all",
         action="store_true",
-        help="一次性转换所有支持的格式。",
+        help="対応する全フォーマットを一括変換",
     )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -143,18 +139,22 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         preprocess_csv_sources(ROOT)
 
     for pipeline in iter_targets(registry, args.format, args.all):
-        print(f"开始处理 {pipeline.name} 格式……")
+        print(f"{pipeline.name} フォーマットの変換を開始します……")
         try:
             stats = run_pipeline(pipeline)
         except NotImplementedError as exc:
-            print(f"[{pipeline.name}] 暂未完成: {exc}")
+            print(f"[{pipeline.name}] 未対応の機能です: {exc}")
             continue
         except FileNotFoundError as exc:
-            print(f"[{pipeline.name}] 输入目录缺失: {exc}")
+            print(f"[{pipeline.name}] 入力ディレクトリが不足しています: {exc}")
             continue
 
         print(json.dumps(stats, ensure_ascii=False, indent=2))
 
+        xodr_path = stats.get("xodr_file", {}).get("path")
+        if xodr_path:
+            postprocess_xodr.patch_file(Path(xodr_path), verbose=True)
 
-if __name__ == "__main__":  # pragma: no cover - CLI entry point
+
+if __name__ == "__main__":  # pragma: no cover - CLI のエントリーポイント
     main()

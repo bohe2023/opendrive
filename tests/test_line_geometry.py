@@ -342,7 +342,7 @@ def test_line_geometry_lookup_projects_onto_centerline():
     assert s_vals[-1] == pytest.approx(10.0)
     assert len(s_vals) >= len(offsets_cm)
 
-    # The reconstructed geometry should follow the centreline heading without jitter.
+    # 復元したジオメトリは中心線の方位に揺らぎなく追従するはず。
     for s_val, x_val in zip(s_vals, geom["x"]):
         assert x_val == pytest.approx(s_val, abs=1e-3)
 

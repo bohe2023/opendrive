@@ -1,4 +1,4 @@
-"""A tiny YAML loader supporting the subset used by csv2xodr configs."""
+"""csv2xodr の設定で使う最小限の機能だけを備えた簡易 YAML ローダー。"""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Utilities for parsing white line geometry from CSV inputs."""
+"""CSVから区画線ジオメトリを解析するためのユーティリティ。"""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def _to_float(value: Any) -> Optional[float]:
         if text == "" or text.lower() == "nan":
             return None
         return float(text)
-    except Exception:  # pragma: no cover - defensive
+    except Exception:  # pragma: no cover - 防御的な分岐
         return None
 
 
@@ -65,7 +65,7 @@ def build_line_geometry_lookup(
     curvature_samples: Optional[Iterable[Dict[str, Any]]] = None,
     centerline: Optional[DataFrame] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """Return a lookup of canonical line IDs to polylines in local XY."""
+    """正規化したラインIDからローカルXYポリラインへの写像を構築する。"""
 
     if line_geom_df is None or len(line_geom_df) == 0:
         return {}
@@ -108,10 +108,10 @@ def build_line_geometry_lookup(
         Tuple[Any, Any, Any, Any, Any, float, Optional[float]], Dict[str, float]
     ] = {}
 
-    # ``curvature_samples`` had previously been used to inject raw curvature
-    # measurements.  The new smoothing-based pipeline derives curvature from the
-    # lane geometry directly, therefore any supplied samples are ignored.  The
-    # parameter is kept for backwards compatibility with existing call sites.
+    # かつて ``curvature_samples`` は生の曲率計測値を注入するために使われていた。
+    # 現在は平滑化パイプラインがレーンジオメトリから直接曲率を求めるため、
+    # 外部から渡されたサンプルは無視する。既存呼び出しとの互換性維持のため
+    # 引数自体は残してある。
 
     for idx in range(len(line_geom_df)):
         row = line_geom_df.iloc[idx]
@@ -194,13 +194,13 @@ def build_line_geometry_lookup(
             if shape_count_col is not None:
                 try:
                     raw_value = row[shape_count_col]
-                except Exception:  # pragma: no cover - defensive
+                except Exception:  # pragma: no cover - 防御的な分岐
                     raw_value = None
                 raw_count = _to_float(raw_value)
                 if raw_count is not None and raw_count > 0:
                     try:
                         count_val = int(round(raw_count))
-                    except Exception:  # pragma: no cover - defensive
+                    except Exception:  # pragma: no cover - 防御的な分岐
                         count_val = None
             step_val: Optional[float] = None
             if count_val is not None and count_val > 1 and end_cm_val is not None:
@@ -285,7 +285,7 @@ def build_line_geometry_lookup(
 
         try:
             x_vals, y_vals = latlon_to_local_xy(lat_vals, lon_vals, lat0, lon0)
-        except Exception:  # pragma: no cover - defensive
+        except Exception:  # pragma: no cover - 防御的な分岐
             continue
 
         if len(x_vals) != len(z_vals) or len(x_vals) != len(offsets_raw):
@@ -297,16 +297,14 @@ def build_line_geometry_lookup(
             else:
                 shape_indices = shape_indices[: len(offsets_raw)]
 
-        # The Japanese datasets reuse the same ``line_id`` across multiple
-        # carriageway segments.  Each time the offset restarts from zero the
-        # geometry would jump back to the beginning of the alignment, producing
-        # spaghetti-like lane lines in the viewer.  Split the sequence whenever
-        # the longitudinal coordinate decreases noticeably so every emitted
-        # polyline remains strictly monotonic along ``s``.
+        # 日本のデータセットでは複数の車道区間で同じ ``line_id`` が再利用される。
+        # オフセットが0へ戻るたびにジオメトリも先頭へ巻き戻り、ビューア上では
+        # 麺のように絡んだ線になる。s方向の値が明確に逆行したタイミングで分割し、
+        # 生成するポリラインが常に単調増加になるよう保つ。
         sequences: List[List[Tuple[float, float, float, float, Optional[float], Optional[float]]]] = []
         current: List[Tuple[float, float, float, float, Optional[float], Optional[float]]] = []
         last_s: Optional[float] = None
-        reset_threshold = 1e-4  # tolerate sub-millimetre jitter while catching real resets
+        reset_threshold = 1e-4  # 実際のリセットを見落とさずサブミリの揺らぎを許容
 
         entry_base_offset: Optional[float] = None
         for raw in offsets_raw:
@@ -344,7 +342,7 @@ def build_line_geometry_lookup(
             if offset_mapper is not None:
                 try:
                     s_float = float(offset_mapper(offset_m))
-                except Exception:  # pragma: no cover - defensive
+                except Exception:  # pragma: no cover - 防御的な分岐
                     continue
             else:
                 s_float = float(offset_m)
@@ -373,8 +371,7 @@ def build_line_geometry_lookup(
                     and abs(y_float - prev_y) <= 1e-9
                     and abs(z_float - prev_z) <= 1e-9
                 ):
-                    # Skip duplicate samples that would otherwise collapse into
-                    # zero-length segments after splitting.
+                    # 分割後にゼロ長へ潰れてしまう重複サンプルはスキップする。
                     last_s = s_float
                     continue
 
@@ -513,7 +510,7 @@ class _ProjectionResult:
 
 
 class _CenterlineProjector:
-    """Helper that provides arc-length projections onto the centreline."""
+    """センターライン上への弧長射影を提供する補助クラス。"""
 
     def __init__(self, centerline: Optional[DataFrame]):
         self.is_valid = False
@@ -527,7 +524,7 @@ class _CenterlineProjector:
             s_raw = [float(v) for v in centerline["s"].to_list()]
             x_raw = [float(v) for v in centerline["x"].to_list()]
             y_raw = [float(v) for v in centerline["y"].to_list()]
-        except Exception:  # pragma: no cover - defensive
+        except Exception:  # pragma: no cover - 防御的な分岐
             return
 
         if len(s_raw) != len(x_raw) or len(s_raw) != len(y_raw):
@@ -549,7 +546,7 @@ class _CenterlineProjector:
                 continue
             tangent_len = math.hypot(dx, dy)
             if tangent_len <= 1e-9:
-                # Degenerate segment – reuse the previous tangent if available.
+                # 退化区間の場合は可能であれば直前の接線を再利用する。
                 if segments:
                     tangent = (segments[-1]["tx"], segments[-1]["ty"])
                 else:
@@ -648,7 +645,7 @@ class _CenterlineProjector:
         if best is not None:
             return best
 
-        # Fallback: exhaustive search to avoid missing projections due to radius limits.
+        # フォールバック: 半径制限で射影を見落とさないよう全探索する。
         for idx, seg in enumerate(self._segments):
             if seg["length_sq"] <= 1e-12:
                 continue
@@ -931,7 +928,7 @@ def _derive_path_kinematics(
     reference_values: Optional[List[Optional[float]]] = None,
     smooth_window: Optional[float] = None,
 ) -> Tuple[List[float], List[float], List[float]]:
-    """Return unit tangents and curvature for a monotonic arc-length parameterisation."""
+    """単調な弧長パラメータに対する単位接線と曲率を返す。"""
 
     count = len(s_vals)
     if count == 0:
@@ -1032,7 +1029,7 @@ def _resample_sequence_with_polynomial(
     *,
     step: float = RESAMPLE_STEP_METERS,
 ) -> Optional[Dict[str, List[float] | List[Optional[float]]]]:
-    """Approximate ``points`` with cubic Bézier arcs and resample curvature."""
+    """点列を三次ベジエで近似し曲率を再サンプリングする。"""
 
     if len(points) < 2:
         return None
@@ -1058,9 +1055,8 @@ def _resample_sequence_with_polynomial(
     for length in seg_lengths:
         arc_lengths.append(arc_lengths[-1] + length)
 
-    # Derivatives w.r.t. arc length for each sample point.  Endpoints fall back to
-    # one-sided differences while interior points use the average slope from the
-    # adjacent segments to keep the tangents C1-continuous.
+    # 各サンプル点における弧長に関する微分係数。端点は片側差分へフォールバックし、
+    # 内点は隣接区間の平均勾配を用いて接線のC1連続性を確保する。
     dx_ds: List[float] = []
     dy_ds: List[float] = []
     last_idx = len(points) - 1
@@ -1224,8 +1220,8 @@ def _resample_sequence_with_polynomial(
         x_new.append(px)
         y_new.append(py)
 
-        # Keep derivative evaluations available for potential future tuning.
-        # Currently curvature is derived from the resampled polyline instead.
+        # 将来のチューニングに備えて微分評価を保持している。
+        # 現状では再サンプルしたポリラインから曲率を算出している。
         _ = dx_du, dy_du, ddx_duu, ddy_duu
 
     resampled_points = [
@@ -1267,7 +1263,7 @@ def _resample_sequence_with_polynomial(
 
 
 def _evaluate_bezier(segment: Dict[str, Any], u: float) -> Tuple[float, float, float, float, float, float]:
-    """Return position and derivatives for the cubic Bézier ``segment``."""
+    """三次ベジエ ``segment`` の位置と微係数を返す。"""
 
     p0x, p0y = segment["p0"]
     p1x, p1y = segment["p1"]

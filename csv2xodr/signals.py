@@ -1,4 +1,4 @@
-"""Helpers for converting sign CSV tables into OpenDRIVE <signal> entries."""
+"""標識CSVをOpenDRIVEの<signal>要素へ変換する補助機能群。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import math
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Set
 
 from csv2xodr.normalize.core import _find_column, _to_float, latlon_to_local_xy
 from csv2xodr.simpletable import DataFrame
@@ -15,7 +15,7 @@ from csv2xodr.line_geometry import _CenterlineProjector
 
 @dataclass
 class SignalExport:
-    """Container bundling exported signals with their support objects."""
+    """書き出した信号と支柱オブジェクトをまとめるコンテナ。"""
 
     signals: List[Dict[str, Any]]
     objects: List[Dict[str, Any]]
@@ -45,17 +45,13 @@ def _as_bool(value: Any) -> bool:
 
 
 def _format_numeric(value: Optional[float]) -> Optional[float]:
-    """Return a floating point number when *value* contains numeric text."""
+    """数値文字列を可能な限り浮動小数へ正規化する。"""
 
     if value is None:
         return None
 
-    # ``_to_float`` already normalises locale dependent formatting but it
-    # expects a clean numeric token.  Real-world CSV dumps occasionally embed
-    # speed limits inside human-readable strings such as ``"約50km/h"`` or
-    # include measurement units in brackets.  Extract the first numeric token
-    # before delegating to the shared conversion helper so that we still honour
-    # grouping separators and full-width digits.
+    # ``_to_float`` がロケール依存のフォーマットを正規化するものの、ここでは
+    # 先頭の数値トークンを拾い直して補助的な正規化を行う。
     if isinstance(value, str):
         text = value.strip()
         if not text:
@@ -85,22 +81,13 @@ def _normalise_offset(values: List[float]) -> Tuple[float, Callable[[float], flo
 
 
 def _extract_speed_hint(text: str) -> Optional[float]:
-    """Best-effort extraction of a numeric speed from supplementary text.
-
-    Some Japanese datasets mark variable/digital speed limit signs with a
-    supplementary classification value instead of filling ``最高速度値``.
-    These hints are typically a single digit (e.g. ``"4"`` for "40km/h").
-    When such a hint is present we try to recover a plausible km/h value so
-    that the exported OpenDRIVE sign carries a non-zero ``value`` and can be
-    rendered by viewers.
-    """
+    """補助的に記録された数値から妥当なkm/h値を推定する。"""
 
     if not text:
         return None
 
-    # Normalise full-width digits into ASCII and strip out everything that is
-    # not a decimal number.  ``unicodedata`` keeps the dependency footprint
-    # small and copes with values such as "４".
+    # 全角数字をASCIIへ統一し、10進数以外の文字を取り除く。``unicodedata`` で依存
+    # を増やさずに「４」のような表記にも対応する。
     normalised = unicodedata.normalize("NFKC", text)
     digits = "".join(ch for ch in normalised if ch.isdigit())
     if not digits:
@@ -108,21 +95,21 @@ def _extract_speed_hint(text: str) -> Optional[float]:
 
     try:
         value = int(digits)
-    except ValueError:  # pragma: no cover - defensive, should not happen
+    except ValueError:  # pragma: no cover - 想定外ケースへの防御的処理
         return None
 
     if len(digits) == 1:
         value *= 10
 
     if value <= 0 or value > 200:
-        # Filter obvious sentinels such as 65535 or corrupted readings.
+        # 65535のような明らかな番兵値や異常値を除外する。
         return None
 
     return float(value)
 
 
 def _normalise_height(raw_value: Any, column_name: Optional[str]) -> Optional[float]:
-    """Convert height readings to metres while filtering obvious sentinels."""
+    """高さの測定値を番兵を除外しつつメートルへ換算する。"""
 
     height = _to_float(raw_value)
     if height is None:
@@ -130,7 +117,7 @@ def _normalise_height(raw_value: Any, column_name: Optional[str]) -> Optional[fl
     if not math.isfinite(height):
         return None
     if abs(height) >= 1.0e4:
-        # Values such as 65535 are commonly used as "unknown" sentinels.
+        # 65535 などは「不明」を表す番兵値として頻出する。
         return None
 
     column_hint = column_name or ""
@@ -138,14 +125,92 @@ def _normalise_height(raw_value: Any, column_name: Optional[str]) -> Optional[fl
     if "[cm]" in column_hint or "cm" in lowered:
         return height * 0.01
     if abs(height) > 50.0:
-        # Fallback heuristic: anything taller than a typical gantry is likely
-        # expressed in centimetres even if the column header lacks units.
+        # フォールバックの経験則: 一般的な門型標識より高い値は単位未指定でも
+        # センチメートル表記とみなす。
         return height * 0.01
     return height
 
 
+def _coordinate_prefix(column_name: str, keywords: Tuple[str, ...]) -> Optional[str]:
+    lowered = column_name.strip().lower()
+    for keyword in keywords:
+        index = lowered.find(keyword)
+        if index != -1:
+            prefix = lowered[:index]
+            prefix = prefix.replace("_", " ").strip()
+            prefix = re.sub(r"[\s\(\[（【]+$", "", prefix)
+            if prefix:
+                return prefix
+    return None
+
+
+def _column_priority(column_name: str) -> int:
+    normalised = unicodedata.normalize("NFKC", column_name).lower()
+    digits = [int(token) for token in re.findall(r"\d+", normalised)]
+    if digits:
+        if 2 in digits:
+            return 0
+        if 1 in digits:
+            return 1
+        return 2
+    return 3
+
+
+def _coordinate_pairs(df_sign: DataFrame) -> List[Tuple[str, str]]:
+    lat_keywords = ("緯度", "latitude", "lat")
+    lon_keywords = ("経度", "longitude", "lon")
+
+    lat_columns: List[Tuple[str, Optional[str]]] = []
+    lon_columns: List[Tuple[str, Optional[str]]] = []
+
+    for column in df_sign.columns:
+        lowered = column.strip().lower()
+        if any(keyword in lowered for keyword in lat_keywords):
+            lat_columns.append((column, _coordinate_prefix(column, lat_keywords)))
+        if any(keyword in lowered for keyword in lon_keywords):
+            lon_columns.append((column, _coordinate_prefix(column, lon_keywords)))
+
+    if not lat_columns or not lon_columns:
+        return []
+
+    candidate_pairs: List[Tuple[str, str]] = []
+    seen: Set[Tuple[str, str]] = set()
+
+    for lat_col, lat_prefix in lat_columns:
+        matching = [lon_col for lon_col, lon_prefix in lon_columns if lon_prefix and lon_prefix == lat_prefix]
+        if not matching:
+            matching = [lon_col for lon_col, _ in lon_columns]
+        for lon_col in matching:
+            key = (lat_col, lon_col)
+            if key not in seen:
+                candidate_pairs.append(key)
+                seen.add(key)
+            break
+
+    if not candidate_pairs:
+        candidate_pairs.append((lat_columns[0][0], lon_columns[0][0]))
+
+    scored_pairs: List[Tuple[int, int, Tuple[str, str]]] = []
+    for lat_col, lon_col in candidate_pairs:
+        lat_series = df_sign[lat_col]
+        lon_series = df_sign[lon_col]
+        count = 0
+        for lat_val, lon_val in zip(lat_series.to_list(), lon_series.to_list()):
+            if _to_float(lat_val) is not None and _to_float(lon_val) is not None:
+                count += 1
+        if count > 0:
+            priority = min(_column_priority(lat_col), _column_priority(lon_col))
+            scored_pairs.append((priority, -count, (lat_col, lon_col)))
+
+    if scored_pairs:
+        scored_pairs.sort(key=lambda item: (item[0], item[1]))
+        return [pair for _, _, pair in scored_pairs]
+
+    return candidate_pairs
+
+
 def _to_int(value: Any) -> Optional[int]:
-    """Best-effort conversion of ``value`` to :class:`int`."""
+    """可能な限り ``value`` を :class:`int` へ変換する。"""
 
     if value is None:
         return None
@@ -165,7 +230,7 @@ def _to_int(value: Any) -> Optional[int]:
 
     try:
         return int(numeric)
-    except (TypeError, ValueError):  # pragma: no cover - defensive guard
+    except (TypeError, ValueError):  # pragma: no cover - 防御的なガード
         return None
 
 
@@ -202,7 +267,7 @@ def generate_signals(
     centerline: Optional[DataFrame] = None,
     geo_origin: Optional[Tuple[float, float]] = None,
 ) -> SignalExport:
-    """Generate OpenDRIVE signal dictionaries from a sign profile table."""
+    """標識プロファイルからOpenDRIVE用の信号辞書を構築する。"""
 
     signals: List[Dict[str, Any]] = []
     objects: List[Dict[str, Any]] = []
@@ -286,24 +351,7 @@ def generate_signals(
             or _find_column(df_sign, "sign", "identifier")
         )
 
-    lat_col = (
-        _find_column(df_sign, "座標2", "緯度")
-        or _find_column(df_sign, "座標２", "緯度")
-        or _find_column(df_sign, "緯度", "座標2")
-        or _find_column(df_sign, "緯度", "座標２")
-        or _find_column(df_sign, "緯度")
-        or _find_column(df_sign, "latitude")
-        or _find_column(df_sign, "lat")
-    )
-    lon_col = (
-        _find_column(df_sign, "座標2", "経度")
-        or _find_column(df_sign, "座標２", "経度")
-        or _find_column(df_sign, "経度", "座標2")
-        or _find_column(df_sign, "経度", "座標２")
-        or _find_column(df_sign, "経度")
-        or _find_column(df_sign, "longitude")
-        or _find_column(df_sign, "lon")
-    )
+    coordinate_pairs = _coordinate_pairs(df_sign)
 
     x_col = None
     y_col = None
@@ -318,7 +366,7 @@ def generate_signals(
     if centerline is not None:
         try:
             candidate = _CenterlineProjector(centerline)
-        except Exception:  # pragma: no cover - defensive guard
+        except Exception:  # pragma: no cover - 防御的なガード
             candidate = None
         if candidate is not None and candidate.is_valid:
             projector = candidate
@@ -348,15 +396,18 @@ def generate_signals(
             sample_x: Optional[float] = None
             sample_y: Optional[float] = None
 
-            if lat_col is not None and lon_col is not None and origin_lat is not None and origin_lon is not None:
-                lat_val = _to_float(row[lat_col])
-                lon_val = _to_float(row[lon_col])
-                if lat_val is not None and lon_val is not None:
+            if coordinate_pairs and origin_lat is not None and origin_lon is not None:
+                for lat_col, lon_col in coordinate_pairs:
+                    lat_val = _to_float(row[lat_col])
+                    lon_val = _to_float(row[lon_col])
+                    if lat_val is None or lon_val is None:
+                        continue
                     try:
-                        sample_x, sample_y = latlon_to_local_xy([lat_val], [lon_val], origin_lat, origin_lon)
-                        sample_x = float(sample_x[0])
-                        sample_y = float(sample_y[0])
-                    except Exception:  # pragma: no cover - defensive guard
+                        projected_x, projected_y = latlon_to_local_xy([lat_val], [lon_val], origin_lat, origin_lon)
+                        sample_x = float(projected_x[0])
+                        sample_y = float(projected_y[0])
+                        break
+                    except Exception:  # pragma: no cover - 防御的なガード
                         sample_x = None
                         sample_y = None
 
@@ -499,7 +550,7 @@ def generate_signals(
                 identifier = row[instance_id_col]
                 support_identifier = str(identifier).strip() if identifier is not None else ""
             if not support_identifier:
-                support_identifier = f"{offset_cm}:{s_pos}"  # fallback key when dataset lacks IDs
+                support_identifier = f"{offset_cm}:{s_pos}"  # ID欠落時のフォールバックキー
             stack_key = (support_identifier, round(float(s_pos), 6))
             next_z_offset = group_vertical_offsets.get(stack_key, float(base_z_offset))
             attrs["zOffset"] = next_z_offset
@@ -551,3 +602,110 @@ def generate_signals(
         log_fn(f"[signals] {len(signals)} entries from {source}")
 
     return SignalExport(signals=signals, objects=objects)
+
+
+def shift_signs_to_left_shoulder(
+    lane_sections: List[Dict[str, Any]],
+    signals: List[Dict[str, Any]],
+    objects: List[Dict[str, Any]],
+    *,
+    margin: float = 0.3,
+) -> None:
+    """生成した信号と支柱を左側路肩の縁へ揃える。"""
+
+    if not lane_sections:
+        return
+    if not signals and not objects:
+        return
+
+    def _lane_width(lane: Dict[str, Any]) -> float:
+        width_raw = lane.get("width", 0.0)
+        try:
+            width_val = float(width_raw)
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(width_val):
+            return 0.0
+        return max(0.0, width_val)
+
+    def _is_positive_lane(lane: Dict[str, Any]) -> bool:
+        lane_no = lane.get("lane_no")
+        if lane_no is None:
+            return False
+        try:
+            lane_no_val = float(lane_no)
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(lane_no_val):
+            return False
+        return lane_no_val > 0.0
+
+    sections: List[Tuple[float, float, float]] = []
+    for section in lane_sections:
+        try:
+            s0 = float(section.get("s0", 0.0))
+            s1 = float(section.get("s1", s0))
+        except (TypeError, ValueError):
+            continue
+        if s1 <= s0:
+            continue
+        try:
+            lane_offset = float(section.get("laneOffset", 0.0))
+        except (TypeError, ValueError):
+            lane_offset = 0.0
+
+        total_left = 0.0
+        seen_lane_ids: Set[Any] = set()
+
+        def _accumulate(lane: Dict[str, Any]) -> None:
+            nonlocal total_left
+            lane_uid = lane.get("uid")
+            lane_identifier = lane_uid if lane_uid is not None else lane.get("id")
+            if lane_identifier is not None and lane_identifier in seen_lane_ids:
+                return
+            width_val = _lane_width(lane)
+            if width_val <= 0.0:
+                return
+            total_left += width_val
+            if lane_identifier is not None:
+                seen_lane_ids.add(lane_identifier)
+
+        for lane in section.get("left", []) or []:
+            _accumulate(lane)
+
+        for lane in section.get("center", []) or []:
+            if _is_positive_lane(lane):
+                _accumulate(lane)
+
+        if total_left <= 0.0:
+            continue
+
+        target_t = lane_offset + total_left + max(0.0, margin)
+        sections.append((s0, s1, target_t))
+
+    if not sections:
+        return
+
+    sections.sort(key=lambda item: item[0])
+
+    def _find_target(s_val: float) -> Optional[float]:
+        for idx, (start, end, target) in enumerate(sections):
+            if start <= s_val < end:
+                return target
+            if idx == len(sections) - 1 and abs(s_val - end) <= 1e-6:
+                return target
+        return None
+
+    def _apply(entries: List[Dict[str, Any]]) -> None:
+        for entry in entries:
+            try:
+                s_val = float(entry.get("s", 0.0))
+            except (TypeError, ValueError):
+                continue
+            target = _find_target(s_val)
+            if target is None:
+                continue
+            entry["t"] = target
+
+    _apply(signals)
+    _apply(objects)

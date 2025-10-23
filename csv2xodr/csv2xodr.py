@@ -27,12 +27,12 @@ from csv2xodr.normalize.core import (
 from csv2xodr.line_geometry import build_line_geometry_lookup
 from csv2xodr.topology.core import make_sections, build_lane_topology
 from csv2xodr.writer.xodr_writer import write_xodr
-from csv2xodr.signals import generate_signals
+from csv2xodr.signals import generate_signals, shift_signs_to_left_shoulder
 from csv2xodr.lane_spec import build_lane_spec, normalize_lane_ids
 
 
 def _apply_dataset_overrides(dfs, cfg) -> None:
-    """Adjust loaded CSV tables based on optional configuration hints."""
+    """設定からのヒントに基づき読み込んだCSVテーブルを補正する。"""
 
     lane_link = dfs.get("lane_link")
     lane_width = dfs.get("lane_width")
@@ -42,7 +42,7 @@ def _apply_dataset_overrides(dfs, cfg) -> None:
 
     try:
         from csv2xodr.normalize.us_adapters import merge_lane_width_into_links
-    except Exception:  # pragma: no cover - optional helper
+    except Exception:  # pragma: no cover - 任意ヘルパーに依存する分岐
         return
 
     enriched = merge_lane_width_into_links(lane_link, lane_width)
@@ -62,26 +62,10 @@ def _detect_country(sign_filename: Optional[str]) -> str:
 
 
 def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
-    """Convert a directory of CSV files into an OpenDRIVE file.
-
-    Parameters
-    ----------
-    input_dir:
-        Directory containing the CSV files that describe the road network.
-    output_path:
-        Target path for the generated ``.xodr`` file.
-    config_path:
-        Path to the YAML configuration that describes how to read ``input_dir``.
-
-    Returns
-    -------
-    dict
-        Statistics about the conversion, including input counts and metadata about
-        the generated OpenDRIVE file.
-    """
+    """CSV群からOpenDRIVEファイルを生成して統計情報を返す。"""
     try:
         import yaml  # type: ignore
-    except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    except ModuleNotFoundError:  # pragma: no cover - 任意依存が欠ける環境に対応
         yaml = None
         from csv2xodr.mini_yaml import load as mini_yaml_load
     if yaml is not None:
@@ -98,17 +82,17 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
                 dfs[key] = filtered
     _apply_dataset_overrides(dfs, cfg)
 
-    # planView (centerline) from line geometry + geo origin
+    # 線形ジオメトリと基準点から参照線を構築する
     center, (lat0, lon0) = build_centerline(dfs["line_geometry"], dfs["map_base_point"])
     offset_mapper = build_offset_mapper(center)
 
-    # lane sections (from offsets)
+    # オフセット情報からレーンセクションを導出する
     sections = make_sections(center, dfs["lane_link"], dfs["lane_division"], offset_mapper=offset_mapper)
 
-    # lane topology hints (no center id in the guess)
+    # レーンの接続関係を推定する
     lane_topo = build_lane_topology(dfs["lane_link"], offset_mapper=offset_mapper)
 
-    # per-section spec (width/roadMark/topology flags)
+    # セクション単位の幅・路面標示・トポロジ情報を構築する
     curvature_profile, curvature_samples = build_curvature_profile(
         dfs.get("curvature"),
         offset_mapper=offset_mapper,
@@ -139,19 +123,19 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
 
     geometry_cfg_raw = cfg.get("geometry") or {}
     if not isinstance(geometry_cfg_raw, dict):
-        raise TypeError("geometry configuration must be a mapping if provided")
+        raise TypeError("geometry設定は辞書形式で指定してください")
 
     max_endpoint_deviation_cfg = geometry_cfg_raw.get("max_endpoint_deviation_m", 0.5)
     try:
         max_endpoint_deviation = float(max_endpoint_deviation_cfg)
     except (TypeError, ValueError) as exc:
-        raise TypeError("geometry.max_endpoint_deviation_m must be a number") from exc
+        raise TypeError("geometry.max_endpoint_deviation_m は数値である必要があります") from exc
 
     max_segment_length_cfg = geometry_cfg_raw.get("max_segment_length_m", 2.0)
     try:
         max_segment_length = float(max_segment_length_cfg)
     except (TypeError, ValueError) as exc:
-        raise TypeError("geometry.max_segment_length_m must be a number") from exc
+        raise TypeError("geometry.max_segment_length_m は数値である必要があります") from exc
 
     geometry_segments = build_geometry_segments(
         center,
@@ -170,7 +154,7 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
     superelevation_profile = build_superelevation_profile(slope_profiles.get("superelevation", []))
 
     shoulder_profile = build_shoulder_profile(dfs.get("shoulder_width"), offset_mapper=offset_mapper)
-    from csv2xodr.lane_spec import apply_shoulder_profile  # local import to avoid cycle
+    from csv2xodr.lane_spec import apply_shoulder_profile  # 循環参照を避けるための局所インポート
 
     files_cfg = cfg.get("files") or {}
     sign_filename = files_cfg.get("sign") if isinstance(files_cfg, dict) else None
@@ -186,15 +170,16 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
     signal_objects = signal_export.objects
 
     apply_shoulder_profile(lane_specs, shoulder_profile, defaults=cfg.get("defaults", {}))
+    shift_signs_to_left_shoulder(lane_specs, signals, signal_objects)
     normalize_lane_ids(lane_specs)
 
-    # write xodr
+    # XODRファイルを書き出す
     output_path = Path(output_path)
     os.makedirs(output_path.parent, exist_ok=True)
     geo_ref = f"LOCAL_XY origin={lat0},{lon0}"
     road_cfg_raw = cfg.get("road") or {}
     if not isinstance(road_cfg_raw, dict):
-        raise TypeError("road configuration must be a mapping if provided")
+        raise TypeError("road設定は辞書形式で指定してください")
 
     road_cfg = {
         "type": road_cfg_raw.get("type", "town"),
@@ -229,7 +214,7 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
     except FileNotFoundError:
         line_count = 0
 
-    # stats log
+    # 統計情報をログへ書き出す
     stats = {
         "input_counts": {k: (0 if v is None else len(v)) for k, v in dfs.items()},
         "output_counts": {
@@ -257,8 +242,8 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input", required=True, help="directory containing CSVs")
-    ap.add_argument("--output", required=True, help="path to output .xodr")
+    ap.add_argument("--input", required=True, help="CSV群を含むディレクトリ")
+    ap.add_argument("--output", required=True, help="出力する.xodrファイルのパス")
     ap.add_argument("--config", default="config.yaml")
     args = ap.parse_args()
 

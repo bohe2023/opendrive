@@ -1,4 +1,4 @@
-"""Utility for adding a shape-index column to lane geometry CSV files."""
+"""車線幾何CSVへ形状インデックス列を付与する補助モジュール。"""
 
 from __future__ import annotations
 
@@ -15,14 +15,14 @@ DEFAULT_ENCODING = "cp932"
 
 @dataclass
 class _LaneState:
-    """Book-keeping data that tracks shape indices for a single lane."""
+    """単一路線におけるインデックス状態を保持する内部構造体。"""
 
     next_index: int = 0
     point_count: Optional[int] = None
 
 
 def _parse_int(value: str) -> Optional[int]:
-    """Convert ``value`` to :class:`int` if possible."""
+    """可能であれば ``value`` を ``int`` へ変換する。"""
 
     value = value.strip()
     if not value:
@@ -43,14 +43,7 @@ def assign_shape_indices(
     point_count_column: str = "形状要素点数",
     shape_index_column: str = SHAPE_INDEX_COLUMN,
 ) -> List[MutableMapping[str, str]]:
-    """Assign a 0-based shape index to each row grouped by lane id.
-
-    The function walks through ``rows`` in order and maintains a counter per
-    lane identifier.  Whenever the counter reaches the reported number of
-    geometry points (``形状要素点数``), it wraps back to zero.  This keeps the
-    produced indices within the ``[0, 形状要素点数 - 1]`` range even for datasets
-    that contain multiple transmissions of the same lane geometry.
-    """
+    """車線単位で0始まりの形状インデックスを割り当てる。"""
 
     states: Dict[str, _LaneState] = {}
     processed: List[MutableMapping[str, str]] = []
@@ -76,6 +69,7 @@ def assign_shape_indices(
             state.next_index += 1
             state.point_count = None
 
+        # 形状インデックス列へ書き戻す
         row[shape_index_column] = str(index_value)
         processed.append(row)
 
@@ -97,17 +91,17 @@ def add_shape_index_column(path: Path, *, encoding: str = DEFAULT_ENCODING) -> N
 
 
 def _parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Add shape index columns to lane geometry CSV files.")
+    parser = argparse.ArgumentParser(description="レーン幾何CSVへ形状インデックス列を追加します。")
     parser.add_argument(
         "files",
         nargs="*",
         type=Path,
-        help="CSV files to update. Defaults to the standard JPN/US lane geometry datasets.",
+        help="更新対象のCSVファイル（省略時は標準のJPN/USデータセット）",
     )
     parser.add_argument(
         "--encoding",
         default=DEFAULT_ENCODING,
-        help="Character encoding used to read/write the CSV files (default: %(default)s).",
+        help="CSVの入出力に使用する文字コード（既定値: %(default)s）",
     )
     return parser.parse_args()
 def default_files(root: Optional[Path] = None) -> List[Path]:
@@ -122,12 +116,12 @@ def main() -> None:
 
     for path in files:
         if not path.exists():
-            print(f"[SKIP] {path} (not found)")
+            print(f"[SKIP] ファイルが見つかりません: {path}")
             continue
 
         add_shape_index_column(path, encoding=args.encoding)
-        print(f"[OK] Added shape index column to {path}")
+        print(f"[OK] 形状インデックス列を付与しました: {path}")
 
 
-if __name__ == "__main__":  # pragma: no cover - CLI entry point
+if __name__ == "__main__":  # pragma: no cover - CLI のエントリーポイント
     main()

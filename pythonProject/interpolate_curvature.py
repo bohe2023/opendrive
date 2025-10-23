@@ -1,19 +1,17 @@
-"""Utilities for interpolating missing curvature shape indices in CSV files."""
+"""曲率CSVで欠損した形状インデックスを補完するためのツール群。"""
 
 from __future__ import annotations
 
 import argparse
 import csv
-from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, MutableMapping, Sequence
+from typing import Iterable, List, Mapping, MutableMapping, Sequence
 
 SHAPE_INDEX_COLUMN = "形状インデックス"
 LANE_COUNT_COLUMN = "曲率情報のレーン数"
 DEFAULT_ENCODING = "cp932"
 
-# Columns that uniquely describe a lane segment.  Rows sharing the same values for
-# these fields are considered part of the same interpolation group.
+# レーン区間を一意に識別するカラム群。これらが一致する行は同一グループとみなす。
 GROUP_KEY_COLUMNS: Sequence[str] = (
     "logTime",
     "Instance ID",
@@ -25,28 +23,22 @@ GROUP_KEY_COLUMNS: Sequence[str] = (
     LANE_COUNT_COLUMN,
 )
 
-# Some data exports use different header labels for the same semantic value.  For
-# example, the production CSVs sometimes expose the timestamp column as
-# ``ExpTime`` instead of ``logTime``.  Interpolation must treat those aliases as
-# equivalent so that rows are grouped correctly and no spurious copies are
-# produced.  The keys in ``GROUP_KEY_ALIASES`` refer to the canonical column
-# names listed in ``GROUP_KEY_COLUMNS`` while the values enumerate fallback
-# column names to try if the canonical name is missing.
+# CSVによりヘッダー名が揺れるケースがあるため、カラム名のエイリアスも保持する。
 GROUP_KEY_ALIASES: Mapping[str, Sequence[str]] = {
     "logTime": ("logTime", "ExpTime"),
 }
 
 
 def _parse_int(value: str) -> int:
-    """Best-effort conversion of ``value`` to ``int``."""
+    """文字列を可能な限り ``int`` へ変換する。"""
 
     value = (value or "").strip()
     if not value:
-        raise ValueError("cannot parse empty value as int")
+        raise ValueError("空文字列を整数に変換できません")
     try:
         return int(value)
-    except ValueError as exc:  # pragma: no cover - defensive fallback
-        raise ValueError(f"invalid integer value: {value!r}") from exc
+    except ValueError as exc:  # pragma: no cover - 防御的なフォールバック
+        raise ValueError(f"不正な整数値です: {value!r}") from exc
 
 
 def _clone_with_index(row: Mapping[str, str], index: int) -> MutableMapping[str, str]:
@@ -56,7 +48,7 @@ def _clone_with_index(row: Mapping[str, str], index: int) -> MutableMapping[str,
 
 
 def _resolve_group_column(row: Mapping[str, str], column: str) -> str:
-    """Return the value used to build the interpolation group key for ``row``."""
+    """グループキー構築時に利用する値を取得する。"""
 
     candidates = GROUP_KEY_ALIASES.get(column, (column,))
     for name in candidates:
@@ -64,8 +56,7 @@ def _resolve_group_column(row: Mapping[str, str], column: str) -> str:
         if value not in (None, ""):
             return value
 
-    # Fall back to an empty string when none of the aliases are present so that
-    # rows lacking the column still form deterministic groups.
+    # 該当カラムが無い場合は空文字で代替し、グループ化の決定性を保つ。
     return row.get(candidates[0], "") or ""
 
 
@@ -101,8 +92,7 @@ def interpolate_group(rows: Sequence[MutableMapping[str, str]]) -> List[MutableM
         current_index = _parse_int(row[SHAPE_INDEX_COLUMN])
 
         if interpolated and current_index < expected_index:
-            # Index reset (e.g. next measurement block).  Start a fresh sequence
-            # without attempting to back-fill values from the previous block.
+            # インデックスが巻き戻った場合は新しい計測ブロックとして扱う。
             cloned = dict(row)
             interpolated.append(cloned)
             last_template = dict(cloned)
@@ -125,7 +115,7 @@ def interpolate_group(rows: Sequence[MutableMapping[str, str]]) -> List[MutableM
 
 
 def interpolate_shape_indices(rows: Iterable[MutableMapping[str, str]]) -> List[MutableMapping[str, str]]:
-    """Interpolate missing shape indices across all lane groups."""
+    """全レーンで欠損インデックスを補完した行一覧を返す。"""
 
     output: List[MutableMapping[str, str]] = []
     for group in _group_rows(list(rows)):
@@ -134,10 +124,7 @@ def interpolate_shape_indices(rows: Iterable[MutableMapping[str, str]]) -> List[
 
 
 def process_file(path: Path, *, encoding: str = DEFAULT_ENCODING) -> int:
-    """Interpolate missing shape indices for ``path`` in place.
-
-    Returns the number of rows that were added during the interpolation.
-    """
+    """対象ファイルの欠損インデックスを補完し追加行数を返す。"""
 
     with path.open("r", encoding=encoding, newline="") as handle:
         reader = csv.DictReader(handle)
@@ -156,7 +143,7 @@ def process_file(path: Path, *, encoding: str = DEFAULT_ENCODING) -> int:
 
 
 def default_files(root: Path | None = None) -> List[Path]:
-    """Return the default curvature CSV files that should be processed."""
+    """標準的に処理すべき曲率CSVの一覧を返す。"""
 
     base = root or Path(__file__).resolve().parents[1]
     return [
@@ -166,17 +153,17 @@ def default_files(root: Path | None = None) -> List[Path]:
 
 
 def _parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Interpolate missing CURVATURE.csv shape indices.")
+    parser = argparse.ArgumentParser(description="曲率CSVの欠損形状インデックスを補間します。")
     parser.add_argument(
         "files",
         nargs="*",
         type=Path,
-        help="CSV files to update. Defaults to the standard JPN/US curvature datasets.",
+        help="更新対象のCSVファイル（省略時は標準のJPN/USデータセット）",
     )
     parser.add_argument(
         "--encoding",
         default=DEFAULT_ENCODING,
-        help="Character encoding used to read/write the CSV files (default: %(default)s).",
+        help="CSVの入出力に使用する文字コード（既定値: %(default)s）",
     )
     return parser.parse_args()
 
@@ -187,15 +174,15 @@ def main() -> None:
 
     for path in files:
         if not path.exists():
-            print(f"[SKIP] {path} (not found)")
+            print(f"[SKIP] ファイルが見つかりません: {path}")
             continue
 
         added = process_file(path, encoding=args.encoding)
         if added:
-            print(f"[OK] {path}: added {added} interpolated row(s)")
+            print(f"[OK] {path}: 補間行を {added} 行追加しました")
         else:
-            print(f"[OK] {path}: no missing shape indices detected")
+            print(f"[OK] {path}: 欠損インデックスは検出されませんでした")
 
 
-if __name__ == "__main__":  # pragma: no cover - CLI entry point
+if __name__ == "__main__":  # pragma: no cover - CLI のエントリーポイント
     main()
