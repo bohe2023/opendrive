@@ -631,6 +631,28 @@ def shift_signs_to_left_shoulder(
     if not signals and not objects:
         return
 
+    def _lane_width(lane: Dict[str, Any]) -> float:
+        width_raw = lane.get("width", 0.0)
+        try:
+            width_val = float(width_raw)
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(width_val):
+            return 0.0
+        return max(0.0, width_val)
+
+    def _is_positive_lane(lane: Dict[str, Any]) -> bool:
+        lane_no = lane.get("lane_no")
+        if lane_no is None:
+            return False
+        try:
+            lane_no_val = float(lane_no)
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(lane_no_val):
+            return False
+        return lane_no_val > 0.0
+
     sections: List[Tuple[float, float, float]] = []
     for section in lane_sections:
         try:
@@ -646,11 +668,27 @@ def shift_signs_to_left_shoulder(
             lane_offset = 0.0
 
         total_left = 0.0
+        seen_lane_ids: Set[Any] = set()
+
+        def _accumulate(lane: Dict[str, Any]) -> None:
+            nonlocal total_left
+            lane_uid = lane.get("uid")
+            lane_identifier = lane_uid if lane_uid is not None else lane.get("id")
+            if lane_identifier is not None and lane_identifier in seen_lane_ids:
+                return
+            width_val = _lane_width(lane)
+            if width_val <= 0.0:
+                return
+            total_left += width_val
+            if lane_identifier is not None:
+                seen_lane_ids.add(lane_identifier)
+
         for lane in section.get("left", []) or []:
-            try:
-                total_left += float(lane.get("width", 0.0))
-            except (TypeError, ValueError):
-                continue
+            _accumulate(lane)
+
+        for lane in section.get("center", []) or []:
+            if _is_positive_lane(lane):
+                _accumulate(lane)
 
         if total_left <= 0.0:
             continue
