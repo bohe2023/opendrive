@@ -105,6 +105,51 @@ def _make_lane_topology(
     return {"lane_count": lane_count, "groups": groups, "lanes": lanes}
 
 
+def _integrate_spiral(
+    length: float,
+    curvature_start: float,
+    curvature_end: float,
+    x0: float,
+    y0: float,
+    hdg0: float,
+) -> Dict[str, float]:
+    """Integrate a planar clothoid and return its end pose.
+
+    The integration uses a simple adaptive step size (bounded by a minimum number
+    of iterations) to approximate the spiral trajectory without relying on
+    external special functions.  The final heading is corrected analytically to
+    avoid numerical drift.
+    """
+
+    if length <= 0.0:
+        return {"x": float(x0), "y": float(y0), "hdg": float(hdg0)}
+
+    # Clamp the number of integration steps so that short spirals still receive
+    # sufficient sampling while avoiding overly dense iterations for longer
+    # segments.
+    steps = max(2000, int(length * 200))
+    ds_nominal = length / steps
+    curvature_delta = curvature_end - curvature_start
+    curvature_slope = curvature_delta / length
+
+    x = float(x0)
+    y = float(y0)
+    hdg = float(hdg0)
+    travelled = 0.0
+
+    while travelled < length:
+        remaining = length - travelled
+        ds = ds_nominal if remaining > ds_nominal else remaining
+        curvature = curvature_start + curvature_slope * travelled
+        x += math.cos(hdg) * ds
+        y += math.sin(hdg) * ds
+        hdg += curvature * ds
+        travelled += ds
+
+    hdg = hdg0 + curvature_start * length + 0.5 * curvature_delta * length
+    return {"x": x, "y": y, "hdg": hdg}
+
+
 def _straight_single_section() -> Scenario:
     length = 30.0
     centerline = _make_centerline([(0.0, 0.0, 0.0, 0.0), (length, length, 0.0, 0.0)])
@@ -170,10 +215,85 @@ def _curved_arc() -> Scenario:
     return Scenario("curved_arc", centerline, sections, lane_topology, geometry_segments)
 
 
+def _extreme_spiral_uturn() -> Scenario:
+    """Construct a straight-spiral-straight scenario with an aggressive U-turn."""
+
+    first_line = 40.0
+    spiral_length = 15.0
+    last_line = 35.0
+    curvature_start = 0.0
+    curvature_end = 2.0 * math.pi / spiral_length  # yields ~180 deg heading change
+
+    spiral_end = _integrate_spiral(
+        spiral_length,
+        curvature_start,
+        curvature_end,
+        x0=first_line,
+        y0=0.0,
+        hdg0=0.0,
+    )
+
+    total_length = first_line + spiral_length + last_line
+    final_x = spiral_end["x"] + last_line * math.cos(spiral_end["hdg"])
+    final_y = spiral_end["y"] + last_line * math.sin(spiral_end["hdg"])
+
+    centerline = _make_centerline(
+        [
+            (0.0, 0.0, 0.0, 0.0),
+            (first_line, first_line, 0.0, 0.0),
+            (first_line + spiral_length, spiral_end["x"], spiral_end["y"], spiral_end["hdg"]),
+            (total_length, final_x, final_y, spiral_end["hdg"]),
+        ]
+    )
+
+    sections = [{"s0": 0.0, "s1": total_length}]
+    lane_topology = _make_lane_topology(
+        left_lanes=[[_lane_segment(0.0, total_length, 3.5)]],
+        right_lanes=[[_lane_segment(0.0, total_length, 3.5)]],
+    )
+
+    geometry_segments = [
+        {
+            "s": 0.0,
+            "x": 0.0,
+            "y": 0.0,
+            "hdg": 0.0,
+            "length": first_line,
+            "curvature": 0.0,
+        },
+        {
+            "s": first_line,
+            "x": first_line,
+            "y": 0.0,
+            "hdg": 0.0,
+            "length": spiral_length,
+            "curvature_start": curvature_start,
+            "curvature_end": curvature_end,
+        },
+        {
+            "s": first_line + spiral_length,
+            "x": spiral_end["x"],
+            "y": spiral_end["y"],
+            "hdg": spiral_end["hdg"],
+            "length": last_line,
+            "curvature": 0.0,
+        },
+    ]
+
+    return Scenario(
+        "extreme_spiral_uturn",
+        centerline,
+        sections,
+        lane_topology,
+        geometry_segments,
+    )
+
+
 def _iter_scenarios() -> Iterable[Scenario]:
     yield _straight_single_section()
     yield _straight_multi_section()
     yield _curved_arc()
+    yield _extreme_spiral_uturn()
 
 
 def generate_samples(output_dir: Path, *, patch: bool = True) -> List[Path]:
