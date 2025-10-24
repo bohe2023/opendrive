@@ -218,9 +218,13 @@ def _curved_arc() -> Scenario:
 def _extreme_spiral_uturn() -> Scenario:
     """Construct a straight-spiral-straight scenario with an aggressive U-turn."""
 
-    first_line = 40.0
-    spiral_length = 15.0
-    last_line = 35.0
+    # The straight segments are intentionally long so that the U-turn shape is
+    # immediately recognisable when visualised.  The spiral section is kept
+    # short while forcing a 180° heading change, yielding a very tight radius at
+    # the end of the clothoid.
+    first_line = 120.0
+    spiral_length = 8.0
+    last_line = 120.0
     curvature_start = 0.0
     curvature_end = 2.0 * math.pi / spiral_length  # yields ~180 deg heading change
 
@@ -237,10 +241,24 @@ def _extreme_spiral_uturn() -> Scenario:
     final_x = spiral_end["x"] + last_line * math.cos(spiral_end["hdg"])
     final_y = spiral_end["y"] + last_line * math.sin(spiral_end["hdg"])
 
+    # Provide a few intermediate spiral samples in the centreline table so that
+    # downstream tools relying on the discretised representation can capture the
+    # extreme curvature.
+    spiral_mid_s = first_line + spiral_length / 2.0
+    spiral_mid = _integrate_spiral(
+        spiral_length / 2.0,
+        curvature_start,
+        (curvature_start + curvature_end) / 2.0,
+        x0=first_line,
+        y0=0.0,
+        hdg0=0.0,
+    )
+
     centerline = _make_centerline(
         [
             (0.0, 0.0, 0.0, 0.0),
             (first_line, first_line, 0.0, 0.0),
+            (spiral_mid_s, spiral_mid["x"], spiral_mid["y"], spiral_mid["hdg"]),
             (first_line + spiral_length, spiral_end["x"], spiral_end["y"], spiral_end["hdg"]),
             (total_length, final_x, final_y, spiral_end["hdg"]),
         ]
