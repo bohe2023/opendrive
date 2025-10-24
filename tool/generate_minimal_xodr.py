@@ -150,6 +150,47 @@ def _integrate_spiral(
     return {"x": x, "y": y, "hdg": hdg}
 
 
+def _integrate_arc(
+    length: float,
+    curvature: float,
+    x0: float,
+    y0: float,
+    hdg0: float,
+) -> Dict[str, float]:
+    """Integrate a constant-curvature arc and return its end pose."""
+
+    if length <= 0.0:
+        return {"x": float(x0), "y": float(y0), "hdg": float(hdg0)}
+
+    if abs(curvature) <= 1e-9:
+        x = float(x0) + math.cos(hdg0) * length
+        y = float(y0) + math.sin(hdg0) * length
+        return {"x": x, "y": y, "hdg": float(hdg0)}
+
+    delta = curvature * length
+    x = x0 + (math.sin(hdg0 + delta) - math.sin(hdg0)) / curvature
+    y = y0 - (math.cos(hdg0 + delta) - math.cos(hdg0)) / curvature
+    hdg = hdg0 + delta
+    return {"x": x, "y": y, "hdg": hdg}
+
+
+def _extreme_uturn_parameters() -> Dict[str, float]:
+    """Return the base parameters shared by the extreme U-turn scenarios."""
+
+    first_line = 120.0
+    spiral_length = 8.0
+    last_line = 120.0
+    curvature_start = 0.0
+    curvature_end = 2.0 * math.pi / spiral_length  # yields ~180 deg heading change
+    return {
+        "first_line": first_line,
+        "turn_length": spiral_length,
+        "last_line": last_line,
+        "curvature_start": curvature_start,
+        "curvature_end": curvature_end,
+    }
+
+
 def _straight_single_section() -> Scenario:
     length = 30.0
     centerline = _make_centerline([(0.0, 0.0, 0.0, 0.0), (length, length, 0.0, 0.0)])
@@ -218,15 +259,12 @@ def _curved_arc() -> Scenario:
 def _extreme_spiral_uturn() -> Scenario:
     """Construct a straight-spiral-straight scenario with an aggressive U-turn."""
 
-    # The straight segments are intentionally long so that the U-turn shape is
-    # immediately recognisable when visualised.  The spiral section is kept
-    # short while forcing a 180° heading change, yielding a very tight radius at
-    # the end of the clothoid.
-    first_line = 120.0
-    spiral_length = 8.0
-    last_line = 120.0
-    curvature_start = 0.0
-    curvature_end = 2.0 * math.pi / spiral_length  # yields ~180 deg heading change
+    params = _extreme_uturn_parameters()
+    first_line = params["first_line"]
+    spiral_length = params["turn_length"]
+    last_line = params["last_line"]
+    curvature_start = params["curvature_start"]
+    curvature_end = params["curvature_end"]
 
     spiral_end = _integrate_spiral(
         spiral_length,
@@ -307,11 +345,92 @@ def _extreme_spiral_uturn() -> Scenario:
     )
 
 
+def _extreme_arc_uturn() -> Scenario:
+    """Approximate the extreme U-turn using an arc with averaged curvature."""
+
+    params = _extreme_uturn_parameters()
+    first_line = params["first_line"]
+    arc_length = params["turn_length"]
+    last_line = params["last_line"]
+    curvature_avg = 0.5 * (params["curvature_start"] + params["curvature_end"])
+
+    arc_mid = _integrate_arc(
+        arc_length / 2.0,
+        curvature_avg,
+        x0=first_line,
+        y0=0.0,
+        hdg0=0.0,
+    )
+    arc_end = _integrate_arc(
+        arc_length,
+        curvature_avg,
+        x0=first_line,
+        y0=0.0,
+        hdg0=0.0,
+    )
+
+    total_length = first_line + arc_length + last_line
+    final_x = arc_end["x"] + last_line * math.cos(arc_end["hdg"])
+    final_y = arc_end["y"] + last_line * math.sin(arc_end["hdg"])
+
+    centerline = _make_centerline(
+        [
+            (0.0, 0.0, 0.0, 0.0),
+            (first_line, first_line, 0.0, 0.0),
+            (first_line + arc_length / 2.0, arc_mid["x"], arc_mid["y"], arc_mid["hdg"]),
+            (first_line + arc_length, arc_end["x"], arc_end["y"], arc_end["hdg"]),
+            (total_length, final_x, final_y, arc_end["hdg"]),
+        ]
+    )
+
+    sections = [{"s0": 0.0, "s1": total_length}]
+    lane_topology = _make_lane_topology(
+        left_lanes=[[_lane_segment(0.0, total_length, 3.5)]],
+        right_lanes=[[_lane_segment(0.0, total_length, 3.5)]],
+    )
+
+    geometry_segments = [
+        {
+            "s": 0.0,
+            "x": 0.0,
+            "y": 0.0,
+            "hdg": 0.0,
+            "length": first_line,
+            "curvature": 0.0,
+        },
+        {
+            "s": first_line,
+            "x": first_line,
+            "y": 0.0,
+            "hdg": 0.0,
+            "length": arc_length,
+            "curvature": curvature_avg,
+        },
+        {
+            "s": first_line + arc_length,
+            "x": arc_end["x"],
+            "y": arc_end["y"],
+            "hdg": arc_end["hdg"],
+            "length": last_line,
+            "curvature": 0.0,
+        },
+    ]
+
+    return Scenario(
+        "extreme_arc_uturn",
+        centerline,
+        sections,
+        lane_topology,
+        geometry_segments,
+    )
+
+
 def _iter_scenarios() -> Iterable[Scenario]:
     yield _straight_single_section()
     yield _straight_multi_section()
     yield _curved_arc()
     yield _extreme_spiral_uturn()
+    yield _extreme_arc_uturn()
 
 
 def generate_samples(output_dir: Path, *, patch: bool = True) -> List[Path]:
