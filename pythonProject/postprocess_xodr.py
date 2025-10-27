@@ -1,10 +1,4 @@
-"""Post-processing helpers for generated OpenDRIVE files.
-
-本模块用于统一每个 ``laneSection`` 的中心车道定义，使其满足 MATLAB
-Driving Scenario Designer 对 OpenDRIVE 的导入要求。根据最新的兼容性
-测试，中心车道应被标记为 ``type="none"`` 且不携带 ``<width>``
-子节点，以便解析器仅以其作为参考线。
-"""
+"""OpenDRIVE生成物の中心レーン定義を調整する後処理ユーティリティ。"""
 
 from __future__ import annotations
 
@@ -14,7 +8,7 @@ from typing import Iterable, Optional
 
 
 def _iter_center_lanes(tree: ET.ElementTree) -> Iterable[ET.Element]:
-    """Yield all ``<lane>`` elements that belong to a ``<center>`` block."""
+    """center要素配下のlaneノードを順に返す。"""
 
     root = tree.getroot()
     for lane_section in root.findall(".//laneSection"):
@@ -29,27 +23,8 @@ def ensure_center_lane_width(
     path: Path,
     *,
     force_lane_type: Optional[str] = None,
-    width_attrs: Optional[dict[str, str]] = None,
 ) -> bool:
-    """Normalize centre lane ``type`` and remove obsolete ``<width>`` nodes.
-
-    Parameters
-    ----------
-    path:
-        Path to the ``.xodr`` file that should be patched in-place.
-    force_lane_type:
-        Optional lane ``type`` that should be enforced for each centre lane.
-        If ``None`` the original ``type`` is preserved.
-    width_attrs:
-        Deprecated and ignored.  Present for backwards compatibility with
-        earlier automation scripts.
-
-    Returns
-    -------
-    bool
-        ``True`` if the file was modified, ``False`` if no changes were
-        necessary.
-    """
+    """中心レーンの ``type`` と ``<width>`` を正規化する。"""
 
     tree = ET.parse(path)
     updated = False
@@ -61,7 +36,7 @@ def ensure_center_lane_width(
             lane.set("type", force_lane_type)
             lane_updated = True
 
-        # Remove any width definitions so the lane acts purely as a reference.
+        # 参照線として扱うため幅ノードはすべて削除する。
         width_elements = [child for child in lane if child.tag == "width"]
         if width_elements:
             for element in width_elements:
@@ -79,7 +54,7 @@ def ensure_center_lane_width(
 
 
 def patch_file(path: Path, *, verbose: bool = True) -> bool:
-    """Public helper used by CLI/automation hooks to patch a single file."""
+    """単一XODRファイルを後処理し変更有無を返す。"""
 
     try:
         changed = ensure_center_lane_width(path, force_lane_type="none")
@@ -96,7 +71,7 @@ def patch_file(path: Path, *, verbose: bool = True) -> bool:
 
 
 def patch_paths(paths: Iterable[Path], *, verbose: bool = True) -> int:
-    """Patch multiple files and return the count of modified entries."""
+    """複数パスを処理し更新数を返す。"""
 
     touched = 0
     for path in paths:
@@ -106,7 +81,7 @@ def patch_paths(paths: Iterable[Path], *, verbose: bool = True) -> int:
 
 
 def main(argv: Optional[Iterable[str]] = None) -> None:
-    """Minimal CLI so the helper can be invoked manually if required."""
+    """必要に応じて手動実行できる簡易CLI。"""
 
     import argparse
 

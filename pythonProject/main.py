@@ -1,10 +1,4 @@
-"""Command line helper to convert CSV datasets into OpenDRIVE files.
-
-This script understands different CSV layouts (currently JPN and US) and
-dispatches them to their dedicated conversion pipeline.  Both formats reuse
-the conversion machinery in ``csv2xodr.csv2xodr`` while supplying their
-format-specific configuration files.
-"""
+"""CSV変換フローを呼び出すためのコマンドライン補助スクリプト。"""
 
 from __future__ import annotations
 
@@ -27,7 +21,7 @@ from pythonProject import add_shape_index, interpolate_curvature, postprocess_xo
 
 @dataclass(frozen=True)
 class FormatPipeline:
-    """Description of a conversion pipeline for a specific CSV flavour."""
+    """各フォーマットに対応する処理パイプラインの定義。"""
 
     name: str
     input_dir: Path
@@ -38,7 +32,7 @@ class FormatPipeline:
 
 
 def build_pipeline_registry() -> Dict[str, FormatPipeline]:
-    """Create the registry that maps format identifiers to pipelines."""
+    """フォーマット識別子とパイプラインの対応表を構築する。"""
 
     input_root = ROOT / "input_csv"
     output_root = ROOT / "out"
@@ -65,24 +59,25 @@ def build_pipeline_registry() -> Dict[str, FormatPipeline]:
 
 
 def _run_us_pipeline(input_dir: str, output_path: str, config_path: str) -> Dict:
-    """Execute the US-specific CSV → OpenDRIVE workflow."""
+    """米国向けデータの変換を実行する薄いラッパー。"""
 
     return convert_dataset(input_dir, output_path, config_path)
 
 
 def run_pipeline(pipeline: FormatPipeline) -> Dict:
-    """Execute a pipeline and return the conversion statistics."""
+    """指定パイプラインを実行して統計情報を返す。"""
 
     if not pipeline.input_dir.exists():
         raise FileNotFoundError(f"未找到输入目录: {pipeline.input_dir}")
 
+    # 出力ディレクトリを先に整備してから処理を開始する
     pipeline.output_dir.mkdir(parents=True, exist_ok=True)
     output_path = pipeline.output_dir / pipeline.output_filename
     return pipeline.runner(str(pipeline.input_dir), str(output_path), str(pipeline.config_path))
 
 
 def preprocess_csv_sources(root: Path) -> None:
-    """Run the CSV preprocessing steps prior to OpenDRIVE conversion."""
+    """OpenDRIVE生成前にCSV側の前処理を行う。"""
 
     print("开始执行CSV预处理流程……")
 
@@ -92,6 +87,7 @@ def preprocess_csv_sources(root: Path) -> None:
             print(f"    [SKIP] 未找到文件: {path}")
             continue
 
+        # 原始データへ形状インデックス列を付加
         add_shape_index.add_shape_index_column(path, encoding=add_shape_index.DEFAULT_ENCODING)
         print(f"    [OK] 已更新形状索引列: {path}")
 
@@ -113,7 +109,7 @@ def preprocess_csv_sources(root: Path) -> None:
 def iter_targets(
     registry: Dict[str, FormatPipeline], selected_format: Optional[str], convert_all: bool
 ) -> Iterable[FormatPipeline]:
-    """Return the pipelines that should be executed based on CLI arguments."""
+    """CLI引数に応じて実行対象となるパイプラインを返す。"""
 
     if convert_all:
         return registry.values()

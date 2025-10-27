@@ -1,16 +1,4 @@
-"""Convert all spiral segments in an OpenDRIVE file to constant-curvature arcs.
-
-该脚本用于将 ``.xodr`` 路径中的所有 ``<spiral>`` 几何段替换为 ``<arc>``
-段。替换时会读取 ``curvatureStart`` 与 ``curvatureEnd`` 属性，计算其
-平均值作为 ``<arc>`` 的 ``curvature``，以达到消除螺旋段的目的。
-
-Usage
------
-    python convert_spiral_to_arc.py /path/to/map.xodr
-
-参数既可以是单个文件，也可以是目录。传入目录时脚本会在其下递归
-查找所有 ``.xodr`` 文件并进行处理。
-"""
+"""OpenDRIVE内の ``<spiral>`` を ``<arc>`` に置き換える補助スクリプト。"""
 
 from __future__ import annotations
 
@@ -22,10 +10,7 @@ from typing import Iterable
 
 
 def _iter_xodr_files(paths: Iterable[Path]) -> Iterable[Path]:
-    """Yield unique ``.xodr`` files from ``paths``.
-
-    Directories are traversed recursively while plain files are yielded as-is.
-    """
+    """対象パスから重複のない ``.xodr`` ファイルを列挙する。"""
 
     seen: set[Path] = set()
 
@@ -46,27 +31,14 @@ def _iter_xodr_files(paths: Iterable[Path]) -> Iterable[Path]:
 
 
 def _format_curvature(value: float) -> str:
-    """Return a curvature string without introducing scientific notation."""
+    """曲率値を指数表記なしで整形する。"""
 
-    # ``:.12g`` keeps the original precision reasonably intact while avoiding
-    # trailing zeros. ``repr`` would introduce scientific notation for small
-    # values which is less desirable for human inspection of XODR files.
+    # ``:.12g`` を使い元の精度を保ちつつ余分なゼロを抑制する。
     return f"{value:.12g}"
 
 
 def convert_spiral_to_arc(path: Path) -> int:
-    """Replace all ``<spiral>`` geometries with ``<arc>`` nodes.
-
-    Parameters
-    ----------
-    path:
-        The OpenDRIVE file to be patched in-place.
-
-    Returns
-    -------
-    int
-        Number of spiral elements that have been replaced.
-    """
+    """指定ファイル内の ``<spiral>`` 要素を ``<arc>`` に置換する。"""
 
     try:
         tree = ET.parse(path)
@@ -104,7 +76,7 @@ def convert_spiral_to_arc(path: Path) -> int:
             arc = ET.Element("arc")
             arc.set("curvature", _format_curvature(average))
 
-            # Replace the spiral element while preserving the order of siblings.
+            # 兄弟順序を維持したまま螺旋を円弧へ置換する。
             geometry.remove(element)
             geometry.insert(index, arc)
             replaced += 1

@@ -1,14 +1,4 @@
-"""从大型 OpenDRIVE 文件中提取最简单的道路片段。
-
-默认行为：
-    * 仅保留第一条道路（或通过 --road-id 指定的道路）。
-    * 在该道路内，仅保留前 N 段几何（默认保留 1 段，可通过 --max-geometries 调整）。
-    * 仅保留首个 laneSection（可通过 --max-lane-sections 调整）。
-    * 移除 objects/signals/surface 等附属信息，聚焦道路主体结构。
-    * 自动更新 Header 与 Road 的长度字段，方便手动排查。
-
-脚本不会修改输入文件，而是生成一个新的裁剪结果。
-"""
+"""大型OpenDRIVEから検証に十分な最小道路片段を切り出すスクリプト。"""
 
 from __future__ import annotations
 
@@ -70,7 +60,7 @@ def _prune_lane_sections(lanes: ET.Element, max_lane_sections: int | None) -> No
 
     lane_offsets = lanes.findall("laneOffset")
     if lane_offsets:
-        # 当仅保留一段 laneSection 时，只保留第一段 laneOffset，避免引用不存在的 s
+        # laneSection が1つだけの場合は最初の laneOffset のみ維持する。
         if len(kept_sections) == 1:
             for offset in lane_offsets[1:]:
                 lanes.remove(offset)

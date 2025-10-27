@@ -1,4 +1,4 @@
-"""Utility for adding a shape-index column to lane geometry CSV files."""
+"""車線幾何CSVへ形状インデックス列を付与する補助モジュール。"""
 
 from __future__ import annotations
 
@@ -15,14 +15,14 @@ DEFAULT_ENCODING = "cp932"
 
 @dataclass
 class _LaneState:
-    """Book-keeping data that tracks shape indices for a single lane."""
+    """単一路線におけるインデックス状態を保持する内部構造体。"""
 
     next_index: int = 0
     point_count: Optional[int] = None
 
 
 def _parse_int(value: str) -> Optional[int]:
-    """Convert ``value`` to :class:`int` if possible."""
+    """可能であれば ``value`` を ``int`` へ変換する。"""
 
     value = value.strip()
     if not value:
@@ -43,14 +43,7 @@ def assign_shape_indices(
     point_count_column: str = "形状要素点数",
     shape_index_column: str = SHAPE_INDEX_COLUMN,
 ) -> List[MutableMapping[str, str]]:
-    """Assign a 0-based shape index to each row grouped by lane id.
-
-    The function walks through ``rows`` in order and maintains a counter per
-    lane identifier.  Whenever the counter reaches the reported number of
-    geometry points (``形状要素点数``), it wraps back to zero.  This keeps the
-    produced indices within the ``[0, 形状要素点数 - 1]`` range even for datasets
-    that contain multiple transmissions of the same lane geometry.
-    """
+    """車線単位で0始まりの形状インデックスを割り当てる。"""
 
     states: Dict[str, _LaneState] = {}
     processed: List[MutableMapping[str, str]] = []
@@ -76,6 +69,7 @@ def assign_shape_indices(
             state.next_index += 1
             state.point_count = None
 
+        # 形状インデックス列へ書き戻す
         row[shape_index_column] = str(index_value)
         processed.append(row)
 
