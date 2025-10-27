@@ -11,7 +11,7 @@ def _float(value: str) -> float:
     try:
         return float(value)
     except ValueError as exc:
-        raise ValueError(f"无法解析浮点数：{value}") from exc
+        raise ValueError(f"浮動小数点数を解釈できません: {value}") from exc
 
 
 def _update_length(header: ET.Element, road: ET.Element) -> None:
@@ -156,7 +156,7 @@ def extract_segment(
     root = tree.getroot()
     roads = root.findall("road")
     if not roads:
-        raise ValueError("未在 XODR 中找到任何 road 节点")
+        raise ValueError("XODR内にroadノードが見つかりません")
 
     selected_road = None
     if road_id is not None:
@@ -165,18 +165,18 @@ def extract_segment(
                 selected_road = road
                 break
         if selected_road is None:
-            raise ValueError(f"未找到 id 为 {road_id} 的 road")
+            raise ValueError(f"IDが {road_id} のroadが見つかりません")
     else:
         selected_road = roads[0]
 
-    # 仅保留选中道路
+    # 選択した道路のみを残す
     for road in list(roads):
         if road is not selected_road:
             root.remove(road)
 
     plan_view = selected_road.find("planView")
     if plan_view is None:
-        raise ValueError("选中的 road 不包含 planView")
+        raise ValueError("選択したroadにplanViewが含まれていません")
 
     if max_geometries is not None:
         geometries = plan_view.findall("geometry")
@@ -200,21 +200,21 @@ def extract_segment(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="裁剪 OpenDRIVE 文件，保留最简单片段")
-    parser.add_argument("input", nargs="?", help="原始 xodr 文件路径")
-    parser.add_argument("output", nargs="?", help="输出 xodr 文件路径")
-    parser.add_argument("--road-id", help="需要保留的 road id，如果不指定则使用第一条", default=None)
+    parser = argparse.ArgumentParser(description="OpenDRIVEファイルを簡略化して最小区間を抽出します")
+    parser.add_argument("input", nargs="?", help="元となる.xodrファイルのパス")
+    parser.add_argument("output", nargs="?", help="出力先.xodrファイルのパス")
+    parser.add_argument("--road-id", help="保持するroad ID（未指定時は最初のroad）", default=None)
     parser.add_argument(
         "--max-geometries",
         type=int,
         default=1,
-        help="planView 中保留的 geometry 数量",
+        help="planView内で保持するgeometry数",
     )
     parser.add_argument(
         "--max-lane-sections",
         type=int,
         default=1,
-        help="lanes 中保留的 laneSection 数量",
+        help="lanes内で保持するlaneSection数",
     )
     return parser.parse_args()
 
@@ -238,9 +238,9 @@ def _indent_element(element: ET.Element, level: int = 0) -> None:
 def main() -> None:
     args = parse_args()
     if args.input is None:
-        args.input = input("请输入原始 xodr 文件路径: ").strip()
+        args.input = input("元の.xodrファイルのパスを入力してください: ").strip()
     if args.output is None:
-        args.output = input("请输入输出 xodr 文件路径: ").strip()
+        args.output = input("出力先.xodrファイルのパスを入力してください: ").strip()
 
     tree = ET.parse(args.input)
     tree = extract_segment(
@@ -251,7 +251,7 @@ def main() -> None:
     )
     _indent_element(tree.getroot())
     tree.write(args.output, encoding="utf-8", xml_declaration=True)
-    print(f"已写入：{args.output}")
+    print(f"書き込みが完了しました: {args.output}")
 
 
 if __name__ == "__main__":

@@ -34,11 +34,11 @@ def _parse_int(value: str) -> int:
 
     value = (value or "").strip()
     if not value:
-        raise ValueError("cannot parse empty value as int")
+        raise ValueError("空文字列を整数に変換できません")
     try:
         return int(value)
     except ValueError as exc:  # pragma: no cover - defensive fallback
-        raise ValueError(f"invalid integer value: {value!r}") from exc
+        raise ValueError(f"不正な整数値です: {value!r}") from exc
 
 
 def _clone_with_index(row: Mapping[str, str], index: int) -> MutableMapping[str, str]:
@@ -153,17 +153,17 @@ def default_files(root: Path | None = None) -> List[Path]:
 
 
 def _parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Interpolate missing CURVATURE.csv shape indices.")
+    parser = argparse.ArgumentParser(description="曲率CSVの欠損形状インデックスを補間します。")
     parser.add_argument(
         "files",
         nargs="*",
         type=Path,
-        help="CSV files to update. Defaults to the standard JPN/US curvature datasets.",
+        help="更新対象のCSVファイル（省略時は標準のJPN/USデータセット）",
     )
     parser.add_argument(
         "--encoding",
         default=DEFAULT_ENCODING,
-        help="Character encoding used to read/write the CSV files (default: %(default)s).",
+        help="CSVの入出力に使用する文字コード（既定値: %(default)s）",
     )
     return parser.parse_args()
 
@@ -174,14 +174,14 @@ def main() -> None:
 
     for path in files:
         if not path.exists():
-            print(f"[SKIP] {path} (not found)")
+            print(f"[SKIP] ファイルが見つかりません: {path}")
             continue
 
         added = process_file(path, encoding=args.encoding)
         if added:
-            print(f"[OK] {path}: added {added} interpolated row(s)")
+            print(f"[OK] {path}: 補間行を {added} 行追加しました")
         else:
-            print(f"[OK] {path}: no missing shape indices detected")
+            print(f"[OK] {path}: 欠損インデックスは検出されませんでした")
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
