@@ -1,13 +1,4 @@
-"""Generate minimal OpenDRIVE files for spiral comparison tests.
-
-该脚本会在指定的输出目录下生成两个 xodr 文件：
-
-1. `spiral_zero_diff.xodr`：包含曲率差为 0 的螺旋段。
-2. `spiral_nonzero_diff.xodr`：包含曲率差不为 0 的螺旋段。
-
-脚本旨在帮助验证 MATLAB Driving Scenario Toolbox 在处理
-零曲率差螺旋段时的行为差异。
-"""
+"""螺旋ジオメトリの挙動比較用に最小構成のOpenDRIVEを生成する。"""
 
 from __future__ import annotations
 
@@ -81,7 +72,7 @@ def _build_plan_view(parent: ET.Element, length: float, curvature_start: float, 
 
 
 def build_spiral_xodr(length: float, curvature_start: float, curvature_end: float) -> ET.Element:
-    """构造只包含单条道路的最小 OpenDRIVE 结构。"""
+    """単一路線のみを含む最小構成のOpenDRIVEを生成する。"""
 
     root = ET.Element("OpenDRIVE")
     header = ET.SubElement(root, "header", attrib=HEADER_ATTRS | {"length": f"{length:.3f}"})
@@ -117,7 +108,7 @@ def parse_args() -> argparse.Namespace:
         description="生成用于比较的最小螺旋 OpenDRIVE 文件",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent(
-            """示例：
+            """使用例:
             python generate_spiral_test_cases.py --output-dir out/spiral_tests
             """
         ),
@@ -143,12 +134,12 @@ def main() -> None:
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # 零曲率差螺旋
+    # 曲率差ゼロの螺旋ケース
     zero_tree = build_spiral_xodr(args.length, args.start_curvature, args.start_curvature)
     zero_path = os.path.join(args.output_dir, "spiral_zero_diff.xodr")
     save_tree(zero_tree, zero_path)
 
-    # 非零曲率差螺旋
+    # 曲率差を持つ螺旋ケース
     nonzero_tree = build_spiral_xodr(
         args.length,
         args.start_curvature,
