@@ -1,4 +1,4 @@
-"""Helpers for building per-section lane specifications."""
+"""区間ごとのレーン仕様を構築するための補助機能群。"""
 
 import math
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -212,10 +212,9 @@ def _estimate_lane_side_from_geometry(
         return {}, {}
 
     # ``Offset`` values in the raw CSV are absolute centimetre positions measured from
-    # a global reference.  The centreline normalisation logic rebases them so that the
-    # first valid sample maps to ``s = 0``.  Mirror that behaviour here to avoid feeding
-    # extremely large numbers into the mapper (which would collapse everything to the
-    # end of the alignment and cause lane sides to flip erratically).
+    # 中心線正規化が先頭サンプルを s = 0 に揃えているため、ここでも同様の補正を行い
+    # マッパーへ極端に大きな値を渡さないようにする。巨大値を入力すると整列末尾へ
+    # 押し込まれ、レーン側が不安定に反転してしまうためである。
     offsets_m: List[float] = [value / 100.0 for value in offsets_cm]
     base_offset_m: Optional[float] = None
     for value in offsets_m:
@@ -472,7 +471,7 @@ def build_lane_spec(
     centerline: Optional[DataFrame] = None,
     geo_origin: Optional[Tuple[float, float]] = None,
 ) -> List[Dict[str, Any]]:
-    """Return metadata for each lane section used by the writer."""
+    """書き出し処理で利用する各レーンセクションのメタ情報を返す。"""
 
     sections_list = list(sections)
     lane_info = (lane_topo or {}).get("lanes") or {}
@@ -480,7 +479,7 @@ def build_lane_spec(
     lane_count = (lane_topo or {}).get("lane_count") or 0
 
     if not lane_info:
-        # fallback to the previous heuristic
+        # 以前のヒューリスティックへフォールバック
         lanes_guess = [1, -1]
         total = len(sections_list)
         out: List[Dict[str, Any]] = []
@@ -526,7 +525,7 @@ def build_lane_spec(
         groups: Dict[str, List[str]],
         lane_data: Dict[str, Dict[str, Any]],
     ) -> Tuple[Dict[str, List[str]], Dict[str, str], Dict[str, str]]:
-        """Split lane groups that mix positive/negative lane numbers."""
+        """正負のレーン番号が混在するグループを分割する。"""
 
         expanded: Dict[str, List[str]] = {}
         parent_map: Dict[str, str] = {}
@@ -649,9 +648,8 @@ def build_lane_spec(
                         else:
                             geometry_side_hint[alias] = hint
                 else:
-                    # For split groups ("::pos"/"::neg") the derived hint
-                    # still carries meaningful information about how the
-                    # sub-group relates to the reference line.
+                    # 分割グループ（"::pos"/"::neg"）では、参照線との位置関係を示す
+                    # ヒントが依然として有効な情報を持つ。
                     geometry_side_hint[alias] = hint
             else:
                 geometry_side_hint[alias] = hint
@@ -1552,7 +1550,7 @@ def apply_shoulder_profile(
 
 
 def normalize_lane_ids(lane_sections: List[Dict[str, Any]]) -> None:
-    """Renumber lane IDs so that they are compact and sequential."""
+    """レーンIDを詰め直し連続した番号へリナンバーする。"""
 
     if not lane_sections:
         return
@@ -1615,8 +1613,7 @@ def normalize_lane_ids(lane_sections: List[Dict[str, Any]]) -> None:
 
     occurrence: Dict[Tuple[int, int], int] = {}
 
-    # First pass: remember the original identifiers and assign new IDs based on
-    # the positional order within each section.
+    # 第1段階: 元のIDを保持しつつ、各セクション内の位置順で新しいIDを割り当てる。
     for sec_idx, section in enumerate(lane_sections):
         for side in ("left", "right"):
             lanes = section.get(side, []) or []
@@ -1649,7 +1646,7 @@ def normalize_lane_ids(lane_sections: List[Dict[str, Any]]) -> None:
             return mapped
         return target
 
-    # Second pass: remap predecessor/successor identifiers using the new IDs.
+    # 第2段階: 先後関係を新しいIDへ再マッピングする。
     for sec_idx, section in enumerate(lane_sections):
         for side in ("left", "right"):
             lanes = section.get(side, []) or []

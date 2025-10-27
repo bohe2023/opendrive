@@ -1,12 +1,7 @@
 from csv2xodr.simpletable import Series, notna
 
 def mark_type_from_division_row(row: Series) -> str:
-    """
-    Very rough mapping:
-      - if DotLine/破線ペイント is 1 → "broken"
-      - else if type category column exists → solid/broken by value
-      - else "solid"
-    """
+    """車線区分テーブルの情報から破線か実線かを素朴に推定する。"""
     for c in row.index:
         if ("破線" in c or "ペイント" in c) and notna(row[c]):
             try:

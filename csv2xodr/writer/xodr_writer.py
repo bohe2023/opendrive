@@ -131,7 +131,7 @@ def _build_param_poly3_segment(
     if not (math.isfinite(dx) and math.isfinite(dy)):
         return None
 
-    # Rotate into the start-frame so the initial tangent aligns with the +x axis.
+    # 初期接線が+x軸に沿うよう開始座標系へ回転する。
     u1 = cos_h * dx + sin_h * dy
     v1 = -sin_h * dx + cos_h * dy
 
@@ -260,7 +260,7 @@ def _prepare_explicit_geometry(
 
     try:
         from scipy.signal import savgol_filter  # type: ignore
-    except Exception:  # pragma: no cover - optional dependency
+    except Exception:  # pragma: no cover - 任意依存への備え
         savgol_filter = None  # type: ignore
 
     try:
@@ -482,7 +482,7 @@ def write_xodr(
 ):
     road_metadata = road_metadata or {}
 
-    # root + header
+    # ルート要素とヘッダー
     odr = Element("OpenDRIVE")
     header = SubElement(odr, "header", {
         "revMajor": "1",
@@ -495,7 +495,7 @@ def write_xodr(
     if geo_ref:
         SubElement(header, "geoReference").text = geo_ref
 
-    # single road
+    # 単一路線
     length = float(centerline["s"].iloc[-1])
     road = SubElement(
         odr,
@@ -527,7 +527,7 @@ def write_xodr(
 
         SubElement(type_el, "speed", speed_attrs)
 
-    # planView with piecewise lines
+    # 折線で構成された planView を出力
     plan = SubElement(road, "planView")
     if geometry_segments:
         for seg in geometry_segments:
@@ -537,9 +537,8 @@ def write_xodr(
                 continue
 
             if not math.isfinite(length) or length <= 1e-6:
-                # 参考线在某些数据集中会出现零长度的占位段，如果仍然写入
-                # OpenDRIVE 会被查看器当成新的起点，造成路段出现错位。这里
-                # 直接丢弃这类节点，保持几何连续。
+                # 一部のデータでは零長の占位区間が存在し、書き出すとビューアが
+                # 新しい起点と解釈して路線がずれてしまうため除外する。
                 continue
 
             geom = SubElement(
@@ -547,10 +546,9 @@ def write_xodr(
                 "geometry",
                 {
 
-                    # planView 节点之间必须在数值上无缝衔接，否则在 OpenDRIVE
-                    # 查看器中会出现肉眼可见的缝隙。这里将几何参数输出为更高
-                    # 的小数精度，以保留 build_geometry_segments 中累积积分的
-                    # 结果，避免由于字符串截断导致的断裂。
+                    # planView の節点は数値的に連続である必要があり、断絶すると
+                    # ビューアで隙間が見えてしまう。積分結果を丸め過ぎないよう
+                    # 高精度の小数で出力して断裂を防ぐ。
                     "s": _format_float(seg["s"], precision=12),
                     "x": _format_float(seg["x"], precision=12),
                     "y": _format_float(seg["y"], precision=12),
@@ -593,17 +591,15 @@ def write_xodr(
             y2 = float(centerline["y"].iloc[i + 1])
             seg_len = ((x2 - x) ** 2 + (y2 - y) ** 2) ** 0.5
             if not math.isfinite(seg_len) or seg_len <= 1e-6:
-                # 如果中心线中存在重复点，会导出零长度几何段，从而在
-                # OpenDRIVE 查看器中显示为断裂。忽略这些异常点，保证
-                # 前后几何段首尾相接。
+                # 中心線に重複点があると零長区間が生まれビューアで断裂するため、
+                # 異常値は読み飛ばして前後区間を連結する。
                 continue
             geom = SubElement(
                 plan,
                 "geometry",
                 {
-                    # 与圆弧模式相同，采用更高的小数精度输出折线节点，
-                    # 避免由于字符串截断导致的相邻路段起终点坐标不完全
-                    # 一致，从而在查看器中出现细微豁口。
+                    # 円弧処理と同様に高精度の小数で折線ノードを出力し、
+                    # 文字列丸めで隣接区間の端点がずれるのを防ぐ。
                     "s": _format_float(s, precision=12),
                     "x": _format_float(x, precision=12),
                     "y": _format_float(y, precision=12),
@@ -701,7 +697,7 @@ def write_xodr(
 
             SubElement(signals_el, "signal", attrs)
 
-    # lanes
+    # レーン構造
     lanes = SubElement(road, "lanes")
 
     lane_offsets: List[Tuple[float, float]] = []
@@ -1010,7 +1006,7 @@ def write_xodr(
 
                             geom_el = SubElement(explicit_el, "geometry", geom_attrs)
 
-                            # Use a simple line primitive when curvature data is unavailable.
+                            # 曲率データが無い場合は直線プリミティブを使う。
                             SubElement(geom_el, "line")
 
             predecessors = lane_data.get("predecessors") or []
@@ -1026,7 +1022,7 @@ def write_xodr(
 
         center_lane_data: Optional[Dict[str, Any]] = None
         if center_lanes:
-            # Prefer a central lane that carries an explicit width definition.
+            # 幅員が明示された中央レーンを優先する。
             center_lane_data = max(
                 center_lanes,
                 key=lambda item: float(item.get("width", 0.0) or 0.0),

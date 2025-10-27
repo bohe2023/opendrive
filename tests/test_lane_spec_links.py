@@ -161,7 +161,7 @@ def test_lane_spec_flags_and_writer_links(tmp_path):
 
 
 def test_lane_spec_keeps_positive_lanes_on_default_side_without_right_evidence():
-    """All positive lane numbers without right-side hints remain on the default side."""
+    """右側の証拠が無い正のレーン番号は既定側（左側）に留まる。"""
     sections = [{"s0": 0.0, "s1": 10.0}]
 
     lane_topology = {
@@ -371,7 +371,7 @@ def test_lane_spec_balances_positive_and_negative_lane_numbers():
 
 
 def test_lane_spec_uses_lane_count_when_only_positive_lane_numbers():
-    """Lane count should not force right-side lanes without right evidence."""
+    """右側の証拠が無ければレーン数に関係なく右側へ割り当てない。"""
     sections = [{"s0": 0.0, "s1": 10.0}]
 
     lane_topology = {
@@ -423,7 +423,7 @@ def test_lane_spec_uses_lane_count_when_only_positive_lane_numbers():
 
 
 def test_lane_spec_splits_positive_lanes_when_neighbours_form_chain():
-    """Left/right neighbours should reveal both sides even without negative lane numbers."""
+    """負のレーン番号が無くても左右の接続情報から両側を検出できる。"""
 
     sections = [{"s0": 0.0, "s1": 10.0}]
 
@@ -496,7 +496,7 @@ def test_lane_spec_splits_positive_lanes_when_neighbours_form_chain():
 
 
 def test_lane_spec_splits_positive_and_negative_lane_numbers_with_lane_count():
-    """When both sides have evidence, lanes are split across left/right lists."""
+    """左右両方に証拠がある場合はレーンを左右リストへ分配する。"""
 
     sections = [{"s0": 0.0, "s1": 10.0}]
 

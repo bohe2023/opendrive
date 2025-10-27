@@ -42,7 +42,7 @@ def _apply_dataset_overrides(dfs, cfg) -> None:
 
     try:
         from csv2xodr.normalize.us_adapters import merge_lane_width_into_links
-    except Exception:  # pragma: no cover - optional helper
+    except Exception:  # pragma: no cover - 任意ヘルパーに依存する分岐
         return
 
     enriched = merge_lane_width_into_links(lane_link, lane_width)
@@ -65,7 +65,7 @@ def convert_dataset(input_dir: str, output_path: str, config_path: str) -> dict:
     """CSV群からOpenDRIVEファイルを生成して統計情報を返す。"""
     try:
         import yaml  # type: ignore
-    except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    except ModuleNotFoundError:  # pragma: no cover - 任意依存が欠ける環境に対応
         yaml = None
         from csv2xodr.mini_yaml import load as mini_yaml_load
     if yaml is not None:

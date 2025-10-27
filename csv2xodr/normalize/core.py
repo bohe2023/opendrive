@@ -36,7 +36,7 @@ def _smooth_series(values: List[float], positions: List[float], window: float) -
             right += 1
         if running_count > 0:
             smoothed[idx] = running_sum / running_count
-        else:  # pragma: no cover - defensive fallback
+        else:  # pragma: no cover - 防御的なフォールバック
             smoothed[idx] = values[idx]
 
     return smoothed
@@ -106,7 +106,7 @@ def _to_float(value: Any) -> Optional[float]:
             except ValueError:
                 return None
         return None
-    except TypeError:  # pragma: no cover - defensive
+    except TypeError:  # pragma: no cover - 防御的な分岐
         return None
 
 
@@ -799,7 +799,7 @@ def _select_base_origin(
         try:
             lat_val = _to_float(row[lat_col])
             lon_val = _to_float(row[lon_col])
-        except KeyError:  # pragma: no cover - defensive, for unexpected layouts
+        except KeyError:  # pragma: no cover - 想定外レイアウトへの防御的処理
             continue
 
         if lat_val is None or lon_val is None:
@@ -930,7 +930,7 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
                     for flag in unique_flags:
                         try:
                             numeric.append((abs(float(flag)), flag))
-                        except Exception:  # pragma: no cover - defensive
+                        except Exception:  # pragma: no cover - 防御的な分岐
                             continue
                     if numeric:
                         numeric.sort(key=lambda item: item[0])
@@ -962,7 +962,7 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
                             raw_count = group[0].get(shape_count_col)
                             try:
                                 limit = int(float(raw_count))
-                            except Exception:  # pragma: no cover - defensive
+                            except Exception:  # pragma: no cover - 防御的な分岐
                                 limit = None
                         if limit is None or limit <= 0 or limit > len(group):
                             limit = len(group)
@@ -1149,7 +1149,7 @@ def build_offset_mapper(centerline: DataFrame) -> Callable[[float], float]:
         if not isinstance(value, (int, float)):
             try:
                 value = float(value)
-            except Exception:  # pragma: no cover - defensive
+            except Exception:  # pragma: no cover - 防御的な分岐
                 return s_vals[0]
 
         if value <= offsets[0]:
@@ -1253,7 +1253,7 @@ def build_elevation_profile(
     if all_heights:
         try:
             typical_height = statistics.median(all_heights)
-        except statistics.StatisticsError:  # pragma: no cover - defensive guard
+        except statistics.StatisticsError:  # pragma: no cover - 防御的なガード
             typical_height = None
 
     origin_cm = min(grouped.keys())
@@ -1696,7 +1696,7 @@ def build_curvature_profile(
                 else:
                     lat0_use, lon0_use = lat_vals[0], lon_vals[0]
                 xy_vals = latlon_to_local_xy(lat_vals, lon_vals, lat0_use, lon0_use)
-            except Exception:  # pragma: no cover - defensive
+            except Exception:  # pragma: no cover - 防御的な分岐
                 xy_vals = None
                 has_latlon = False
         else:
@@ -1943,7 +1943,7 @@ def build_curvature_profile(
         try:
             if isinstance(lane_key, (int, float)) and math.isfinite(float(lane_key)):
                 numeric_value = float(lane_key)
-        except Exception:  # pragma: no cover - defensive
+        except Exception:  # pragma: no cover - 防御的な分岐
             numeric_value = None
 
         if numeric_value is not None:

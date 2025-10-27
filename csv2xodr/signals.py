@@ -1,4 +1,4 @@
-"""Helpers for converting sign CSV tables into OpenDRIVE <signal> entries."""
+"""標識CSVをOpenDRIVEの<signal>要素へ変換する補助機能群。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from csv2xodr.line_geometry import _CenterlineProjector
 
 @dataclass
 class SignalExport:
-    """Container bundling exported signals with their support objects."""
+    """書き出した信号と支柱オブジェクトをまとめるコンテナ。"""
 
     signals: List[Dict[str, Any]]
     objects: List[Dict[str, Any]]
@@ -45,17 +45,13 @@ def _as_bool(value: Any) -> bool:
 
 
 def _format_numeric(value: Optional[float]) -> Optional[float]:
-    """Return a floating point number when *value* contains numeric text."""
+    """数値文字列を可能な限り浮動小数へ正規化する。"""
 
     if value is None:
         return None
 
-    # ``_to_float`` already normalises locale dependent formatting but it
-    # expects a clean numeric token.  Real-world CSV dumps occasionally embed
-    # speed limits inside human-readable strings such as ``"約50km/h"`` or
-    # include measurement units in brackets.  Extract the first numeric token
-    # before delegating to the shared conversion helper so that we still honour
-    # grouping separators and full-width digits.
+    # ``_to_float`` がロケール依存のフォーマットを正規化するものの、ここでは
+    # 先頭の数値トークンを拾い直して補助的な正規化を行う。
     if isinstance(value, str):
         text = value.strip()
         if not text:
@@ -85,22 +81,13 @@ def _normalise_offset(values: List[float]) -> Tuple[float, Callable[[float], flo
 
 
 def _extract_speed_hint(text: str) -> Optional[float]:
-    """Best-effort extraction of a numeric speed from supplementary text.
-
-    Some Japanese datasets mark variable/digital speed limit signs with a
-    supplementary classification value instead of filling ``最高速度値``.
-    These hints are typically a single digit (e.g. ``"4"`` for "40km/h").
-    When such a hint is present we try to recover a plausible km/h value so
-    that the exported OpenDRIVE sign carries a non-zero ``value`` and can be
-    rendered by viewers.
-    """
+    """補助的に記録された数値から妥当なkm/h値を推定する。"""
 
     if not text:
         return None
 
-    # Normalise full-width digits into ASCII and strip out everything that is
-    # not a decimal number.  ``unicodedata`` keeps the dependency footprint
-    # small and copes with values such as "４".
+    # 全角数字をASCIIへ統一し、10進数以外の文字を取り除く。``unicodedata`` で依存
+    # を増やさずに「４」のような表記にも対応する。
     normalised = unicodedata.normalize("NFKC", text)
     digits = "".join(ch for ch in normalised if ch.isdigit())
     if not digits:
@@ -108,21 +95,21 @@ def _extract_speed_hint(text: str) -> Optional[float]:
 
     try:
         value = int(digits)
-    except ValueError:  # pragma: no cover - defensive, should not happen
+    except ValueError:  # pragma: no cover - 想定外ケースへの防御的処理
         return None
 
     if len(digits) == 1:
         value *= 10
 
     if value <= 0 or value > 200:
-        # Filter obvious sentinels such as 65535 or corrupted readings.
+        # 65535のような明らかな番兵値や異常値を除外する。
         return None
 
     return float(value)
 
 
 def _normalise_height(raw_value: Any, column_name: Optional[str]) -> Optional[float]:
-    """Convert height readings to metres while filtering obvious sentinels."""
+    """高さの測定値を番兵を除外しつつメートルへ換算する。"""
 
     height = _to_float(raw_value)
     if height is None:
@@ -130,7 +117,7 @@ def _normalise_height(raw_value: Any, column_name: Optional[str]) -> Optional[fl
     if not math.isfinite(height):
         return None
     if abs(height) >= 1.0e4:
-        # Values such as 65535 are commonly used as "unknown" sentinels.
+        # 65535 などは「不明」を表す番兵値として頻出する。
         return None
 
     column_hint = column_name or ""
@@ -138,8 +125,8 @@ def _normalise_height(raw_value: Any, column_name: Optional[str]) -> Optional[fl
     if "[cm]" in column_hint or "cm" in lowered:
         return height * 0.01
     if abs(height) > 50.0:
-        # Fallback heuristic: anything taller than a typical gantry is likely
-        # expressed in centimetres even if the column header lacks units.
+        # フォールバックの経験則: 一般的な門型標識より高い値は単位未指定でも
+        # センチメートル表記とみなす。
         return height * 0.01
     return height
 
@@ -223,7 +210,7 @@ def _coordinate_pairs(df_sign: DataFrame) -> List[Tuple[str, str]]:
 
 
 def _to_int(value: Any) -> Optional[int]:
-    """Best-effort conversion of ``value`` to :class:`int`."""
+    """可能な限り ``value`` を :class:`int` へ変換する。"""
 
     if value is None:
         return None
@@ -243,7 +230,7 @@ def _to_int(value: Any) -> Optional[int]:
 
     try:
         return int(numeric)
-    except (TypeError, ValueError):  # pragma: no cover - defensive guard
+    except (TypeError, ValueError):  # pragma: no cover - 防御的なガード
         return None
 
 
@@ -280,7 +267,7 @@ def generate_signals(
     centerline: Optional[DataFrame] = None,
     geo_origin: Optional[Tuple[float, float]] = None,
 ) -> SignalExport:
-    """Generate OpenDRIVE signal dictionaries from a sign profile table."""
+    """標識プロファイルからOpenDRIVE用の信号辞書を構築する。"""
 
     signals: List[Dict[str, Any]] = []
     objects: List[Dict[str, Any]] = []
@@ -379,7 +366,7 @@ def generate_signals(
     if centerline is not None:
         try:
             candidate = _CenterlineProjector(centerline)
-        except Exception:  # pragma: no cover - defensive guard
+        except Exception:  # pragma: no cover - 防御的なガード
             candidate = None
         if candidate is not None and candidate.is_valid:
             projector = candidate
@@ -420,7 +407,7 @@ def generate_signals(
                         sample_x = float(projected_x[0])
                         sample_y = float(projected_y[0])
                         break
-                    except Exception:  # pragma: no cover - defensive guard
+                    except Exception:  # pragma: no cover - 防御的なガード
                         sample_x = None
                         sample_y = None
 
@@ -563,7 +550,7 @@ def generate_signals(
                 identifier = row[instance_id_col]
                 support_identifier = str(identifier).strip() if identifier is not None else ""
             if not support_identifier:
-                support_identifier = f"{offset_cm}:{s_pos}"  # fallback key when dataset lacks IDs
+                support_identifier = f"{offset_cm}:{s_pos}"  # ID欠落時のフォールバックキー
             stack_key = (support_identifier, round(float(s_pos), 6))
             next_z_offset = group_vertical_offsets.get(stack_key, float(base_z_offset))
             attrs["zOffset"] = next_z_offset
@@ -624,7 +611,7 @@ def shift_signs_to_left_shoulder(
     *,
     margin: float = 0.3,
 ) -> None:
-    """Move generated signals/objects onto the left shoulder edge."""
+    """生成した信号と支柱を左側路肩の縁へ揃える。"""
 
     if not lane_sections:
         return

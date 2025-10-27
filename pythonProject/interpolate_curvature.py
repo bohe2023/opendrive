@@ -37,7 +37,7 @@ def _parse_int(value: str) -> int:
         raise ValueError("空文字列を整数に変換できません")
     try:
         return int(value)
-    except ValueError as exc:  # pragma: no cover - defensive fallback
+    except ValueError as exc:  # pragma: no cover - 防御的なフォールバック
         raise ValueError(f"不正な整数値です: {value!r}") from exc
 
 
@@ -184,5 +184,5 @@ def main() -> None:
             print(f"[OK] {path}: 欠損インデックスは検出されませんでした")
 
 
-if __name__ == "__main__":  # pragma: no cover - CLI entry point
+if __name__ == "__main__":  # pragma: no cover - CLI のエントリーポイント
     main()

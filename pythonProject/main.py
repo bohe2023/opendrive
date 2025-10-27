@@ -156,5 +156,5 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
             postprocess_xodr.patch_file(Path(xodr_path), verbose=True)
 
 
-if __name__ == "__main__":  # pragma: no cover - CLI entry point
+if __name__ == "__main__":  # pragma: no cover - CLI のエントリーポイント
     main()
