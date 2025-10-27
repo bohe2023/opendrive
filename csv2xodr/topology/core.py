@@ -6,7 +6,7 @@ from csv2xodr.simpletable import DataFrame, Series
 
 
 def _canonical_numeric(value: Any, *, allow_negative: bool = False) -> Optional[str]:
-    """Return a stable string representation for identifier-like values."""
+    """識別子として扱う値の安定した文字列表現を生成する。"""
 
     if value is None:
         return None
@@ -66,14 +66,12 @@ def _offset_series(df: DataFrame):
     if df is None or len(df) == 0:
         return None, None
 
-    # Offsets are provided in centimetres measured along the reference line.
-    # They use the same absolute origin as the geometry CSV.  The centreline
-    # normalisation step (``build_centerline``) already re-bases the offsets so
-    # that the first sample maps to ``s = 0``.  To keep lane sections aligned
-    # with the plan view we replicate that behaviour here and subtract the
-    # earliest valid offset before converting to metres.
-    off_cols = [c for c in df.columns if "Offset" in c]  # Offset[cm]
-    end_cols = [c for c in df.columns if "End Offset" in c]  # End Offset[cm]
+    # オフセットは参照線に沿ったセンチメートル単位で記録されている。
+    # ジオメトリCSVと同じ原点を共有しており、中心線正規化（build_centerline）が
+    # 先頭サンプルを s = 0 へ揃えている。平面形状と整合させるため同じ補正を施し、
+    # 有効な最小オフセットを減算したうえでメートルへ変換する。
+    off_cols = [c for c in df.columns if "Offset" in c]  # オフセット[cm]
+    end_cols = [c for c in df.columns if "End Offset" in c]  # 終了オフセット[cm]
 
     off_values: List[float] = []
     end_values: List[float] = []
@@ -111,10 +109,7 @@ def make_sections(centerline: DataFrame,
                   lane_div_df: DataFrame = None,
                   min_len: float = 0.01,
                   offset_mapper: Optional[Callable[[float], float]] = None):
-    """
-    Collect split points from lane_link/lane_div offsets (in meters),
-    produce lane sections [s0, s1).
-    """
+    """lane_link/lane_div のオフセットから区切り点を集め区間 [s0, s1) を生成する。"""
     total_len = float(centerline["s"].iloc[-1])
     splits = set([0.0, total_len])
 
@@ -153,7 +148,7 @@ def make_sections(centerline: DataFrame,
 
 def build_lane_topology(lane_link_df: DataFrame,
                         offset_mapper: Optional[Callable[[float], float]] = None) -> Dict[str, Any]:
-    """Parse lane link CSV into lane-centric topology information."""
+    """lane_link CSV から車線中心のトポロジ情報を抽出する。"""
 
     if lane_link_df is None or len(lane_link_df) == 0:
         return {"lanes": {}, "groups": {}, "lane_count": 0}
@@ -415,7 +410,7 @@ def build_lane_topology(lane_link_df: DataFrame,
     for lane_list in groups.values():
         lane_list.sort(key=lambda uid: lanes[uid]["lane_no"])
 
-    # resolve successor/predecessor ids into lane uids where possible
+    # 可能な場合は前後関係のIDをレーンUIDへ解決する
     all_uids = set(lanes.keys())
     for lane in lanes.values():
         for segment in lane["segments"]:

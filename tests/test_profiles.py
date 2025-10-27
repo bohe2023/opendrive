@@ -52,9 +52,8 @@ def test_build_slope_profiles_and_elevation():
 
 
 def test_geometry_segments_from_curvature():
-    # The centreline follows a straight 1 m segment and then a 0.1 rad/m arc
-    # so the curvature profile is geometrically consistent with the anchor
-    # points.
+    # 中心線は1mの直線の後に0.1 rad/m の円弧へ続くため、曲率プロファイルは
+    # アンカーポイントと幾何的に整合する。
     center = DataFrame(
         {
             "s": [0.0, 1.0, 2.0],
@@ -385,8 +384,8 @@ def test_curvature_profile_uses_shape_index_segments():
     assert all(math.isclose(span, exp, abs_tol=1e-9) for span, exp in zip(spans, expected_spans))
 
     curvatures = [seg["curvature"] for seg in curvature_segments]
-    # Latitude/longitude points lie on a straight line, so the smoothed curvature
-    # should be essentially zero despite the raw CSV values.
+    # 緯度経度の点は一直線上にあるため、CSVの値がどうであれ平滑化後の曲率は
+    # ほぼゼロになるはず。
     assert all(abs(curv) <= 1e-9 for curv in curvatures)
 
     center = DataFrame(

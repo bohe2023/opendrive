@@ -123,5 +123,5 @@ def main() -> None:
         print(f"[OK] 形状インデックス列を付与しました: {path}")
 
 
-if __name__ == "__main__":  # pragma: no cover - CLI entry point
+if __name__ == "__main__":  # pragma: no cover - CLI のエントリーポイント
     main()

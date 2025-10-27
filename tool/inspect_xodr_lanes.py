@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Inspect lane composition of OpenDRIVE files.
+"""OpenDRIVEファイルのレーン構成を調査するユーティリティ。
 
-This helper surfaces the lane counts, types, and width definitions for every
-``laneSection`` so that interoperability issues (e.g. MATLAB imports) can be
-investigated without manually browsing the XML tree.
-"""
+各 ``laneSection`` のレーン数・種類・幅定義を一覧化し、XMLを手作業で追わずに
+MATLAB などとの相互運用上の問題を洗い出せるようにする。"""
 
 from __future__ import annotations
 
@@ -35,7 +33,7 @@ def _describe_lane(lane: ET.Element) -> str:
     widths = lane.findall("width")
     width_desc: str
     if not widths:
-        width_desc = "no <width>"
+        width_desc = "<width> 未定義"
     else:
         coeffs = widths[0].attrib
         width_desc = "a={a} b={b} c={c} d={d}".format(
@@ -71,41 +69,41 @@ def analyse(path: Path) -> None:
         left_driving = left_counts.get("driving", 0)
         right_driving = right_counts.get("driving", 0)
 
-        balance = "balanced" if left_driving == right_driving else "UNBALANCED"
+        balance = "均衡" if left_driving == right_driving else "不均衡"
         print(
-            "  driving lanes (L/R): %d / %d -> %s"
+            "  走行レーン数 (左/右): %d / %d -> %s"
             % (left_driving, right_driving, balance)
         )
 
         if left_counts:
             summary = ", ".join(f"{k}={v}" for k, v in sorted(left_counts.items()))
-            print(f"    left types : {summary}")
+            print(f"    左側タイプ : {summary}")
         else:
-            print("    left types : (none)")
+            print("    左側タイプ : (なし)")
 
         if right_counts:
             summary = ", ".join(f"{k}={v}" for k, v in sorted(right_counts.items()))
-            print(f"    right types: {summary}")
+            print(f"    右側タイプ : {summary}")
         else:
-            print("    right types: (none)")
+            print("    右側タイプ : (なし)")
 
         if center_lanes:
             for lane in center_lanes:
-                print("    center    :", _describe_lane(lane))
+                print("    中央      :", _describe_lane(lane))
         else:
-            print("    center    : (missing)")
+            print("    中央      : (未設定)")
 
 
 def main(argv: Iterable[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description="Summarise lane counts/types for OpenDRIVE laneSections",
+        description="OpenDRIVEのlaneSectionごとにレーン数と種類を集計する",
     )
-    parser.add_argument("paths", nargs="+", type=Path, help=".xodr files to inspect")
+    parser.add_argument("paths", nargs="+", type=Path, help="調査対象となる.xodrファイル")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     for path in args.paths:
         analyse(path)
 
 
-if __name__ == "__main__":  # pragma: no cover - command-line helper
+if __name__ == "__main__":  # pragma: no cover - コマンドライン補助
     main()

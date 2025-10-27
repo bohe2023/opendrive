@@ -1,4 +1,4 @@
-"""Helpers that adapt US-specific CSV tables to the generic converter pipeline."""
+"""US向けCSVを共通変換パイプラインへ橋渡しする補助関数群。"""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def _to_float(value) -> Optional[float]:
 def merge_lane_width_into_links(
     lane_link_df: Optional[DataFrame], lane_width_df: Optional[DataFrame]
 ) -> Optional[DataFrame]:
-    """Inject average lane widths (in centimetres) into the link table."""
+    """リンク表へ平均的なレーン幅（センチメートル単位）を付加する。"""
 
     if lane_link_df is None or len(lane_link_df) == 0:
         return lane_link_df

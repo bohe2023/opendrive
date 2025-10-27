@@ -42,7 +42,7 @@ def convert_spiral_to_arc(path: Path) -> int:
 
     try:
         tree = ET.parse(path)
-    except ET.ParseError as exc:  # pragma: no cover - defensive branch
+    except ET.ParseError as exc:  # pragma: no cover - 防御的な分岐
         print(f"[ERROR] XODRファイルを解析できません: {path}: {exc}", file=sys.stderr)
         return 0
 
@@ -114,5 +114,5 @@ def main(argv: Iterable[str] | None = None) -> None:
     raise SystemExit(0 if total_replaced >= 0 else 1)
 
 
-if __name__ == "__main__":  # pragma: no cover - convenience CLI
+if __name__ == "__main__":  # pragma: no cover - 補助的なCLI
     main()

@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""Generate a handful of minimal OpenDRIVE samples for debugging workflows.
+"""デバッグ用途に最小構成のOpenDRIVEサンプルを生成する補助スクリプト。
 
-The goal of this helper is to mirror the structure emitted by the regular
-conversion pipeline while keeping the geometry intentionally simple.  Each
-scenario exercises a slightly different combination of features so that the
-resulting ``.xodr`` files can be imported into MATLAB (or any other viewer)
-individually to narrow down interoperability issues.
-"""
+本来の変換パイプラインと同じ構造を保ちつつジオメトリを単純化し、
+シナリオごとに挙動の異なる組み合わせを用意する。生成した ``.xodr`` を
+MATLAB などへ個別に読み込むことで相互運用性の問題を切り分けやすくする。"""
 
 from __future__ import annotations
 
@@ -29,7 +26,7 @@ from pythonProject.postprocess_xodr import patch_file
 
 @dataclass
 class Scenario:
-    """Container describing the minimal data required to export a scenario."""
+    """シナリオを書き出すために必要な最小限のデータをまとめたコンテナ。"""
 
     name: str
     centerline: DataFrame
@@ -53,7 +50,7 @@ def _lane_segment(start: float, end: float, width: float) -> Dict[str, object]:
 
 
 def _make_centerline(points: Iterable[Iterable[float]]) -> DataFrame:
-    """Build a minimal :class:`DataFrame` with ``s/x/y/hdg`` columns."""
+    """``s/x/y/hdg`` 列のみを持つ最小限の :class:`DataFrame` を構築する。"""
 
     s_vals: List[float] = []
     x_vals: List[float] = []
@@ -74,7 +71,7 @@ def _make_lane_topology(
     left_lanes: List[List[Dict[str, object]]],
     right_lanes: List[List[Dict[str, object]]],
 ) -> Dict[str, object]:
-    """Create a lane topology payload compatible with :func:`build_lane_spec`."""
+    """:func:`build_lane_spec` と互換性のあるレーン構造データを生成する。"""
 
     groups: Dict[str, List[str]] = {}
     lanes: Dict[str, Dict[str, object]] = {}
@@ -113,20 +110,13 @@ def _integrate_spiral(
     y0: float,
     hdg0: float,
 ) -> Dict[str, float]:
-    """Integrate a planar clothoid and return its end pose.
-
-    The integration uses a simple adaptive step size (bounded by a minimum number
-    of iterations) to approximate the spiral trajectory without relying on
-    external special functions.  The final heading is corrected analytically to
-    avoid numerical drift.
-    """
+    """平面クロソイドを数値積分して終端姿勢を返す。"""
 
     if length <= 0.0:
         return {"x": float(x0), "y": float(y0), "hdg": float(hdg0)}
 
-    # Clamp the number of integration steps so that short spirals still receive
-    # sufficient sampling while avoiding overly dense iterations for longer
-    # segments.
+    # 短いスパイラルにも十分なサンプリングを与えつつ、長距離では過密になりすぎない
+    # よう積分ステップ数を制限する。
     steps = max(2000, int(length * 200))
     ds_nominal = length / steps
     curvature_delta = curvature_end - curvature_start
@@ -157,7 +147,7 @@ def _integrate_arc(
     y0: float,
     hdg0: float,
 ) -> Dict[str, float]:
-    """Integrate a constant-curvature arc and return its end pose."""
+    """一定曲率の円弧を積分して終端姿勢を返す。"""
 
     if length <= 0.0:
         return {"x": float(x0), "y": float(y0), "hdg": float(hdg0)}
@@ -175,13 +165,13 @@ def _integrate_arc(
 
 
 def _extreme_uturn_parameters() -> Dict[str, float]:
-    """Return the base parameters shared by the extreme U-turn scenarios."""
+    """極端なUターン系シナリオで共有する基本パラメータを返す。"""
 
     first_line = 120.0
     spiral_length = 8.0
     last_line = 120.0
     curvature_start = 0.0
-    curvature_end = 2.0 * math.pi / spiral_length  # yields ~180 deg heading change
+    curvature_end = 2.0 * math.pi / spiral_length  # およそ180度の方位変化になる
     return {
         "first_line": first_line,
         "turn_length": spiral_length,
@@ -257,7 +247,7 @@ def _curved_arc() -> Scenario:
 
 
 def _extreme_spiral_uturn() -> Scenario:
-    """Construct a straight-spiral-straight scenario with an aggressive U-turn."""
+    """直線-スパイラル-直線構成の急峻なUターンシナリオを構築する。"""
 
     params = _extreme_uturn_parameters()
     first_line = params["first_line"]
@@ -279,9 +269,8 @@ def _extreme_spiral_uturn() -> Scenario:
     final_x = spiral_end["x"] + last_line * math.cos(spiral_end["hdg"])
     final_y = spiral_end["y"] + last_line * math.sin(spiral_end["hdg"])
 
-    # Provide a few intermediate spiral samples in the centreline table so that
-    # downstream tools relying on the discretised representation can capture the
-    # extreme curvature.
+    # 中心線テーブルへ中間スパイラルを幾つか追加し、離散化に依存する後段ツールでも
+    # 急激な曲率変化を把握できるようにする。
     spiral_mid_s = first_line + spiral_length / 2.0
     spiral_mid = _integrate_spiral(
         spiral_length / 2.0,
@@ -346,7 +335,7 @@ def _extreme_spiral_uturn() -> Scenario:
 
 
 def _extreme_arc_uturn() -> Scenario:
-    """Approximate the extreme U-turn using an arc with averaged curvature."""
+    """極端なUターンを平均曲率の円弧で近似したシナリオを構築する。"""
 
     params = _extreme_uturn_parameters()
     first_line = params["first_line"]
@@ -434,7 +423,7 @@ def _iter_scenarios() -> Iterable[Scenario]:
 
 
 def generate_samples(output_dir: Path, *, patch: bool = True) -> List[Path]:
-    """Materialise all scenarios into *output_dir* and return the created files."""
+    """全シナリオを *output_dir* に書き出し生成されたファイル一覧を返す。"""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     written: List[Path] = []
@@ -462,17 +451,17 @@ def generate_samples(output_dir: Path, *, patch: bool = True) -> List[Path]:
 
 
 def main(argv: Optional[Iterable[str]] = None) -> None:
-    parser = argparse.ArgumentParser(description="Generate minimal OpenDRIVE samples")
+    parser = argparse.ArgumentParser(description="最小構成のOpenDRIVEサンプルを生成する")
     parser.add_argument(
         "--output",
         type=Path,
         default=Path("out/minimal_scenarios"),
-        help="Target directory for the generated .xodr files",
+        help="生成した.xodrファイルを配置するディレクトリ",
     )
     parser.add_argument(
         "--no-patch",
         action="store_true",
-        help="Skip the post-processing step that injects centre lane widths",
+        help="中央レーン幅を付加する後処理をスキップする",
     )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -482,5 +471,5 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         print(path)
 
 
-if __name__ == "__main__":  # pragma: no cover - script entry point
+if __name__ == "__main__":  # pragma: no cover - スクリプトの入口
     main()

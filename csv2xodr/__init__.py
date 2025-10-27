@@ -1,1 +1,1 @@
-# empty on purpose – makes csv2xodr a package
+# 意図的に空ファイルとし、csv2xodr をパッケージ化する

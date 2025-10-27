@@ -1,29 +1,21 @@
-"""A very small subset of pandas-like functionality used by csv2xodr.
+"""csv2xodr が必要とする pandas 風の機能だけを切り出した軽量実装。
 
-This module implements light-weight :class:`DataFrame` and :class:`Series`
-objects that support the handful of operations required by the converter.
-It intentionally does **not** try to be a drop-in replacement for pandas –
-only the methods/behaviours that are exercised inside this project are
-implemented.  The goal is to keep the tool functional in minimal
-environments where installing heavy third-party dependencies such as
-``pandas`` or ``numpy`` is not feasible.
+このモジュールでは :class:`DataFrame` と :class:`Series` の最小限な互換 API を
+提供し、変換パイプライン内で実際に利用される操作だけをサポートする。pandas や
+numpy を導入できない環境でも動作させることを主眼に、依存関係を極力抑えている。
 
-The implementation focuses on:
+実装の要点:
 
-* column selection via ``df["col"]`` and ``df[["a", "b"]]``
-* ``len(df)`` and ``len(series)``
-* integer based indexing via ``iloc`` for both series and data frames
-* boolean/sequence indexing via ``loc``
-* ``filter(like="...")``
-* a very small ``groupby`` with ``mean`` aggregation
-* helpers such as ``dropna()``, ``unique()``, ``duplicated()`` and
-  ``astype(float)`` on series
+* ``df["col"]`` や ``df[["a", "b"]]`` によるカラム参照
+* ``len(df)`` や ``len(series)`` の取得
+* ``iloc`` を用いた整数位置インデックス
+* 真偽値/シーケンスによる ``loc`` インデックス
+* ``filter(like="...")`` の部分一致フィルター
+* ``groupby`` + ``mean`` の簡易集計
+* ``dropna()``、``unique()``、``duplicated()``、``astype(float)`` などの補助機能
 
-Only the behaviour that is explicitly relied upon by the rest of the
-code base is implemented here.  The API is intentionally tiny but it is
-documented and unit tested through the higher-level features of the
-converter.  When new functionality is required it can be extended in a
-controlled manner.
+ここで定義されていない挙動は一切保証しないが、必要になったタイミングで拡張
+できるように構造はシンプルに保っている。
 """
 
 from __future__ import annotations
@@ -33,7 +25,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tupl
 
 
 def _is_na(value: Any) -> bool:
-    """Return ``True`` when *value* should be treated as missing/NaN."""
+    """値が欠損（NaN 相当）として扱われるべきかを判定する。"""
 
     if value is None:
         return True
@@ -47,13 +39,13 @@ def _is_na(value: Any) -> bool:
 
 
 def notna(value: Any) -> bool:
-    """Inverse of :func:`_is_na` to mimic ``pandas.notna``."""
+    """pandas.notna と同様に欠損判定の結果を反転する。"""
 
     return not _is_na(value)
 
 
 class Series:
-    """A light-weight sequence with a pandas-like interface."""
+    """pandas 風インターフェースを備えた軽量シーケンス。"""
 
     def __init__(
         self,
@@ -75,8 +67,8 @@ class Series:
             self.index = list(index)
 
     # ------------------------------------------------------------------
-    # Representation helpers
-    def __len__(self) -> int:  # pragma: no cover - behaviour validated indirectly
+    # 表示やイテレーション用の補助メソッド
+    def __len__(self) -> int:  # pragma: no cover - 挙動は他のテストで検証済み
         return len(self._data)
 
     def __iter__(self) -> Iterator[Any]:
@@ -86,7 +78,7 @@ class Series:
         if self._kind == "row" and isinstance(key, str):
             try:
                 idx = self.index.index(key)
-            except ValueError as exc:  # pragma: no cover - defensive programming
+            except ValueError as exc:  # pragma: no cover - 防御的な分岐
                 raise KeyError(key) from exc
             return self._data[idx]
         return self._data[key]
@@ -98,7 +90,7 @@ class Series:
     def to_list(self) -> List[Any]:
         return list(self._data)
 
-    def to_numpy(self) -> List[Any]:  # compatibility shim
+    def to_numpy(self) -> List[Any]:  # 互換性維持のための簡易実装
         return list(self._data)
 
     def astype(self, dtype) -> "Series":
@@ -154,15 +146,15 @@ class Series:
             return len(self.dropna().unique())
         return len(Series(self._data, index=self.index).unique())
 
-    def iloc(self, idx: int) -> Any:  # pragma: no cover - retained for backward compat
+    def iloc(self, idx: int) -> Any:  # pragma: no cover - 互換性維持のため残す
         return self._data[idx]
 
-    # pandas-like attribute
+    # pandas 互換の属性インターフェース
     @property
     def iloc(self) -> "_SeriesILoc":  # type: ignore[override]
         return _SeriesILoc(self)
 
-    def __repr__(self) -> str:  # pragma: no cover - debug helper
+    def __repr__(self) -> str:  # pragma: no cover - デバッグ用
         return f"Series({self._data})"
 
 
@@ -182,7 +174,7 @@ class _SeriesILoc:
 
 
 class DataFrame:
-    """A tabular structure that mimics a very small portion of pandas."""
+    """pandas のテーブル構造の一部を模した軽量クラス。"""
 
     def __init__(self, data: Union[Dict[str, Iterable[Any]], Iterable[Dict[str, Any]]], *, columns: Optional[List[str]] = None) -> None:
         if isinstance(data, dict):
@@ -218,10 +210,10 @@ class DataFrame:
         elif isinstance(item, list):
             subset = [{col: row.get(col) for col in item} for row in self._rows]
             return DataFrame(subset, columns=item)
-        else:  # pragma: no cover - defensive programming
+        else:  # pragma: no cover - 防御的な分岐
             raise TypeError("Unsupported key type")
 
-    # pandas-like indexers -------------------------------------------------
+    # pandas 互換のインデクサ -------------------------------------------------
     @property
     def iloc(self) -> "_DataFrameILoc":
         return _DataFrameILoc(self)
@@ -251,10 +243,10 @@ class DataFrame:
         cols = ["index"] + [c for c in self.columns if c != "index"]
         return DataFrame(new_rows, columns=cols)
 
-    def to_dicts(self) -> List[Dict[str, Any]]:  # pragma: no cover - debug helper
+    def to_dicts(self) -> List[Dict[str, Any]]:  # pragma: no cover - デバッグ用
         return [dict(row) for row in self._rows]
 
-    def __repr__(self) -> str:  # pragma: no cover - debug helper
+    def __repr__(self) -> str:  # pragma: no cover - デバッグ用
         return f"DataFrame(rows={len(self)}, columns={self.columns})"
 
 
@@ -355,7 +347,7 @@ class _GroupBySelection:
                     continue
                 try:
                     fval = float(value)
-                except Exception:  # pragma: no cover - mirrors pandas behaviour
+                except Exception:  # pragma: no cover - pandas と同じ例外処理
                     continue
                 sums[key][col] += fval
                 counts[key][col] += 1
@@ -364,7 +356,7 @@ class _GroupBySelection:
         if self._sort:
             try:
                 keys.sort()
-            except TypeError:  # pragma: no cover - fall back to insertion order
+            except TypeError:  # pragma: no cover - 挿入順にフォールバック
                 pass
 
         out_rows: List[Dict[str, Any]] = []

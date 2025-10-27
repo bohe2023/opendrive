@@ -56,8 +56,8 @@ def test_build_elevation_profile_averages_and_slopes():
     assert first["b"] == 3.0  # (13 - 10) / (1 - 0)
 
     assert second["s"] == 1.0
-    assert second["a"] == 13.0  # average of 12 and 14
-    assert second["b"] == 0.0  # final segment flattens to avoid spikes
+    assert second["a"] == 13.0  # 12と14の平均値
+    assert second["b"] == 0.0  # 最終区間はスパイク回避のため水平化
 
 
 def test_build_elevation_profile_ignores_outliers():
@@ -70,7 +70,7 @@ def test_build_elevation_profile_ignores_outliers():
         },
         {
             "Offset[cm]": "0",
-            "高さ[m]": "83886.07",  # sentinel-style invalid reading
+            "高さ[m]": "83886.07",  # 番兵的な異常値
             "Path Id": "1",
             "Is Retransmission": "False",
         },

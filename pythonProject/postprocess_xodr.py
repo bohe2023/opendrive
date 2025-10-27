@@ -98,6 +98,6 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     raise SystemExit(0 if modified >= 0 else 1)
 
 
-if __name__ == "__main__":  # pragma: no cover - convenience CLI
+if __name__ == "__main__":  # pragma: no cover - 補助的なCLI
     main()
 

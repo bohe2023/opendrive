@@ -401,9 +401,8 @@ def test_generate_signals_preserves_duplicate_s_positions():
         }
     )
 
-    # Force the offset mapper to return the same arc-length for all entries to
-    # simulate real-world datasets with duplicated offsets despite distinct
-    # geographic coordinates.
+    # オフセットマッパーが常に同じ弧長を返すよう強制し、座標が異なっても重複
+    # オフセットを含む実データを模擬する。
     result = generate_signals(
         df,
         country="JPN",
