@@ -91,17 +91,17 @@ def add_shape_index_column(path: Path, *, encoding: str = DEFAULT_ENCODING) -> N
 
 
 def _parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Add shape index columns to lane geometry CSV files.")
+    parser = argparse.ArgumentParser(description="レーン幾何CSVへ形状インデックス列を追加します。")
     parser.add_argument(
         "files",
         nargs="*",
         type=Path,
-        help="CSV files to update. Defaults to the standard JPN/US lane geometry datasets.",
+        help="更新対象のCSVファイル（省略時は標準のJPN/USデータセット）",
     )
     parser.add_argument(
         "--encoding",
         default=DEFAULT_ENCODING,
-        help="Character encoding used to read/write the CSV files (default: %(default)s).",
+        help="CSVの入出力に使用する文字コード（既定値: %(default)s）",
     )
     return parser.parse_args()
 def default_files(root: Optional[Path] = None) -> List[Path]:
@@ -116,11 +116,11 @@ def main() -> None:
 
     for path in files:
         if not path.exists():
-            print(f"[SKIP] {path} (not found)")
+            print(f"[SKIP] ファイルが見つかりません: {path}")
             continue
 
         add_shape_index_column(path, encoding=args.encoding)
-        print(f"[OK] Added shape index column to {path}")
+        print(f"[OK] 形状インデックス列を付与しました: {path}")
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point

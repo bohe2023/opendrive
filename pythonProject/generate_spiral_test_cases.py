@@ -105,7 +105,7 @@ def save_tree(tree: ET.Element, path: str) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="生成用于比较的最小螺旋 OpenDRIVE 文件",
+        description="比較検証向けの最小螺旋OpenDRIVEファイルを生成します",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent(
             """使用例:
@@ -113,19 +113,19 @@ def parse_args() -> argparse.Namespace:
             """
         ),
     )
-    parser.add_argument("--output-dir", required=True, help="输出目录")
-    parser.add_argument("--length", type=float, default=50.0, help="道路长度，单位米")
+    parser.add_argument("--output-dir", required=True, help="出力先ディレクトリ")
+    parser.add_argument("--length", type=float, default=50.0, help="道路長さ（単位: メートル）")
     parser.add_argument(
         "--curvature",
         type=float,
         default=0.001,
-        help="非零螺旋段的曲率差（终止曲率 = 初始曲率 + 该值）",
+        help="螺旋区間の曲率差（終端曲率 = 初期曲率 + この値）",
     )
     parser.add_argument(
         "--start-curvature",
         type=float,
         default=0.0,
-        help="螺旋段的起始曲率",
+        help="螺旋区間の初期曲率",
     )
     return parser.parse_args()
 
@@ -148,8 +148,8 @@ def main() -> None:
     nonzero_path = os.path.join(args.output_dir, "spiral_nonzero_diff.xodr")
     save_tree(nonzero_tree, nonzero_path)
 
-    print(f"已生成：{zero_path}")
-    print(f"已生成：{nonzero_path}")
+    print(f"生成しました: {zero_path}")
+    print(f"生成しました: {nonzero_path}")
 
 
 if __name__ == "__main__":

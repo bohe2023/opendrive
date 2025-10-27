@@ -60,13 +60,13 @@ def patch_file(path: Path, *, verbose: bool = True) -> bool:
         changed = ensure_center_lane_width(path, force_lane_type="none")
     except FileNotFoundError:
         if verbose:
-            print(f"[SKIP] 未找到XODR文件: {path}")
+            print(f"[SKIP] XODRファイルが見つかりません: {path}")
         return False
 
     if changed and verbose:
-        print(f"[OK] 已更新中心车道定义: {path}")
+        print(f"[OK] 中央レーン定義を更新しました: {path}")
     elif verbose:
-        print(f"[OK] 中心车道定义已满足要求: {path}")
+        print(f"[OK] 中央レーン定義は既に条件を満たしています: {path}")
     return changed
 
 
@@ -85,10 +85,10 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
 
     import argparse
 
-    parser = argparse.ArgumentParser(description="规范中心车道的类型与宽度定义")
-    parser.add_argument("paths", nargs="+", help="需要修复的XODR文件路径")
+    parser = argparse.ArgumentParser(description="中央レーンのタイプと幅の定義を正規化します")
+    parser.add_argument("paths", nargs="+", help="修正対象のXODRファイルパス")
     parser.add_argument(
-        "--quiet", action="store_true", help="静默模式，仅返回退出码"
+        "--quiet", action="store_true", help="詳細を表示せずに終了コードのみ返します"
     )
 
     args = parser.parse_args(list(argv) if argv is not None else None)

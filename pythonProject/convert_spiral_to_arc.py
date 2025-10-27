@@ -43,7 +43,7 @@ def convert_spiral_to_arc(path: Path) -> int:
     try:
         tree = ET.parse(path)
     except ET.ParseError as exc:  # pragma: no cover - defensive branch
-        print(f"[ERROR] 无法解析XODR文件: {path}: {exc}", file=sys.stderr)
+        print(f"[ERROR] XODRファイルを解析できません: {path}: {exc}", file=sys.stderr)
         return 0
 
     root = tree.getroot()
@@ -59,7 +59,7 @@ def convert_spiral_to_arc(path: Path) -> int:
             curv_end = element.get("curvatureEnd")
             if curv_start is None or curv_end is None:
                 print(
-                    f"[WARN] 缺少曲率信息，跳过: {path} (s={geometry.get('s', 'N/A')})",
+                    f"[WARN] 曲率情報が不足しているためスキップします: {path} (s={geometry.get('s', 'N/A')})",
                     file=sys.stderr,
                 )
                 continue
@@ -68,7 +68,7 @@ def convert_spiral_to_arc(path: Path) -> int:
                 average = (float(curv_start) + float(curv_end)) / 2.0
             except ValueError:
                 print(
-                    f"[WARN] 曲率值非数字，跳过: {path} (s={geometry.get('s', 'N/A')})",
+                    f"[WARN] 曲率値が数値ではないためスキップします: {path} (s={geometry.get('s', 'N/A')})",
                     file=sys.stderr,
                 )
                 continue
@@ -88,16 +88,16 @@ def convert_spiral_to_arc(path: Path) -> int:
 
 
 def main(argv: Iterable[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="将OpenDRIVE文件中的螺旋段替换为圆弧段")
+    parser = argparse.ArgumentParser(description="OpenDRIVE内の螺旋区間を円弧区間へ置換します")
     parser.add_argument(
         "paths",
         nargs="+",
-        help="需要处理的 .xodr 文件或目录路径，可传入多个",
+        help="処理対象の.xodrファイルまたはディレクトリ（複数指定可）",
     )
     parser.add_argument(
         "--quiet",
         action="store_true",
-        help="静默模式，仅在发生修改时输出",
+        help="静粛モード。変更があった場合のみ出力します",
     )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -108,7 +108,7 @@ def main(argv: Iterable[str] | None = None) -> None:
         replaced = convert_spiral_to_arc(file_path)
         if not args.quiet or replaced:
             status = "OK" if replaced else "SKIP"
-            print(f"[{status}] {file_path} -> 替换 {replaced} 个螺旋段")
+            print(f"[{status}] {file_path} -> 螺旋区間を {replaced} 件置換")
         total_replaced += replaced
 
     raise SystemExit(0 if total_replaced >= 0 else 1)
