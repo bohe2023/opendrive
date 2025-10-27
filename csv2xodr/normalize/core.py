@@ -60,7 +60,7 @@ def _find_column(df: DataFrame, *keywords: str, exclude: Tuple[str, ...] = ()) -
 
 
 def _to_float(value: Any) -> Optional[float]:
-    """Best-effort conversion that accepts common locale specific formats."""
+    """一般的なロケール依存形式を可能な限り解釈して浮動小数に変換する。"""
 
     if value is None:
         return None
@@ -69,17 +69,17 @@ def _to_float(value: Any) -> Optional[float]:
     if not text or text.lower() == "nan":
         return None
 
-    # Normalise full-width characters that occasionally show up in JPN CSVs.
+    # 日本語圏のCSVで出現しがちな全角文字を正規化する。
     normalised = unicodedata.normalize("NFKC", text)
 
-    # Remove whitespace-like grouping characters before handling decimal/grouping
-    # separators.  This covers plain spaces as well as non-breaking/thin spaces
-    # that are often used as thousands separators in exported spreadsheets.
+    # 小数点や桁区切り記号を処理する前に空白系の桁区切りを除去する。
+    # 通常のスペースだけでなく、表計算ソフトが桁区切りに使うノーブレーク
+    # スペースや細いスペースも対象にする。
     grouping_chars = {" ", "\u00a0", "\u2009", "_"}
     compact = "".join(ch for ch in normalised if ch not in grouping_chars)
 
-    # Detect whether commas should be treated as decimal or grouping
-    # separators.  ``1,234.5`` → ``1234.5`` whereas ``12,5`` → ``12.5``.
+    # カンマを小数点として扱うか桁区切りとして扱うかを判定する。
+    # 例: ``1,234.5`` → ``1234.5``、``12,5`` → ``12.5``。
     candidate = compact
     if "," in compact:
         if "." in compact or compact.count(",") > 1:
@@ -97,9 +97,8 @@ def _to_float(value: Any) -> Optional[float]:
     try:
         return float(candidate)
     except ValueError:
-        # As a last resort drop all commas.  This allows inputs such as
-        # ``1,234`` to still parse even when the decimal/comma heuristic above
-        # could not disambiguate the intent.
+        # 最後の手段として全てのカンマを除去する。
+        # 上記の判定で意図が分からない場合でも ``1,234`` のような入力を解釈できるようにする。
         fallback = compact.replace(",", "")
         if fallback != candidate:
             try:
@@ -126,7 +125,7 @@ def _advance_pose(
     curvature: float,
     length: float,
 ) -> Tuple[float, float, float]:
-    """Integrate a constant-curvature segment from the provided pose."""
+    """指定した姿勢から一定曲率の区間を積分して終端姿勢を求める。"""
 
     if abs(curvature) <= 1e-12:
         end_x = start_x + length * math.cos(start_hdg)
@@ -373,9 +372,8 @@ def _resample_parametric_curve(
     for length in seg_lengths:
         arc_lengths.append(arc_lengths[-1] + length)
 
-    # 原始白线点位存在测量噪声时，直接拟合多项式会放大误差导致曲率
-    # 高频震荡。先对坐标序列做弧长域上的平滑与等距重采样，可以抑制
-    # 浮噪并让后续的导数运算更加稳定。
+    # 元の白線座標に測定ノイズが含まれると多項式近似で誤差が増幅され曲率が高周波に揺れる。
+    # 弧長方向で平滑化し等間隔に再サンプリングしてから微分するとノイズを抑えられる。
     if len(arc_lengths) == len(x_vals) == len(y_vals) and len(x_vals) >= 3:
         original_arc = list(arc_lengths)
         original_s = list(s_vals)
@@ -385,8 +383,7 @@ def _resample_parametric_curve(
             x_vals = _smooth_series(x_vals, arc_lengths, smooth_window)
             y_vals = _smooth_series(y_vals, arc_lengths, smooth_window)
 
-        # 通过沿弧长的线性插值生成等距采样点，避免原始测量的稠密/稀疏
-        # 区域对多项式拟合的权重造成偏差。
+        # 弧長に沿った線形補間で等間隔のサンプルを生成し、測定点の密度差による重みの偏りを避ける。
         target_spacing = max(step * 0.25, total_length / max(len(arc_lengths) * 4, 1))
         target_spacing = min(target_spacing, max(total_length, 1e-6))
         if target_spacing > 0.0 and target_spacing < total_length:
@@ -396,17 +393,17 @@ def _resample_parametric_curve(
             if abs(uniform_targets[-1] - total_length) > 1e-6:
                 uniform_targets.append(total_length)
 
-            # 在原始序列上插值，确保重采样后的点仍然沿原曲线分布。
+            # 元の列に沿って補間し、再サンプリング後も元の曲線に沿って配置されるようにする。
             x_vals = _interp_values(original_arc, x_vals, uniform_targets)
             y_vals = _interp_values(original_arc, y_vals, uniform_targets)
             s_vals = _interp_values(original_arc, original_s, uniform_targets)
             arc_lengths = uniform_targets
 
-        # Savitzky–Golay 滤波可以进一步抑制高频噪声，同时保留真实曲率
-        # 变化趋势；SciPy 不一定可用，因此在运行时按需导入。
-        try:  # pragma: no cover - 依赖环境可能缺失
+        # Savitzky–Golay フィルタで高周波ノイズをさらに抑えつつ曲率変化の傾向を残す。
+        # SciPy が常に利用できるとは限らないため、必要時に動的インポートする。
+        try:  # pragma: no cover - 依存ライブラリが無い場合に備える
             from scipy.signal import savgol_filter  # type: ignore
-        except Exception:  # pragma: no cover - 当 SciPy 不可用时静默跳过
+        except Exception:  # pragma: no cover - SciPy が無い環境では静かにスキップ
             savgol_filter = None  # type: ignore
 
         if "savgol_filter" in locals() and callable(savgol_filter):  # type: ignore[name-defined]
@@ -420,15 +417,15 @@ def _resample_parametric_curve(
                     window_length = max(5, window_length - 1)
                 poly_order = min(3, max(1, window_length - 2))
                 if window_length >= poly_order + 2 and window_length <= len(x_vals):
-                    try:  # pragma: no cover - SciPy 调用
+                    try:  # pragma: no cover - SciPy 呼び出し
                         x_vals = savgol_filter(x_vals, window_length, poly_order).tolist()
                         y_vals = savgol_filter(y_vals, window_length, poly_order).tolist()
-                    except Exception:  # pragma: no cover - 失败时回退原序列
+                    except Exception:  # pragma: no cover - 失敗時は元の列に戻す
                         pass
         else:
-            try:  # pragma: no cover - numpy 可能缺失
+            try:  # pragma: no cover - numpy が無いケースを考慮
                 import numpy as np  # type: ignore
-            except Exception:  # pragma: no cover - 缺少 numpy 时静默跳过
+            except Exception:  # pragma: no cover - numpy が無い場合は静かにスキップ
                 np = None  # type: ignore
 
             if np is not None and len(x_vals) >= 3:  # type: ignore[truthy-bool]
@@ -467,7 +464,7 @@ def _resample_parametric_curve(
                         coeff_y = np.polyfit(slice_arc, slice_y, degree)  # type: ignore[attr-defined]
                         smoothed_x.append(float(np.polyval(coeff_x, arc_arr[idx])))  # type: ignore[attr-defined]
                         smoothed_y.append(float(np.polyval(coeff_y, arc_arr[idx])))  # type: ignore[attr-defined]
-                    except Exception:  # pragma: no cover - 防御性兜底
+                    except Exception:  # pragma: no cover - 防御的なフォールバック
                         smoothed_x.append(float(x_vals[idx]))
                         smoothed_y.append(float(y_vals[idx]))
 
@@ -636,10 +633,7 @@ def _find_height_column(df: DataFrame) -> Optional[str]:
     return None
 
 def latlon_to_local_xy(lat: Iterable[float], lon: Iterable[float], lat0: float, lon0: float) -> Tuple[List[float], List[float]]:
-    """
-    Simple equirectangular projection to local XY [m].
-    lat/lon can be numpy arrays in degrees.
-    """
+    """単純な正距円筒図法で緯度経度をローカルXY[m]に変換する。緯度経度は度数法の配列を想定する。"""
     R = 6378137.0
     lat_rad = [math.radians(v) for v in lat]
     lon_rad = [math.radians(v) for v in lon]
@@ -654,13 +648,7 @@ def latlon_to_local_xy(lat: Iterable[float], lon: Iterable[float], lat0: float, 
 
 
 def select_best_path_id(df_line_geo: Optional[DataFrame]) -> Optional[str]:
-    """Return the Path Id that best represents the reference alignment.
-
-    The CSV datasets may contain multiple ``Path Id`` polylines (for example,
-    one per carriageway).  The conversion pipeline expects to work on a single
-    alignment, therefore we pick the longest available polyline and reuse that
-    identifier for every other table.
-    """
+    """基準となるアライメントを最もよく表す Path Id を選び出す。CSV には複数の ``Path Id`` が含まれる場合があるため、最長のポリラインを代表値として他の表にも流用する。"""
 
     if df_line_geo is None or len(df_line_geo) == 0:
         return None
@@ -737,7 +725,7 @@ def select_best_path_id(df_line_geo: Optional[DataFrame]) -> Optional[str]:
 
 
 def filter_dataframe_by_path(df: Optional[DataFrame], path_id: Optional[str]) -> Optional[DataFrame]:
-    """Return a DataFrame that only contains rows matching ``path_id``."""
+    """指定した ``path_id`` と一致する行のみを残した DataFrame を返す。"""
 
     if df is None or len(df) == 0 or path_id is None:
         return df
@@ -775,7 +763,7 @@ def _select_base_origin(
     path_id: Optional[str],
     offsets: Optional[Iterable[Any]],
 ) -> Optional[Tuple[float, float]]:
-    """Pick the most appropriate base point for the requested path."""
+    """要求されたパスに対して最適な基準点を選択する。"""
 
     if df_base is None or len(df_base) == 0:
         return None
@@ -879,10 +867,7 @@ def _select_base_origin(
 
 
 def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
-    """
-    Build centerline planView from PROFILETYPE_MPU_LINE_GEOMETRY (lat/lon series).
-    Returns: centerline DataFrame [s,x,y,hdg], and (lat0, lon0)
-    """
+    """PROFILETYPE_MPU_LINE_GEOMETRY（緯度・経度系列）からセンターラインの planView を構築する。戻り値は [s,x,y,hdg] を持つ DataFrame と (lat0, lon0) の組。"""
     if df_line_geo is None or len(df_line_geo) == 0:
         raise ValueError("line_geometry CSV is required")
 
@@ -895,11 +880,11 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
     lat_col = df_line_geo.filter(like="緯度").columns[0]
     lon_col = df_line_geo.filter(like="経度").columns[0]
 
-    # 部分数据集中同一 Offset 会重复多次，其内的多条曲线往往对应不同的
-    # 车道边界。观察发现中心线可以通过 "3D 地物属性オプションフラグ" 标记
-    # 出来，并且每个 Offset 分段的首批采样点数量等于 "形状要素点数"。为了
-    # 保留沿纵向的几何细节，需要优先挑选中心线对应的记录，并在分段内部
-    # 仅保留首批采样点，避免在不同车道间往返。
+    # サブセットによっては同じ Offset が複数行に現れ、個々の曲線が別々の車線境界を表す。
+    # 「3D 地物属性オプションフラグ」がセンターラインを識別しており、各 Offset 区間の先頭
+    # サンプル数は「形状要素点数」と一致することが多い。縦方向の幾何情報を維持するため、
+    # センターラインに該当するレコードを優先し、区間内では先頭サンプルだけを残して車線間の
+    # 行き来を避ける。
     offset_col = _col_like(df_line_geo, "Offset")
     end_offset_col = _find_column(df_line_geo, "end", "offset")
     flag_col: Optional[str] = None
@@ -917,7 +902,7 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
 
     primary_rows: Optional[List[Dict[str, Any]]] = None
     if flag_col is not None and offset_col is not None:
-        # ``DataFrame`` 是一个轻量包装，允许直接访问底层行列表。
+        # DataFrame は軽量ラッパーなので内部の行リストへ直接アクセスできる。
         rows = getattr(df_line_geo, "_rows", None)
         if isinstance(rows, list):
             flag_values = []
@@ -933,14 +918,14 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
             chosen_flag: Optional[str] = None
             if flag_values:
                 unique_flags = set(flag_values)
-                # 数据集中中心线通常使用 4 标记，其次退化为 1/2/0 等其他值。
+                # データではセンターラインが 4 で示されることが多く、次候補として 1/2/0 などが使われる。
                 preferred = ["4", "3", "2", "1", "0"]
                 for candidate in preferred:
                     if candidate in unique_flags:
                         chosen_flag = candidate
                         break
                 if chosen_flag is None:
-                    # 尝试从数值最小的标记中挑选，避免完全失效。
+                    # 完全に判別できない場合は最小値のフラグを選んで最低限の動作を確保する。
                     numeric: List[Tuple[float, str]] = []
                     for flag in unique_flags:
                         try:
@@ -956,8 +941,8 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
                     row for row in rows if str(row.get(flag_col)).strip() == chosen_flag
                 ]
                 if filtered_rows:
-                    # 记录 Offset 首次出现的顺序，随后在每个分段内仅保留前
-                    # ``shape_count`` 个采样点，以复原沿参考线的细分信息。
+                    # Offset の出現順を記録し、各区間では ``shape_count`` 件だけサンプルを残して
+                    # 参照線に沿った細分情報を復元する。
                     order: List[str] = []
                     grouped: Dict[str, List[Dict[str, Any]]] = {}
                     for row in filtered_rows:
@@ -1014,10 +999,9 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
     else:
         offsets_series = None
 
-    # Some providers emit one row per lane boundary for the same longitudinal
-    # offset.  Averaging the duplicated offsets keeps the geometry focused on a
-    # single centerline instead of weaving across multiple boundaries (which
-    # renders as a cross/diamond artifact in the exported OpenDRIVE).
+    # サプライヤによっては同じ縦方向オフセットに対して車線境界ごとに複数行を出力する。
+    # 重複オフセットを平均化すると複数境界の間を蛇行せず、エクスポートした OpenDRIVE で
+    # クロス状のアーティファクトが出るのを防げる。
     if (
         offsets_series is not None
         and offsets_series.duplicated().any()
@@ -1040,7 +1024,7 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
             lon = [lon[idx] for idx in order]
             offsets = [offsets[idx] for idx in order]
 
-    # choose origin
+    # 原点を決定する
     origin = None
     if df_base is not None and len(df_base) > 0:
         origin = _select_base_origin(df_base, path_id=best_path_id, offsets=offsets)
@@ -1053,7 +1037,7 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
 
     x, y = latlon_to_local_xy(lat, lon, lat0, lon0)
 
-    # cumulative s & heading
+    # 弧長と方位角を累積する
     s = [0.0 for _ in x]
     hdg = [0.0 for _ in x]
     for i in range(1, len(x)):
@@ -1133,7 +1117,7 @@ def build_centerline(df_line_geo: DataFrame, df_base: DataFrame):
 
 
 def build_offset_mapper(centerline: DataFrame) -> Callable[[float], float]:
-    """Return a callable that maps CSV offsets to centreline arc-length."""
+    """CSV のオフセット値をセンターラインの弧長へ写像する関数を返す。"""
 
     if "s_offset" not in centerline.columns:
         return lambda value: float(value)
@@ -1190,15 +1174,13 @@ def build_elevation_profile(
     *,
     offset_mapper: Optional[Callable[[float], float]] = None,
 ) -> List[dict]:
-    """Build an OpenDRIVE elevation profile from line geometry heights.
+    """ライン幾何テーブルの高さ情報から OpenDRIVE の縦断プロファイルを構築する。
 
-    The PROFILETYPE_MPU_LINE_GEOMETRY.csv source encodes longitudinal
-    offsets in centimetres alongside absolute height values.  The
-    resulting profile is emitted as a list of dictionaries ready to be
-    serialised into ``<elevation>`` elements where ``a`` represents the
-    height at ``s`` and ``b`` encodes the gradient (first derivative).
-    Only the primary path is considered when multiple polylines are
-    present in the input.
+    PROFILETYPE_MPU_LINE_GEOMETRY.csv では縦方向オフセットをセンチメートル単位で
+    絶対高さと共に保持している。生成されたプロファイルは ``<elevation>`` 要素へ
+    直列化できる辞書のリストとして出力され、``a`` が位置 ``s`` における高さ、
+    ``b`` が勾配（一次導関数）を表す。入力に複数ポリラインが存在する場合でも
+    主経路のみを対象とする。
     """
 
     if df_line_geo is None or len(df_line_geo) == 0:
@@ -1257,10 +1239,8 @@ def build_elevation_profile(
             continue
 
         if abs(height) >= 1e4:
-            # Sentinel-style placeholders in some datasets use extremely large
-            # values (for example ``83886.07``) to signal that the real
-            # elevation measurement is unavailable.  Treat them as missing data
-            # instead of letting them skew the typical height statistics.
+            # 一部のデータセットでは ``83886.07`` のような巨大値で高さ欠損を示す。
+            # 代表値を歪めないようこれらは欠損として扱う。
             continue
 
         grouped.setdefault(offset_cm, []).append(height)
@@ -1320,11 +1300,8 @@ def build_elevation_profile(
             else:
                 slope = 0.0
         else:
-            # The final elevation entry does not have a following point to
-            # constrain its gradient.  Re-using the previous slope may cause
-            # the profile to extrapolate aggressively which manifests as a
-            # vertical spike at the end of the road.  Default to a flat
-            # continuation instead.
+            # 最終要素には後続点が無く、勾配を拘束できない。
+            # 前の傾きを流用すると末端で縦方向スパイクが発生するため水平継続にする。
             slope = 0.0
 
         profile.append({
@@ -1590,7 +1567,7 @@ def build_curvature_profile(
                 lookup_key = (path_key, lane_key, shape_idx_key)
                 mapped = lane_geometry_lookup.get(lookup_key)
                 if mapped is None and path_key is None:
-                    # fall back to lane-only match for datasets that omit path IDs
+                    # Path ID が存在しないデータでは車線キーだけで検索する。
                     mapped = lane_geometry_lookup.get((None, lane_key, shape_idx_key))
                 if mapped is not None:
                     lat_val, lon_val = mapped
@@ -2205,25 +2182,21 @@ def _suppress_curvature_spikes(
     spike_curvature: float = 0.01,
     curvature_similarity: float = 0.15,
 ) -> List[Dict[str, float]]:
-    """Collapse very short curvature spans that oscillate in sign.
+    """符号が激しく入れ替わる極短曲率区間をまとめて滑らかさを保つ。
 
-    Shape-index based curvature samples occasionally encode centimetre-long
-    arcs whose curvature abruptly flips sign relative to the surrounding
-    segments.  Offsetting these spikes to generate lane boundaries amplifies
-    the oscillation and renders as visibly jagged white lines.  The source
-    geometry, however, remains smooth when the offending spikes are replaced
-    by their longer neighbours.
+    シェイプインデックス由来の曲率サンプルには、周囲と逆符号になる
+    数センチの区間が稀に混入する。これをそのまま車線境界へオフセットすると
+    振動が増幅され、白線がギザギザに見えてしまう。元の幾何は滑らかなままなので、
+    こうしたスパイクを隣接する長い区間の曲率で置き換える。
 
-    This helper trims suspicious spans before the planView approximation is
-    constructed so that downstream integration only sees curvature that varies
-    gradually along the reference line.
+    本関数は planView の近似を組み立てる前に疑わしい区間を整理し、
+    後段の積分処理が緩やかに変化する曲率のみを扱えるようにする。
     """
 
     if not segments:
         return []
 
-    # Normalise the entries to avoid mutating the caller's data while keeping
-    # track of any auxiliary metadata that may be present on each segment.
+    # 呼び出し元のデータを壊さずに補足情報も保持できるよう、各要素を正規化する。
     ordered: List[Dict[str, float]] = []
     for raw in segments:
         try:
@@ -2321,7 +2294,7 @@ def _merge_short_curvature_segments(
     *,
     min_span: float = 0.5,
 ) -> List[Dict[str, float]]:
-    """Merge extremely short curvature spans into neighbouring segments."""
+    """極端に短い曲率区間を隣接セグメントへ吸収させる。"""
 
     if not segments:
         return []
@@ -2423,7 +2396,7 @@ def _merge_segments_by_breakpoints(
     *,
     tol: float = 1e-6,
 ) -> List[Dict[str, float]]:
-    """Collapse segments so they align with the provided breakpoints."""
+    """指定された分割点に揃うようセグメントをまとめ直す。"""
 
     ordered = sorted(segments, key=lambda seg: float(seg.get("s0", 0.0)))
     points = sorted({float(b) for b in breakpoints if math.isfinite(float(b))})
@@ -2519,9 +2492,8 @@ def build_geometry_segments(
     def _build_segments(max_len: float) -> Tuple[List[Dict[str, float]], float]:
         def _clamp(value: float) -> float:
             clamped = max(0.0, min(total_length, float(value)))
-            # 标记点在浮点运算中会出现微小误差，这里统一取 9 位小数以便后续
-            # 查找时能够复用相同的键，避免 densify 过程中产生的重复点无法被
-            # 正确识别为同一个位置。
+            # アンカー位置は浮動小数の誤差で僅かにずれるため 9 桁に丸めてキーを揃える。
+            # こうすると densify の過程で生じた重複点も同じ位置として扱える。
             return round(clamped, 9)
 
         anchor_points: Dict[float, bool] = {_clamp(0.0): True, _clamp(total_length): True}
@@ -2534,13 +2506,11 @@ def build_geometry_segments(
         else:
             effective_len = float(max_len)
 
-        # 长曲率区段在积分时会累积轻微的横向偏移，进而在 OpenDRIVE
-        # 查看器中表现为相邻路段之间出现细小豁口。为了在不牺牲曲线段
-        # 的情况下压制误差，将曲率分段进一步按照参考线采样 densify。
-        # 这里允许调用方传入更小的 densify 间距；如果输入的最大长度
-        # 失效，则退回默认的 2 米。
-        # densify 由后续针对每个主控制点区间的细分逻辑统一处理，这里无需
-        # 额外插入中间节点。
+        # 長い曲率区間は数値積分で横方向の小さなずれを蓄積し、OpenDRIVE ビューアでは
+        # セグメントの境界に隙間が見えることがある。曲線自体を保ったまま誤差を抑えるため、
+        # 参考線のサンプリング間隔に合わせて densify する。呼び出し側がより細かい間隔を
+        # 指定でき、無効な値が来たときは既定の 2m に戻す。densify の詳細な分割は後段の
+        # 制御点処理でまとめて行うため、ここで余計な中間点を挿入する必要はない。
 
         for seg in curvature_segments:
             s0 = _clamp(seg["s0"])
@@ -2703,17 +2673,15 @@ def build_geometry_segments(
             drift_pos = math.hypot(anchor_x - continuous_x, anchor_y - continuous_y)
             drift_hdg = abs(_normalize_angle(anchor_hdg - continuous_hdg))
 
-            # 形状インデックス数据的分段更密集，直接将起点强行重置到解析
-            # 中心线会让上一段的数值积分结果与新的起点出现 2~3cm 的错位。
-            # 当误差仍处于几十厘米以内时，保留连续积分得到的起点可以维持
-            # 几何连续性；只有当累积漂移明显放大时才回退到解析中心线重新
-            # 对齐，从而兼顾稳定性与准确度。
+            # シェイプインデックス由来の区間は密に分割されており、強制的に解析中心線へ戻すと
+            # 前の数値積分結果との間に 2〜3cm の段差が生じる。誤差が数十センチ以内なら
+            # 数値積分で得た起点を保った方が連続性を維持できるため、大きく漂った時だけ解析中心線に
+            # 再整合するようにして安定性と精度を両立させる。
             if drift_pos > 0.1 or drift_hdg > 2e-2:
-                # 直接将起点重置到解析中心线会让相邻段之间出现十几厘米的跳变。
-                # 当漂移超过硬阈值时，以固定的“步长”逐渐收敛到解析位置。
-                # 为了避免明显裂缝，将单次平移压缩到 1cm 以内，同时按比例
-                # 压缩航向偏差，既能阻止累计误差继续扩大，又能保证输出几何
-                # 的连续性。
+                # 起点を即座に解析中心線へ戻すと隣接区間に数センチの段差が出る。
+                # 漂移が閾値を超えたときは一定ステップで解析位置へ収束させ、
+                # 単回の平行移動を 1cm 以下に抑えつつ方位差も比例で減衰させることで、
+                # 累積誤差の拡大を防ぎながら連続性を守る。
                 if drift_pos > 1e-9:
                     step_cap = max(0.005, min(0.01, length_total * 0.1))
                     max_step = min(drift_pos, step_cap)
@@ -2758,9 +2726,9 @@ def build_geometry_segments(
             alignment_tolerance = None
             if abs(curvature_dataset) > 1e-12:
                 alignment_error = abs(_normalize_angle(delta_target - delta_dataset))
-                # 采样噪声会让 CSV 中的曲率与解析中心线推导出的航向变化不一致。
-                # 只有当两者在一个较严格的阈值内吻合时，才继续“锁定”原始曲率，
-                # 否则放宽限制让数值求解重新调整曲率，避免出现整段平移的误差。
+                # サンプリングノイズの影響で CSV の曲率と解析中心線の航向変化が一致しないことがある。
+                # 両者が厳しめの閾値内で揃っている場合のみ元の曲率を固定し、合わない場合は
+                # 数値解に任せて曲率を調整し、大きな平行移動誤差を避ける。
                 base_tolerance = 2e-3
                 curvature_tolerance = abs(delta_dataset) * 0.25
                 target_tolerance = abs(delta_target) * 0.25
@@ -2892,9 +2860,8 @@ def build_geometry_segments(
             continuous_x, continuous_y, continuous_hdg = propagated_x, propagated_y, propagated_hdg
             current_s = end
 
-            # Record the analytical centreline pose for diagnostic purposes while
-            # keeping ``continuous_*`` anchored to the numerically integrated
-            # result so the emitted geometry remains contiguous.
+            # 解析的なセンターライン姿勢を診断用に控えつつ、``continuous_*`` は数値積分で得た
+            # 連続座標に固定し、出力ジオメトリの連結性を保つ。
             current_x, current_y, current_hdg = target_x, target_y, target_hdg
 
             if segment_error > max_observed_endpoint_deviation:
@@ -2917,10 +2884,9 @@ def build_geometry_segments(
     except (TypeError, ValueError):
         max_endpoint_deviation = 0.5
 
-    # 长距离路段若允许 2cm 以上的端点误差，会在 OpenDRIVE 查看器中留
-    # 下肉眼可见的缝隙；而几米长的短路段则需要保留更宽松的阈值，否
-    # 则在数据略有噪声时无法生成几何。根据参考线总长度自适应收紧
-    # 阈值，可以兼顾长距离道路的连续性与单元测试所覆盖的短样例。
+    # 長距離の道路で 2cm 以上の端点誤差を許すと OpenDRIVE ビューアに隙間が生じる。
+    # 一方で数メートルの短い区間ではあまり厳しくするとノイズでジオメトリが生成できない。
+    # 参照線の総延長に応じて閾値を自動調整し、長距離の連続性とテスト用の短いケースを両立する。
     if total_length >= 50.0:
         tightened = 0.01
     else:
@@ -2947,9 +2913,8 @@ def build_geometry_segments(
     min_len = max(0.25, initial_len / 16.0)
     current_len = initial_len
 
-    # 在实际数据中，个别曲率段可能因为原始测量噪声导致理论圆弧与
-    # 折线终点存在略高于阈值的偏差。通过逐步缩小 densify 间距可以
-    # 有效抑制误差，而无需完全回退到折线表达。
+    # 実際のデータでは測定ノイズにより理論上の円弧と折線終点のズレが閾値をわずかに超える場合がある。
+    # densify 間隔を段階的に縮めれば折線表現へ戻らずに誤差を抑えられる。
     while deviation > max_endpoint_deviation and current_len > min_len:
         current_len = max(min_len, current_len / 2.0)
         candidate_segments, candidate_deviation = _build_segments(current_len)
@@ -2976,7 +2941,7 @@ def _merge_geometry_segments(
     heading_tol: float = 1e-6,
     max_segment_length: Optional[float] = None,
 ) -> List[Dict[str, float]]:
-    """Collapse consecutive geometry segments that share the same curvature."""
+    """同じ曲率を持つ連続ジオメトリ区間を結合して冗長な分割を解消する。"""
 
     if not segments:
         return []
@@ -2988,10 +2953,9 @@ def _merge_geometry_segments(
         except (TypeError, ValueError):
             length = 0.0
         if not math.isfinite(length) or length <= 1e-9:
-            # 形状インデックス曲率在部分路段之间可能会插入零长度的
-            # 补间段，用于标记数据缺口。在输出为 OpenDRIVE 几何之前
-            # 需要将其过滤掉，否则查看器会把这类节点当成新的起点，
-            # 继而导致整段道路出现平移错位。
+            # シェイプインデックス曲率の欠損を示すためにゼロ長セグメントが
+            # 混ざっている場合がある。OpenDRIVE の幾何へ出力する前に除去しないと
+            # ビューアが新たな起点と解釈し、道路全体がずれたように表示される。
             continue
         entry = dict(seg)
         try:
@@ -3042,11 +3006,9 @@ def _merge_geometry_segments(
         delta_pos = math.hypot(next_seg["x"] - end_x, next_seg["y"] - end_y)
         delta_hdg = abs(_normalize_angle(next_seg["hdg"] - end_hdg))
 
-        # Shape-index datasets may accumulate millimetre-level drift between
-        # consecutive curvature spans.  Allow a slightly looser tolerance that
-        # scales with the local geometry so that neighbouring segments snap back
-        # to the analytically continuous pose instead of rendering as disjoint
-        # road pieces in OpenDRIVE viewers.
+        # シェイプインデックスの曲率区間では区間ごとに数ミリのドリフトが蓄積しやすい。
+        # 近傍の幾何に比例した緩めの許容範囲を与え、OpenDRIVE ビューアで道路が分断されず
+        # 解析的に連続した姿勢へ滑らかに戻れるようにする。
         length_scale = max(
             float(current.get("length", 0.0)),
             float(next_seg.get("length", 0.0)),
@@ -3065,9 +3027,8 @@ def _merge_geometry_segments(
         )
 
         if delta_s <= 1e-8:
-            # When the arc-length is continuous treat the numerically
-            # integrated pose as authoritative so the emitted geometry remains
-            # contiguous even if the dataset introduces small lateral offsets.
+            # 弧長が連続している場合は数値積分で得た姿勢を正とし、僅かな横ずれがあっても
+            # 出力ジオメトリのつながりを維持する。
             next_seg["s"] = expected_s
             next_seg["x"] = end_x
             next_seg["y"] = end_y
