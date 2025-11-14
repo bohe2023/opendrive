@@ -55,8 +55,11 @@ def convert_spiral_to_arc(path: Path) -> int:
             if element.tag != "spiral":
                 continue
 
-            curv_start = element.get("curvatureStart")
-            curv_end = element.get("curvatureEnd")
+            curv_start = element.get("curvStart")
+            curv_end = element.get("curvEnd")
+            if curv_start is None or curv_end is None:
+                curv_start = element.get("curvatureStart")
+                curv_end = element.get("curvatureEnd")
             if curv_start is None or curv_end is None:
                 print(
                     f"[WARN] 曲率情報が不足しているためスキップします: {path} (s={geometry.get('s', 'N/A')})",

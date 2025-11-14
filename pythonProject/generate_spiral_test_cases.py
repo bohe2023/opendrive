@@ -65,8 +65,8 @@ def _build_plan_view(parent: ET.Element, length: float, curvature_start: float, 
         geometry,
         "spiral",
         attrib={
-            "curvatureStart": f"{curvature_start:.12f}",
-            "curvatureEnd": f"{curvature_end:.12f}",
+            "curvStart": f"{curvature_start:.12f}",
+            "curvEnd": f"{curvature_end:.12f}",
         },
     )
 

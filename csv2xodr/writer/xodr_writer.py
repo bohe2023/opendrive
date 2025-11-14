@@ -577,8 +577,8 @@ def write_xodr(
                     geom,
                     "spiral",
                     {
-                        "curvatureStart": _format_float(curvature_start, precision=12),
-                        "curvatureEnd": _format_float(curvature_end, precision=12),
+                        "curvStart": _format_float(curvature_start, precision=12),
+                        "curvEnd": _format_float(curvature_end, precision=12),
                     },
                 )
     else:
@@ -656,46 +656,6 @@ def write_xodr(
                 attrs[key] = _format_float(float(val))
 
             SubElement(objects_el, "object", attrs)
-
-    if signals:
-        signals_el = SubElement(road, "signals")
-        for signal in signals:
-            attrs = {
-                "s": _format_float(signal.get("s", 0.0), precision=9),
-                "t": _format_float(signal.get("t", 0.0), precision=9),
-                "id": str(signal.get("id", "")),
-            }
-
-            value = signal.get("value")
-            if value is not None:
-                if isinstance(value, (int, float)):
-                    attrs["value"] = _format_float(value)
-                else:
-                    attrs["value"] = str(value)
-
-            z_offset = signal.get("zOffset")
-            if z_offset is not None:
-                attrs["zOffset"] = _format_float(float(z_offset))
-
-            for key in (
-                "name",
-                "type",
-                "subtype",
-                "unit",
-                "dynamic",
-                "orientation",
-                "country",
-                "supplementary",
-                "shape",
-                "height",
-                "width",
-            ):
-                val = signal.get(key)
-                if val is None:
-                    continue
-                attrs[key] = str(val)
-
-            SubElement(signals_el, "signal", attrs)
 
     # レーン構造
     lanes = SubElement(road, "lanes")
@@ -923,46 +883,43 @@ def write_xodr(
                                 except (TypeError, ValueError):
                                     param_poly = None
 
-                            if param_poly is not None:
-                                geom_attrs = {
-                                    "sOffset": _format_float(s0 - section_s0, precision=12),
-                                    "x": _format_float(x0, precision=12),
-                                    "y": _format_float(y0, precision=12),
-                                    "z": _format_float(z0, precision=12),
-                                    "hdg": _format_float(param_poly["heading"], precision=17),
-                                    "length": _format_float(param_poly["length"], precision=12),
-                                }
+                            base_attrs = {
+                                "sOffset": _format_float(s0 - section_s0, precision=12),
+                                "x": _format_float(x0, precision=12),
+                                "y": _format_float(y0, precision=12),
+                                "z": _format_float(z0, precision=12),
+                            }
 
-                                geom_el = SubElement(explicit_el, "geometry", geom_attrs)
+                            if param_poly is not None:
+                                heading_attr = _format_float(param_poly["heading"], precision=17)
+                                length_attr = _format_float(param_poly["length"], precision=12)
                                 if param_poly.get("type") == "spiral":
-                                    SubElement(
-                                        geom_el,
-                                        "spiral",
-                                        {
-                                            "curvStart": _format_float(
-                                                param_poly["curvStart"], precision=12
-                                            ),
-                                            "curvEnd": _format_float(
-                                                param_poly["curvEnd"], precision=12
-                                            ),
-                                        },
-                                    )
+                                    seg_attrs = {
+                                        **base_attrs,
+                                        "hdg": heading_attr,
+                                        "length": length_attr,
+                                        "curvStart": _format_float(
+                                            param_poly["curvStart"], precision=12
+                                        ),
+                                        "curvEnd": _format_float(param_poly["curvEnd"], precision=12),
+                                    }
+                                    SubElement(explicit_el, "spiral", seg_attrs)
                                 else:
-                                    SubElement(
-                                        geom_el,
-                                        "paramPoly3",
-                                        {
-                                            "aU": _format_float(param_poly["aU"], precision=12),
-                                            "bU": _format_float(param_poly["bU"], precision=12),
-                                            "cU": _format_float(param_poly["cU"], precision=12),
-                                            "dU": _format_float(param_poly["dU"], precision=12),
-                                            "aV": _format_float(param_poly["aV"], precision=12),
-                                            "bV": _format_float(param_poly["bV"], precision=12),
-                                            "cV": _format_float(param_poly["cV"], precision=12),
-                                            "dV": _format_float(param_poly["dV"], precision=12),
-                                            "pRange": "arcLength",
-                                        },
-                                    )
+                                    seg_attrs = {
+                                        **base_attrs,
+                                        "hdg": heading_attr,
+                                        "length": length_attr,
+                                        "aU": _format_float(param_poly["aU"], precision=12),
+                                        "bU": _format_float(param_poly["bU"], precision=12),
+                                        "cU": _format_float(param_poly["cU"], precision=12),
+                                        "dU": _format_float(param_poly["dU"], precision=12),
+                                        "aV": _format_float(param_poly["aV"], precision=12),
+                                        "bV": _format_float(param_poly["bV"], precision=12),
+                                        "cV": _format_float(param_poly["cV"], precision=12),
+                                        "dV": _format_float(param_poly["dV"], precision=12),
+                                        "pRange": "arcLength",
+                                    }
+                                    SubElement(explicit_el, "paramPoly3", seg_attrs)
                                 continue
 
                             arc_heading = None
@@ -972,21 +929,14 @@ def write_xodr(
                                 )
 
                             if arc_heading is not None:
-                                geom_attrs = {
-                                    "sOffset": _format_float(s0 - section_s0, precision=12),
-                                    "x": _format_float(x0, precision=12),
-                                    "y": _format_float(y0, precision=12),
-                                    "z": _format_float(z0, precision=12),
+                                seg_attrs = {
+                                    **base_attrs,
                                     "hdg": _format_float(arc_heading, precision=17),
                                     "length": _format_float(segment_length, precision=12),
+                                    "curvature": _format_float(curvature_val, precision=12),
                                 }
 
-                                geom_el = SubElement(explicit_el, "geometry", geom_attrs)
-                                SubElement(
-                                    geom_el,
-                                    "arc",
-                                    {"curvature": _format_float(curvature_val, precision=12)},
-                                )
+                                SubElement(explicit_el, "arc", seg_attrs)
                                 continue
 
                             chord_length = math.hypot(x1 - x0, y1 - y0)
@@ -995,19 +945,14 @@ def write_xodr(
 
                             hdg = math.atan2(y1 - y0, x1 - x0)
 
-                            geom_attrs = {
-                                "sOffset": _format_float(s0 - section_s0, precision=12),
-                                "x": _format_float(x0, precision=12),
-                                "y": _format_float(y0, precision=12),
-                                "z": _format_float(z0, precision=12),
+                            seg_attrs = {
+                                **base_attrs,
                                 "hdg": _format_float(hdg, precision=17),
                                 "length": _format_float(chord_length, precision=12),
                             }
 
-                            geom_el = SubElement(explicit_el, "geometry", geom_attrs)
-
                             # 曲率データが無い場合は直線プリミティブを使う。
-                            SubElement(geom_el, "line")
+                            SubElement(explicit_el, "line", seg_attrs)
 
             predecessors = lane_data.get("predecessors") or []
             successors = lane_data.get("successors") or []
@@ -1065,6 +1010,46 @@ def write_xodr(
             if right_el is None:
                 right_el = SubElement(ls, "right")
             _write_lane(right_el, lane_data)
+
+    if signals:
+        signals_el = SubElement(road, "signals")
+        for signal in signals:
+            attrs = {
+                "s": _format_float(signal.get("s", 0.0), precision=9),
+                "t": _format_float(signal.get("t", 0.0), precision=9),
+                "id": str(signal.get("id", "")),
+            }
+
+            value = signal.get("value")
+            if value is not None:
+                if isinstance(value, (int, float)):
+                    attrs["value"] = _format_float(value)
+                else:
+                    attrs["value"] = str(value)
+
+            z_offset = signal.get("zOffset")
+            if z_offset is not None:
+                attrs["zOffset"] = _format_float(float(z_offset))
+
+            for key in (
+                "name",
+                "type",
+                "subtype",
+                "unit",
+                "dynamic",
+                "orientation",
+                "country",
+                "supplementary",
+                "shape",
+                "height",
+                "width",
+            ):
+                val = signal.get(key)
+                if val is None:
+                    continue
+                attrs[key] = str(val)
+
+            SubElement(signals_el, "signal", attrs)
 
     with open(out_path, "wb") as f:
         f.write(_pretty(odr))
