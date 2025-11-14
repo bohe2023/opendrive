@@ -446,10 +446,10 @@ def test_write_xodr_emits_explicit_lane_mark_geometry(tmp_path):
     first = road_marks[0]
     explicit_first = first.find("explicit")
     assert explicit_first is not None
-    first_geoms = explicit_first.findall("geometry")
-    assert first_geoms
+    first_segments = list(explicit_first)
+    assert first_segments
 
-    attrs_first = first_geoms[0].attrib
+    attrs_first = first_segments[0].attrib
     assert float(attrs_first["sOffset"]) == pytest.approx(0.0)
     assert float(attrs_first["x"]) == pytest.approx(0.0)
     assert float(attrs_first["y"]) == pytest.approx(0.0)
@@ -459,8 +459,8 @@ def test_write_xodr_emits_explicit_lane_mark_geometry(tmp_path):
     last = road_marks[1]
     explicit_last = last.find("explicit")
     assert explicit_last is not None
-    last_geoms = explicit_last.findall("geometry")
-    assert len(last_geoms) == 2
-    assert float(last_geoms[0].attrib["sOffset"]) == pytest.approx(0.0)
-    assert float(last_geoms[0].attrib["x"]) == pytest.approx(4.0)
-    assert float(last_geoms[-1].attrib["x"]) == pytest.approx(5.0)
+    last_segments = list(explicit_last)
+    assert len(last_segments) == 2
+    assert float(last_segments[0].attrib["sOffset"]) == pytest.approx(0.0)
+    assert float(last_segments[0].attrib["x"]) == pytest.approx(4.0)
+    assert float(last_segments[-1].attrib["x"]) == pytest.approx(5.0)
